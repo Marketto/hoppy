@@ -61,28 +61,43 @@ Filename: "{app}\hoppy.exe"; Parameters: "install"; Flags: runhidden waituntilte
 Filename: "{app}\hoppyw.exe"; Description: "{cm:StartNow}"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/IM hoppyw.exe /F"; Flags: runhidden; RunOnceId: "StopHoppyTray"
-Filename: "{sys}\taskkill.exe"; Parameters: "/IM hoppy.exe /F"; Flags: runhidden; RunOnceId: "StopHoppy"
-Filename: "{app}\hoppy.exe"; Parameters: "uninstall"; Flags: runhidden; RunOnceId: "RemoveShortcuts"
+; Running copies are stopped first by CurUninstallStepChanged (see [Code]
+// Stops hoppy.exe / hoppyw.exe, but only the copies running from this install folder (an
+// unrelated "hoppy.exe" elsewhere is left alone). Upgrades from 0.1.0 run `hoppy.exe
+// receive` in a console, which CloseApplications cannot close, nor the tray app.
+// The folder goes to PowerShell as a single-quoted literal (quotes doubled) and is
+// compared with StartsWith, not -like, so '[' ']' in the path are not wildcards.
+function PsQuote(S: String): String;
+begin
+  StringChangeEx(S, '''', '''''', True);
+  Result := '''' + S + '''';
+end;
 
-[Messages]
-it.FinishedLabel=Hoppy è installato e riceve file in background: trovi la sua icona nell'area di notifica, vicino all'orologio (clic per inviare file). Per inviare da Esplora file: tasto destro su un file → Mostra altre opzioni → Invia a → Hoppy (oppure Maiusc+tasto destro).
-en.FinishedLabel=Hoppy is installed and receives files in the background: look for its icon in the notification area, near the clock (click it to send files). To send from File Explorer: right-click a file → Show more options → Send to → Hoppy (or Shift+right-click).
-
-[Code]
-// Upgrades from 0.1.0 run `hoppy.exe receive` in a console; stop every running copy so
-// the files can be replaced (CloseApplications cannot close a console or a tray app).
-procedure StopHoppy(const Image: String);
+procedure StopHoppy();
 var
+  Script: String;
   ResultCode: Integer;
 begin
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM ' + Image + ' /F', '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode);
+  Script :=
+    '$d = ' + PsQuote(AddBackslash(ExpandConstant('{app}'))) + '; ' +
+    '$p = @(Get-Process -Name hoppy,hoppyw -ErrorAction SilentlyContinue | ' +
+    'Where-Object { $_.Path -and $_.Path.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) }); ' +
+    '$p | Stop-Process -Force -ErrorAction SilentlyContinue; ' +
+    '$p | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopHoppy('hoppyw.exe');
-  StopHoppy('hoppy.exe');
+  StopHoppy();
   Result := '';
+end;
+
+// usUninstall comes after the user confirms and before [UninstallRun] / file removal.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    StopHoppy();
 end;

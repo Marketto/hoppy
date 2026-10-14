@@ -14,6 +14,7 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,8 +27,11 @@ use hoppy_core::{
 };
 
 use crate::platform::win::{self, Tray, Waker};
-use crate::platform::{self, MenuItem, TrayEvent};
-use crate::{bind_receiver, config, default_receive_dir, human, start_discovery};
+use crate::platform::{self, MenuItem, TooManyFiles, TrayEvent};
+use crate::{
+    DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, display_file_name,
+    display_name, display_platform, display_text, human, start_discovery,
+};
 
 /// Window titles double as identities: `signal_existing` looks for the tray one.
 const TRAY_WINDOW: &str = "Hoppy tray";
@@ -71,6 +75,7 @@ pub struct Strings {
     pub close: &'static str,
     pub not_a_file: &'static str,
     pub no_files: &'static str,
+    pub too_many_files: &'static str,
     pub usage: &'static str,
 }
 
@@ -102,6 +107,7 @@ pub const IT: Strings = Strings {
     close: "Chiudi",
     not_a_file: "«{path}» non è un file: le cartelle arriveranno in una versione futura.",
     no_files: "Nessun file da inviare.",
+    too_many_files: "Troppi file selezionati: inviali in più volte.",
     usage: "Uso: hoppyw (icona vicino all'orologio) oppure hoppyw send FILE…",
 };
 
@@ -133,6 +139,7 @@ pub const EN: Strings = Strings {
     close: "Close",
     not_a_file: "\"{path}\" is not a file: folders arrive in a later version.",
     no_files: "Nothing to send.",
+    too_many_files: "Too many files selected: send them in several batches.",
     usage: "Usage: hoppyw (icon near the clock) or hoppyw send FILE…",
 };
 
@@ -167,17 +174,17 @@ pub fn fill(template: &str, args: &[(&str, &str)]) -> String {
     out
 }
 
-/// "Pixel 8 · Android".
+/// "Pixel 8 · Android" (network text cleaned by `display_name`/`display_platform`).
 pub fn peer_label(peer: &Peer) -> String {
     let platform = match peer.device.platform.as_str() {
-        "android" => "Android",
-        "windows" => "Windows",
-        "linux" => "Linux",
-        "macos" => "macOS",
-        "ios" => "iOS",
-        other => other,
+        "android" => "Android".to_owned(),
+        "windows" => "Windows".to_owned(),
+        "linux" => "Linux".to_owned(),
+        "macos" => "macOS".to_owned(),
+        "ios" => "iOS".to_owned(),
+        other => display_platform(other),
     };
-    format!("{} · {platform}", peer.device.name)
+    format!("{} · {platform}", display_name(&peer.device.name))
 }
 
 /// Waits up to `max` for peers, returning early `settle` after the first one appears.
@@ -198,14 +205,15 @@ pub fn collect_peers(discovery: &Discovery, max: Duration, settle: Duration) -> 
     }
 }
 
-/// Body of the Yes/No dialog for an incoming offer.
+/// Body of the Yes/No dialog for an incoming offer. Everything from the network is
+/// cleaned first: names via `display_*`, file names as the §4 sanitizer will save them.
 pub fn offer_body(s: &Strings, offer: &Offer, from: SocketAddr) -> String {
     let n = offer.files.len().to_string();
     let mut body = fill(
         s.incoming_body,
         &[
-            ("name", &offer.sender.name),
-            ("platform", &offer.sender.platform),
+            ("name", &display_name(&offer.sender.name)),
+            ("platform", &display_platform(&offer.sender.platform)),
             ("ip", &from.ip().to_string()),
             ("n", &n),
             ("size", &human(offer.total_size())),
@@ -213,7 +221,7 @@ pub fn offer_body(s: &Strings, offer: &Offer, from: SocketAddr) -> String {
     );
     for f in offer.files.iter().take(5) {
         body.push_str("\n• ");
-        body.push_str(&f.name);
+        body.push_str(&display_file_name(&f.name));
     }
     let more = offer.files.len().saturating_sub(5);
     if more > 0 {
@@ -258,14 +266,19 @@ struct GuiReceiver {
     notices: Arc<Mutex<VecDeque<Notice>>>,
     /// Sender names by connection, remembered at accept time for the final balloon.
     names: Mutex<HashMap<SocketAddr, String>>,
+    /// One accept dialog at a time; offers arriving meanwhile are declined.
+    asking: AtomicBool,
 }
 
 impl ReceiveHandler for GuiReceiver {
     fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
+        let Some(_asking) = DialogGuard::try_take(&self.asking) else {
+            return false; // another offer is waiting for an answer
+        };
         let body = offer_body(self.s, offer, from);
         let accepted = platform::ask_accept(self.s.incoming_title, &body);
         if accepted {
-            lock(&self.names).insert(from, offer.sender.name.clone());
+            lock(&self.names).insert(from, display_name(&offer.sender.name));
         }
         accepted
     }
@@ -285,7 +298,7 @@ impl ReceiveHandler for GuiReceiver {
             },
             Err(e) => Notice {
                 title: fill(self.s.receive_failed, &[("name", &name)]),
-                text: e.to_string(),
+                text: display_text(&e.to_string(), SHOW_TEXT_MAX),
                 error: true,
             },
         };
@@ -316,6 +329,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
         waker: tray.waker(),
         notices: Arc::clone(&notices),
         names: Mutex::new(HashMap::new()),
+        asking: AtomicBool::new(false),
     });
     let serve_dir = dir.clone();
     thread::spawn(move || serve(listener, serve_dir, handler));
@@ -333,14 +347,15 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     MenuItem::Action(ID_QUIT, s.menu_quit),
                 ];
                 match tray.popup_menu(&items, true) {
-                    Some(ID_SEND) => {
-                        let files = tray.pick_files(s.pick_title);
-                        if !files.is_empty()
-                            && let Err(e) = spawn_sender(&files)
-                        {
-                            tray.balloon("Hoppy", &format!("{e:#}"), true);
+                    Some(ID_SEND) => match tray.pick_files(s.pick_title) {
+                        Ok(files) if files.is_empty() => {}
+                        Ok(files) => {
+                            if let Err(e) = spawn_sender(&files) {
+                                tray.balloon("Hoppy", &format!("{e:#}"), true);
+                            }
                         }
-                    }
+                        Err(TooManyFiles) => win::message_box_error("Hoppy", s.too_many_files),
+                    },
                     Some(ID_OPEN) => open_dir(&dir),
                     Some(ID_QUIT) => break,
                     _ => {}
@@ -454,7 +469,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         let Some(peer) = peers.get((id - ID_PEER) as usize).cloned() else {
                             break;
                         };
-                        let name = peer.device.name.clone();
+                        let name = display_name(&peer.device.name);
                         tray.set_tip(&fill(s.waiting, &[("name", &name)]));
                         let files = files.take().unwrap_or_default();
                         spawn_send(me.clone(), peer, files, &state, tray.waker());
@@ -474,9 +489,9 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         Ok(SendOutcome::Declined(reason)) => {
                             // "declined" = the user said No; other reasons are protocol limits.
                             let reason = reason.filter(|r| r != "declined").unwrap_or_default();
-                            (s.declined, reason, true)
+                            (s.declined, display_text(&reason, SHOW_TEXT_MAX), true)
                         }
-                        Err(e) => (s.send_failed, e, true),
+                        Err(e) => (s.send_failed, display_text(&e, SHOW_TEXT_MAX), true),
                     };
                     let title = fill(title, &[("name", name)]);
                     tray.set_tip(&title);
@@ -606,6 +621,36 @@ mod tests {
             addr: "10.0.0.2:47471".parse().unwrap(),
         };
         assert_eq!(peer_label(&peer), "Pixel & co · Android");
+        let spoof = Peer {
+            device: DeviceInfo {
+                id: "y".into(),
+                name: "Mario\u{202E}\u{0}".into(),
+                platform: "\u{2066}toaster".into(),
+            },
+            ..peer
+        };
+        assert_eq!(peer_label(&spoof), "Mario · toaster");
+    }
+
+    #[test]
+    fn offer_body_shows_cleaned_text() {
+        let file = |name: &str| hoppy_core::protocol::FileEntry {
+            name: name.into(),
+            size: 1,
+        };
+        let offer = Offer {
+            sender: DeviceInfo {
+                id: "x".into(),
+                name: "Pixel\u{202E}\n".into(),
+                platform: "android\u{200F}".into(),
+            },
+            files: vec![file("../../a\u{202E}gpj.exe"), file("..")],
+        };
+        let body = offer_body(&EN, &offer, "10.0.0.9:1".parse().unwrap());
+        assert_eq!(
+            body,
+            "Pixel (android, 10.0.0.9) wants to send you 2 file(s), 2 B:\n• agpj.exe\n• (?)"
+        );
     }
 
     fn quiet_discovery(name: &str, transfer_port: u16, seed: Option<u16>) -> Discovery {

@@ -40,9 +40,15 @@ object ShareTargets {
     fun isValidPeerId(id: String): Boolean =
         id.length in 1..MAX_ID && id.all { (it in 'a'..'z') || (it in 'A'..'Z') || (it in '0'..'9') || it in "-_." }
 
-    /** Label-safe device name: no control characters, trimmed, bounded, never empty. */
-    fun cleanName(name: String): String =
-        name.filterNot { it.isISOControl() }.trim().take(MAX_NAME).ifEmpty { "?" }
+    /**
+     * Label-safe device name: no control or Unicode format characters (bidi overrides),
+     * trimmed, bounded, never empty. Never contains a tab or newline ([encode] relies on it).
+     */
+    fun cleanName(name: String): String = SafeText.label(name, MAX_NAME)
+
+    /** Peer id to preselect from a launch intent, only if it is a device we already sent to. */
+    fun recentPeer(peerId: String?, recent: List<RecentTarget>): String? =
+        peerId?.takeIf { id -> isValidPeerId(id) && recent.any { it.peerId == id } }
 
     /** Moves (or adds) [target] to the front and keeps at most [max] entries. */
     fun bump(recent: List<RecentTarget>, target: RecentTarget, max: Int = MAX_DEVICES): Bumped {

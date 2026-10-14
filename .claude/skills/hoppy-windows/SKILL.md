@@ -37,8 +37,9 @@ PoC UX (no console windows):
   and `...\Startup\Hoppy receiver.lnk` → `hoppyw.exe`.
 - `crates/hoppy-cli/build.rs` — embeds `assets/brand/hoppy.ico` as icon resource **id 1** in
   both exes (the tray loads it with `LoadImageW`).
-- `apps/windows/hoppy.iss` — Inno Setup: installs both exes, kills running copies in
-  `PrepareToInstall` (upgrade from the 0.1.0 console receiver), Start menu "Hoppy" → `hoppyw.exe`.
+- `apps/windows/hoppy.iss` — Inno Setup: installs both exes, stops copies running from
+  `{app}` (PowerShell, path-filtered) in `PrepareToInstall` (upgrade from the 0.1.0 console
+  receiver) and on uninstall (`usUninstall`), Start menu "Hoppy" → `hoppyw.exe`.
 - `apps/windows/install.ps1` — portable zip install into `%LOCALAPPDATA%\Programs\Hoppy`.
 - Docs: `docs/platforms/windows.md`.
 
@@ -51,6 +52,9 @@ PoC UX (no console windows):
 - Tray menus: `SetForegroundWindow(hwnd)` before `TrackPopupMenu`, `PostMessage(WM_NULL)`
   after, or the menu does not close. The send menu relies on the foreground right Explorer
   hands to the process it launches.
+- Network text (device names, platforms, file names, remote errors) goes through
+  `display_name`/`display_platform`/`display_file_name`/`display_text` (lib.rs) before
+  any dialog, menu, tooltip or balloon: no control/bidi chars, capped length.
 - `&` in menu text is an accelerator: escape device names (`&&`), done in `popup_menu`.
 - Each exe path gets its own firewall rule: the first `hoppyw` receive triggers the prompt
   again even if `hoppy.exe` was allowed; the user must allow **Private** networks.

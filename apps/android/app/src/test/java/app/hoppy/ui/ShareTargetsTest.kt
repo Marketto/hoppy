@@ -47,6 +47,24 @@ class ShareTargetsTest {
     }
 
     @Test
+    fun cleanNameStripsFormatCharacters() {
+        assertEquals("Laptopexe.pdf", ShareTargets.cleanName("Lap\u202Etop\u200Bexe.pdf"))
+        assertEquals("?", ShareTargets.cleanName("\u202E\u2066"))
+        val decoded = ShareTargets.decode(ShareTargets.encode(listOf(RecentTarget("a", "x\u202Ey"))))
+        assertEquals(listOf(RecentTarget("a", "xy")), decoded)
+    }
+
+    @Test
+    fun recentPeerOnlyForKnownValidIds() {
+        val recent = listOf(RecentTarget(uuid, "Laptop"), RecentTarget("b", "Phone"))
+        assertEquals(uuid, ShareTargets.recentPeer(uuid, recent))
+        assertNull(ShareTargets.recentPeer("5f0c2b7e-0000-4c3b-9e8f-0a1b2c3d4e5f", recent))
+        assertNull(ShareTargets.recentPeer(null, recent))
+        assertNull(ShareTargets.recentPeer(uuid, emptyList()))
+        assertNull(ShareTargets.recentPeer("b\n", recent))
+    }
+
+    @Test
     fun decodeSkipsGarbage() {
         assertEquals(emptyList<RecentTarget>(), ShareTargets.decode(null))
         assertEquals(emptyList<RecentTarget>(), ShareTargets.decode(""))

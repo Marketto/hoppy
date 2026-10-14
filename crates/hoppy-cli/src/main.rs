@@ -6,13 +6,14 @@ use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use hoppy::{
-    bind_receiver, config, default_receive_dir, human, parse_direct, parse_seeds, platform,
-    start_discovery,
+    DialogGuard, bind_receiver, config, default_receive_dir, display_file_name, display_name,
+    display_platform, human, parse_direct, parse_seeds, platform, start_discovery,
 };
 use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
@@ -255,26 +256,32 @@ fn cmd_receive(
     if yes {
         println!("   ⚠ Auto-accept is ON: anyone on this network can send you files.");
     }
-    serve(listener, dir, Arc::new(CliReceiver { auto_accept: yes }))
+    let handler = CliReceiver {
+        auto_accept: yes,
+        asking: AtomicBool::new(false),
+    };
+    serve(listener, dir, Arc::new(handler))
 }
 
 struct CliReceiver {
     auto_accept: bool,
+    /// One prompt at a time; offers arriving meanwhile are declined.
+    asking: AtomicBool,
 }
 
 impl ReceiveHandler for CliReceiver {
     fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
-        let names: Vec<&str> = offer
+        let names: Vec<String> = offer
             .files
             .iter()
             .take(5)
-            .map(|f| f.name.as_str())
+            .map(|f| display_file_name(&f.name))
             .collect();
         let more = offer.files.len().saturating_sub(names.len());
         let mut body = format!(
             "{} ({}, {}) wants to send {} file(s), {}:\n• {}",
-            offer.sender.name,
-            offer.sender.platform,
+            display_name(&offer.sender.name),
+            display_platform(&offer.sender.platform),
             from.ip(),
             offer.files.len(),
             human(offer.total_size()),
@@ -287,6 +294,10 @@ impl ReceiveHandler for CliReceiver {
             println!("\n{body}\n→ accepted automatically");
             return true;
         }
+        let Some(_asking) = DialogGuard::try_take(&self.asking) else {
+            println!("\n{body}\n→ declined: another offer is waiting for an answer");
+            return false;
+        };
         platform::ask_accept("Hoppy — incoming files", &body)
     }
 

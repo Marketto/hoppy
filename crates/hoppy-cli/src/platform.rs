@@ -80,6 +80,10 @@ pub enum TrayEvent {
     Timer(usize),
 }
 
+/// `Tray::pick_files`: the selection did not fit the dialog's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooManyFiles;
+
 /// One entry of a popup menu. Ids must be non-zero (0 means "dismissed").
 #[derive(Debug, Clone, Copy)]
 pub enum MenuItem<'a> {
@@ -146,8 +150,8 @@ pub mod win {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::CreateMutexW;
     use windows_sys::Win32::UI::Controls::Dialogs::{
-        GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY,
-        OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        CommDlgExtendedError, FNERR_BUFFERTOOSMALL, GetOpenFileNameW, OFN_ALLOWMULTISELECT,
+        OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
     use windows_sys::Win32::UI::Shell::{
         NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD,
@@ -158,15 +162,16 @@ pub mod win {
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
         DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, GetSystemMetrics,
         HICON, IDI_APPLICATION, IDYES, IMAGE_ICON, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
-        LoadImageW, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL,
-        MB_TOPMOST, MB_YESNO, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW, PostMessageW,
-        RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL,
-        SetForegroundWindow, SetProcessDPIAware, SetTimer, TPM_BOTTOMALIGN, TPM_NONOTIFY,
-        TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CONTEXTMENU,
-        WM_NULL, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+        LoadImageW, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
+        MB_SYSTEMMODAL, MB_TOPMOST, MB_YESNO, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
+        MessageBoxW, PostMessageW, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON,
+        SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetProcessDPIAware, SetTimer,
+        TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+        TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+        WS_OVERLAPPED,
     };
 
-    use super::{MenuItem, TrayEvent, copy_wide, parse_multiselect};
+    use super::{MenuItem, TooManyFiles, TrayEvent, copy_wide, parse_multiselect};
 
     const WM_TRAY: u32 = WM_APP + 1;
     const WM_WAKE: u32 = WM_APP + 2;
@@ -209,9 +214,11 @@ pub mod win {
         lang & 0x3ff == LANG_ITALIAN
     }
 
+    /// Yes/No with **No** as the default button: the dialog pops up over whatever the user
+    /// is typing into, and a stray Enter/Space must not accept files.
     pub fn message_box_yes_no(title: &str, body: &str) -> bool {
         let (title, body) = (wide(title), wide(body));
-        let style = MB_YESNO | MB_ICONQUESTION | MB_SYSTEMMODAL | MB_SETFOREGROUND;
+        let style = MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION | MB_SYSTEMMODAL | MB_SETFOREGROUND;
         // SAFETY: both strings are NUL-terminated UTF-16 buffers alive for the call.
         unsafe { MessageBoxW(null_mut(), body.as_ptr(), title.as_ptr(), style) == IDYES }
     }
@@ -476,7 +483,7 @@ pub mod win {
         }
 
         /// Native "Open" dialog with multi-select; empty if cancelled.
-        pub fn pick_files(&self, title: &str) -> Vec<PathBuf> {
+        pub fn pick_files(&self, title: &str) -> Result<Vec<PathBuf>, TooManyFiles> {
             let mut buf = vec![0u16; 64 * 1024];
             let title = wide(title);
             let mut ofn = OPENFILENAMEW {
@@ -498,9 +505,15 @@ pub mod win {
                 GetOpenFileNameW(&mut ofn)
             };
             if ok == 0 {
-                return Vec::new();
+                // SAFETY: no arguments; reads the error of the dialog call just above.
+                return match unsafe { CommDlgExtendedError() } {
+                    FNERR_BUFFERTOOSMALL => Err(TooManyFiles),
+                    _ => Ok(Vec::new()), // cancelled (0) or a dialog failure
+                };
             }
-            parse_multiselect(&buf, |w| PathBuf::from(OsString::from_wide(w)))
+            Ok(parse_multiselect(&buf, |w| {
+                PathBuf::from(OsString::from_wide(w))
+            }))
         }
 
         /// Pumps messages until the window reports something; `None` on WM_QUIT.
@@ -643,7 +656,7 @@ pub mod win {
 
     use anyhow::{Result, bail};
 
-    use super::{MenuItem, TrayEvent};
+    use super::{MenuItem, TooManyFiles, TrayEvent};
 
     pub struct InstanceGuard;
 
@@ -696,7 +709,7 @@ pub mod win {
         pub fn popup_menu(&self, _items: &[MenuItem<'_>], _above: bool) -> Option<u32> {
             match self.0 {}
         }
-        pub fn pick_files(&self, _title: &str) -> Vec<PathBuf> {
+        pub fn pick_files(&self, _title: &str) -> Result<Vec<PathBuf>, TooManyFiles> {
             match self.0 {}
         }
         pub fn next_event(&self) -> Option<TrayEvent> {

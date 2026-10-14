@@ -8,10 +8,14 @@
   the CLI for scripts and tests. Without `hoppyw.exe`, `hoppy install` falls back to the
   console flow (`hoppy send --pause`, `hoppy receive` minimized).
 - Receive: the tray icon (tooltip "Hoppy · *device name*") means Hoppy is ready. A Yes/No
-  dialog appears for each incoming transfer; files go to `Downloads\Hoppy`; a notification
-  says what arrived and opens the folder when clicked. `hoppy receive --yes` (CLI) skips
-  the question (trusted networks only).
+  dialog appears for each incoming transfer (default button **No**, so a stray Enter does
+  not accept); while it is open, further offers are declined. It shows file names as they
+  will be saved (§4 sanitizer) and strips control/bidi characters from names. Files go to
+  `Downloads\Hoppy`; a notification says what arrived and opens the folder when clicked.
+  `hoppy receive --yes` (CLI) skips the question (trusted networks only).
 - Tray menu (left or right click): *Send files…*, *Open received folder*, *Quit*.
+- Installer upgrades/uninstalls stop only the `hoppy.exe`/`hoppyw.exe` running from the
+  install folder (PowerShell, path-filtered), not same-named programs elsewhere.
 - Send: right click files → *Send to* → *Hoppy* (Windows 11: *Show more options* first, or
   Shift+right-click) → a menu at the mouse lists nearby devices → click one. Progress is in
   the tray icon tooltip; a notification confirms delivery (or the refusal).

@@ -20,8 +20,11 @@ Two modules in `apps/android/`:
     (`ThemedActivity`, `PeerAdapter`, `UriSource`, `Format`).
   - `ui/ShareShortcuts.kt` + `res/xml/shortcuts.xml` — sharing shortcuts (Direct Share):
     generic "Hoppy · nearby" at app start, one per recent device after a delivered send
-    (max 4); `SendActivity` reads `Intent.EXTRA_SHORTCUT_ID` and auto-sends to that device
-    when found (6 s, then the list). Pure ids/ranking in `ui/ShareTargets.kt` (+ test).
+    (max 4); `SendActivity` reads `Intent.EXTRA_SHORTCUT_ID` and **preselects** that device
+    (framed, top of list, "Send to <name> / <IP>" button; 6 s, then the list) — never
+    auto-sends. Pure ids/ranking in `ui/ShareTargets.kt` (+ test).
+  - `ui/SafeText.kt` (pure, + test) — labels without control/bidi chars, outgoing file
+    names, which shared URIs may be read (`content:` of other apps only).
     Home "Send files" forwards picked URIs as `ACTION_SEND(_MULTIPLE)` + ClipData + grant.
   - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
     all animated views (see `hoppy-themes`).
@@ -37,6 +40,11 @@ Two modules in `apps/android/`:
 - Content URIs with unknown size are copied to cache first (protocol needs sizes).
 - Shortcut ids/labels come from peers: validate ids (`ShareTargets.isValidPeerId`) and
   clean names before publishing; keep the share-target category in sync with `ShareTargets.CATEGORY`.
+- `SendActivity` and `MainActivity` are exported: never start a transfer from intent
+  extras without a user tap; honour a requested device only if it is a recent target
+  (`ShareTargets.recentPeer`) or carries the in-process token. Never read `file:` URIs or
+  our own providers; never use a provider's `DISPLAY_NAME` as a path.
+- Show peer text through `SafeText.label` / `SafeText.offeredFileName`.
 
 ## Build & verify
 

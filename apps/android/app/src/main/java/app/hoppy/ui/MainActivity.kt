@@ -94,10 +94,14 @@ class MainActivity : ThemedActivity() {
         if (::b.isInitialized) handleShortcut(intent)
     }
 
-    /** Launcher long-press shortcut ("Hoppy · nearby" or a device): open the picker. */
+    /**
+     * Launcher long-press shortcut ("Hoppy · nearby" or a device): open the picker. This
+     * action is exported, so the device is only a preselection (SendActivity asks for a
+     * tap) and only for a device we already sent to.
+     */
     private fun handleShortcut(intent: Intent) {
         if (intent.action != ACTION_SEND_FILES) return
-        pickFor(intent.getStringExtra(EXTRA_PEER)?.takeIf(ShareTargets::isValidPeerId))
+        pickFor(ShareTargets.recentPeer(intent.getStringExtra(EXTRA_PEER), Prefs.recentTargets(this)))
     }
 
     /** Thumb/track tinted per theme; the thumb springs (overshoot) when toggled. */
