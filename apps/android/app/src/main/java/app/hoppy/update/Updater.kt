@@ -38,7 +38,6 @@ import kotlin.concurrent.thread
 object Updater {
     private const val REPO = "Marketto/hoppy"
     private const val API_LATEST = "https://api.github.com/repos/$REPO/releases/latest"
-    private const val DOWNLOAD = "https://github.com/$REPO/releases/latest/download/"
     private const val MAX_JSON = 512 * 1024
     private const val MAX_SUMS = 64 * 1024
     private const val MAX_APK = 200L * 1024 * 1024
@@ -47,6 +46,7 @@ object Updater {
     const val NOTIF_PROGRESS = 51
 
     private val busy = AtomicBoolean(false)
+    private val checking = AtomicBoolean(false)
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
     @Volatile private var visibleActivities = 0
 
@@ -80,28 +80,41 @@ object Updater {
         return Prefs.latestVersion(ctx)?.takeIf { UpdateLogic.isNewer(it, current) }
     }
 
-    /** Checks GitHub at most once per 24 h on a background thread; errors are ignored. */
+    /**
+     * Checks GitHub at most once per 24 h on a background thread; errors are ignored and
+     * do not count as a check (the timestamp is stored only after a complete response).
+     */
     fun maybeCheck(ctx: Context) {
         val app = ctx.applicationContext
         val current = currentVersion(app)
         if (UpdateLogic.isDevBuild(current)) return
         val now = System.currentTimeMillis()
         if (!UpdateLogic.shouldCheck(now, Prefs.updateCheckedAt(app))) return
-        Prefs.setUpdateCheckedAt(app, now)
+        if (!checking.compareAndSet(false, true)) return
         Prefs.updateToken(app) // created here, not concurrently from the check thread
         thread(name = "hoppy-update-check", isDaemon = true) {
-            runCatching {
-                val json = String(get(API_LATEST, current, json = true).use { readCapped(it, MAX_JSON) }, Charsets.UTF_8)
-                val latest = UpdateLogic.latestVersion(json) ?: return@runCatching
-                Prefs.setLatestVersion(app, latest)
-                if (UpdateLogic.isNewer(latest, current)) {
-                    if (Prefs.updateNotified(app) != latest) {
-                        Prefs.setUpdateNotified(app, latest)
-                        notifyAvailable(app, latest)
-                    }
-                    changed()
-                }
+            try {
+                check(app, current)
+            } catch (@Suppress("UNUSED_PARAMETER") e: Exception) {
+                // Silent: the timestamp is not stored, so the next start retries.
+            } finally {
+                checking.set(false)
             }
+        }
+    }
+
+    private fun check(app: Context, current: String) {
+        val json = String(get(API_LATEST, current, json = true).use { readCapped(it, MAX_JSON) }, Charsets.UTF_8)
+        // Only a complete response counts as a check: errors retry on the next start.
+        Prefs.setUpdateCheckedAt(app, System.currentTimeMillis())
+        val latest = UpdateLogic.latestRelease(json) ?: return
+        Prefs.setLatestRelease(app, latest.version, latest.tag)
+        if (UpdateLogic.isNewer(latest.version, current)) {
+            if (Prefs.updateNotified(app) != latest.version) {
+                Prefs.setUpdateNotified(app, latest.version)
+                notifyAvailable(app, latest.version)
+            }
+            changed()
         }
     }
 
@@ -137,8 +150,9 @@ object Updater {
     }
 
     /**
-     * Downloads the latest APK, verifies it against SHA256SUMS.txt and hands it to the
-     * PackageInstaller. Call only after a user tap and with install permission granted.
+     * Downloads the APK of the release seen by the last check (same tag for the APK and
+     * SHA256SUMS.txt), verifies the hash and hands it to the PackageInstaller. Call only
+     * after a user tap and with install permission granted.
      */
     fun download(ctx: Context) {
         val app = ctx.applicationContext
@@ -150,12 +164,19 @@ object Updater {
             val apk = File(dir, UpdateLogic.APK_ASSET)
             try {
                 val ua = currentVersion(app)
+                val tag = Prefs.latestTag(app)
+                val sumsUrl = tag?.let { UpdateLogic.assetUrl(it, UpdateLogic.SUMS_ASSET) }
+                val apkUrl = tag?.let { UpdateLogic.assetUrl(it, UpdateLogic.APK_ASSET) }
+                if (sumsUrl == null || apkUrl == null || UpdateLogic.normalize(tag) != Prefs.latestVersion(app)) {
+                    Prefs.setUpdateCheckedAt(app, 0L) // check again on the next start
+                    throw IOException("unknown release, try again later")
+                }
                 progress(app, -1)
-                val sums = String(get(DOWNLOAD + UpdateLogic.SUMS_ASSET, ua).use { readCapped(it, MAX_SUMS) }, Charsets.UTF_8)
+                val sums = String(get(sumsUrl, ua).use { readCapped(it, MAX_SUMS) }, Charsets.UTF_8)
                 val expected = UpdateLogic.expectedSha256(sums) ?: throw IOException("no checksum for ${UpdateLogic.APK_ASSET}")
                 dir.deleteRecursively()
                 if (!dir.mkdirs()) throw IOException("cannot create ${dir.name}")
-                val actual = fetchApk(app, ua, apk)
+                val actual = fetchApk(app, apkUrl, ua, apk)
                 if (actual != expected) {
                     apk.delete()
                     fail(app, app.getString(R.string.update_bad_checksum))
@@ -175,8 +196,8 @@ object Updater {
     }
 
     /** Streams the APK to [dest] with progress; returns its SHA-256 (hex). */
-    private fun fetchApk(app: Context, ua: String, dest: File): String {
-        val conn = open(DOWNLOAD + UpdateLogic.APK_ASSET, ua, json = false)
+    private fun fetchApk(app: Context, url: String, ua: String, dest: File): String {
+        val conn = open(url, ua, json = false)
         try {
             val total = conn.contentLengthLong
             if (total > MAX_APK) throw IOException("download too large")

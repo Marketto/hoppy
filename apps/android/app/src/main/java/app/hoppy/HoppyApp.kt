@@ -122,8 +122,11 @@ object Prefs {
     /** Newest release version seen on GitHub (without the leading "v"). */
     fun latestVersion(ctx: Context): String? = sp(ctx).getString("update_latest", null)
 
-    fun setLatestVersion(ctx: Context, value: String) {
-        sp(ctx).edit().putString("update_latest", value).apply()
+    /** Release tag of [latestVersion] as published (e.g. "v0.2.0"): the APK is fetched from it. */
+    fun latestTag(ctx: Context): String? = sp(ctx).getString("update_latest_tag", null)
+
+    fun setLatestRelease(ctx: Context, version: String, tag: String) {
+        sp(ctx).edit().putString("update_latest", version).putString("update_latest_tag", tag).apply()
     }
 
     /** Version the "update available" notification was posted for (once per version). */

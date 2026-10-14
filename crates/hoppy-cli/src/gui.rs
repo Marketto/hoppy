@@ -376,6 +376,10 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
 
     let updates = Arc::new(Mutex::new(Updates::default()));
     let mode = update_mode();
+    // Installers of earlier updates (their folder could not be removed while they ran).
+    thread::spawn(|| {
+        update::remove_stale_update_dirs(&std::env::temp_dir(), update::STALE_UPDATE_DIR)
+    });
     if mode != UpdateMode::Off {
         spawn_update_checker(&updates, tray.waker());
     }
@@ -588,8 +592,8 @@ fn start_update(
     waker.wake(); // show 0% now
     let updates = Arc::clone(updates);
     thread::spawn(move || {
-        let dir = std::env::temp_dir();
-        let result = update::download(&WinHttp, &release, &dir, &mut |pct| {
+        let temp = std::env::temp_dir();
+        let result = update::download_fresh(&WinHttp, &release, &temp, &mut |pct| {
             let mut u = lock(&updates);
             if u.downloading != Some(pct) {
                 u.downloading = Some(pct);

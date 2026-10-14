@@ -64,8 +64,9 @@ Name: "{userprograms}\Hoppy"; Filename: "{app}\hoppyw.exe"; Comment: "Hoppy"
 ; crates/hoppy-cli/src/platform.rs.
 Filename: "{app}\hoppy.exe"; Parameters: "install"; Flags: runhidden waituntilterminated
 Filename: "{app}\hoppyw.exe"; Description: "{cm:StartNow}"; Flags: postinstall nowait skipifsilent
-; Update started by the tray (hoppyw runs Setup with /SILENT ... /UPDATE=1 and exits, see
-; crates/hoppy-cli/src/update.rs): bring the tray back when done.
+; Update started by the tray (hoppyw runs Setup with /VERYSILENT ... /UPDATE=1 and exits, see
+; crates/hoppy-cli/src/update.rs): bring the tray back when done. If setup fails or stops
+; early, DeinitializeSetup (see [Code]) relaunches it instead.
 Filename: "{app}\hoppyw.exe"; Flags: nowait runasoriginaluser; Check: IsUpdate
 
 [UninstallRun]
@@ -81,6 +82,34 @@ en.FinishedLabel=Hoppy is installed and receives files in the background: look f
 function IsUpdate(): Boolean;
 begin
   Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
+// Set at ssPostInstall: the files are in place and [Run] relaunches the tray itself.
+var
+  InstallFinished: Boolean;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    InstallFinished := True;
+end;
+
+// Update that failed or was aborted: the tray had already exited, bring back the copy
+// that is still installed (an extra launch is harmless, hoppyw is single-instance).
+procedure RelaunchTrayAfterFailedUpdate();
+var
+  Exe: String;
+  ResultCode: Integer;
+begin
+  if not IsUpdate() or InstallFinished then
+    Exit;
+  try
+    // {app} raises if Setup stopped before it was set: then there is nothing to relaunch.
+    Exe := ExpandConstant('{app}\hoppyw.exe');
+    if FileExists(Exe) then
+      ExecAsOriginalUser(Exe, '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
+  except
+  end;
 end;
 
 // Stops hoppy.exe / hoppyw.exe, but only the copies running from this install folder (an
@@ -203,4 +232,5 @@ procedure DeinitializeSetup();
 begin
   if MusicReady then
     StopMusic();
+  RelaunchTrayAfterFailedUpdate();
 end;

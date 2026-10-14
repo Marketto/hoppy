@@ -25,10 +25,24 @@ The **Windows tray updater** (`crates/hoppy-cli/src/update.rs`, docs/platforms/w
 "Updates") relies on the same contract: it reads `tag_name` (`vX.Y.Z`) from
 `releases/latest`, downloads `Hoppy-Setup-x64.exe` and `SHA256SUMS.txt` from
 `releases/download/<tag>/`, refuses the installer unless its SHA-256 matches the
-`Hoppy-Setup-x64.exe` line, then runs it with `/SILENT /SUPPRESSMSGBOXES /NORESTART
-/UPDATE=1` (`hoppy.iss` relaunches the tray when it sees `/UPDATE=1`). A release without both
-assets is not offered. **Never rename `Hoppy-Setup-x64.exe` or `SHA256SUMS.txt`**, never drop
-the installer from the sums, and keep tags `v` + plain `X.Y.Z`.
+`Hoppy-Setup-x64.exe` line, then runs it with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+/UPDATE=1` (`hoppy.iss` relaunches the tray when it sees `/UPDATE=1`, also if setup fails). A
+release without both assets is not offered. **Never rename `Hoppy-Setup-x64.exe` or
+`SHA256SUMS.txt`**, never drop the installer from the sums, and keep tags `v` + plain `X.Y.Z`.
+
+**Trust model of updates.** `SHA256SUMS.txt` comes from the same GitHub Release as the
+installer, so it proves *integrity* (no corrupted or truncated download), not *authenticity*:
+anyone who can publish a Release on this repository (a stolen token, a compromised account or
+workflow) can ship a matching installer and sums. Authenticity rests on GitHub and on the
+security of the repository and its CI. Consequences:
+
+- **Windows:** the installer is **not signed** today. Planned: Authenticode-sign
+  `Hoppy-Setup-x64.exe` (and both exes) in `release.yml` with a key from CI secrets, and have
+  the tray verify the signature and publisher (`WinVerifyTrust`) before launching it.
+- **Android:** updates install only if signed with the **same key** as the installed app.
+  The keystore and its `ANDROID_*` CI secrets must never go missing or be rotated casually:
+  losing them means no installed app can ever update again (users would have to uninstall).
+  Keep an offline backup outside GitHub.
 
 ## Cutting a release
 

@@ -49,9 +49,11 @@ JSON, `SHA256SUMS.txt` parsing; unit-tested), `update/InstallReceiver.kt`.
 - **Check**: when the home screen starts, at most once per 24 h (`Prefs.updateCheckedAt`),
   a background thread GETs `https://api.github.com/repos/Marketto/hoppy/releases/latest`
   (`HttpURLConnection`, `User-Agent: Hoppy/<versionName>`, 15 s/30 s timeouts). Silent on any
-  error. Builds whose `versionName` contains `-dev` (local/CI builds) never check.
-  A release counts only if its `tag_name` parses as semver (leading `v` ignored,
-  pre-release older than the release) and it carries `Hoppy-android.apk`.
+  error; the timestamp is stored only after a complete response, so a failed check
+  retries on the next start. Builds whose `versionName` contains `-dev` (local/CI builds)
+  never check. A release counts only if its `tag_name` is exactly `[vV]?X.Y.Z` (it is
+  used in the download URL) and it carries both `Hoppy-android.apk` and `SHA256SUMS.txt`;
+  version and tag are stored together. Pre-releases are never offered (as on Windows).
 - **Newer version**: one notification per version on the *Updates* channel (`updates`,
   default importance): "Hoppy <ver> is available — tap to update"; plus a small banner on
   the home screen (peer-row card + `colorOnSurface`, so it inherits the contrast-checked
@@ -62,7 +64,8 @@ JSON, `SHA256SUMS.txt` parsing; unit-tested), `update/InstallReceiver.kt`.
   (`canRequestPackageInstalls()` false) the system page
   `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` for our package opens first and the update
   continues when the user comes back with it allowed. Then: `SHA256SUMS.txt` and
-  `Hoppy-android.apk` from `releases/latest/download/` (redirects stay on https) into
+  `Hoppy-android.apk` from `releases/download/<tag>/` of the stored tag, so both come
+  from the same release (redirects stay on https; no stored tag → error and a new check) into
   `cacheDir/updates/`, progress in a silent notification, SHA-256 compared with the listed
   hash, package name checked, then a `PackageInstaller` session (`createSession` /
   `openWrite` / `commit`) and the file is deleted. `InstallReceiver` gets the status:

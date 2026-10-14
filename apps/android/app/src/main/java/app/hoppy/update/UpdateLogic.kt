@@ -40,9 +40,15 @@ object UpdateLogic {
         return comparePre(x.pre, y.pre)
     }
 
-    /** True only when [remote] is a valid version strictly newer than [current]. */
-    fun isNewer(remote: String?, current: String): Boolean =
-        remote != null && (compare(remote, current) ?: 0) > 0
+    /**
+     * True only when [remote] is a valid release (no pre-release part, never offered, as on
+     * Windows) strictly newer than [current].
+     */
+    fun isNewer(remote: String?, current: String): Boolean {
+        if (remote == null) return false
+        val r = parse(remote.trim().removePrefix("v").removePrefix("V")) ?: return false
+        return r.pre.isEmpty() && (compare(remote, current) ?: 0) > 0
+    }
 
     private class Version(val core: List<Long>, val pre: List<String>)
 
@@ -86,16 +92,40 @@ object UpdateLogic {
         else -> 0
     }
 
+    /** A release seen on GitHub: [version] without the `v`, [tag] exactly as published. */
+    data class Release(val version: String, val tag: String)
+
+    /** Only plain `vX.Y.Z` / `X.Y.Z` tags are accepted: the tag ends up in a download URL. */
+    private val TAG = Regex("""^[vV]?\d{1,9}\.\d{1,9}\.\d{1,9}$""")
+
+    fun isValidTag(tag: String?): Boolean = tag != null && TAG.matches(tag)
+
+    private const val DOWNLOAD_BASE = "https://github.com/Marketto/hoppy/releases/download/"
+
     /**
-     * Newest version from the `releases/latest` JSON, only if the release carries the APK.
-     * Regex instead of org.json so this stays testable off-device; the response is
-     * untrusted, so the tag must also parse as a version.
+     * Download URL of [asset] in the release [tag] (not `releases/latest/download`, so the
+     * checksums and the APK always come from the same release); null for an invalid tag.
      */
-    fun latestVersion(json: String): String? {
-        val tag = Regex(""""tag_name"\s*:\s*"([^"\\]{1,64})"""").find(json)?.groupValues?.get(1)
-        val hasApk = Regex(""""name"\s*:\s*"${Regex.escape(APK_ASSET)}"""").containsMatchIn(json)
-        return if (hasApk) normalize(tag) else null
+    fun assetUrl(tag: String, asset: String): String? =
+        if (isValidTag(tag)) "$DOWNLOAD_BASE$tag/$asset" else null
+
+    /**
+     * Newest release from the `releases/latest` JSON, only if it carries both the APK and
+     * SHA256SUMS.txt. Regex instead of org.json so this stays testable off-device; the
+     * response is untrusted, so the tag must match [TAG].
+     */
+    fun latestRelease(json: String): Release? {
+        val tag = Regex(""""tag_name"\s*:\s*"([^"\\]{1,64})"""").find(json)?.groupValues?.get(1) ?: return null
+        if (!isValidTag(tag)) return null
+        val hasAll = listOf(APK_ASSET, SUMS_ASSET).all {
+            Regex(""""name"\s*:\s*"${Regex.escape(it)}"""").containsMatchIn(json)
+        }
+        if (!hasAll) return null
+        return normalize(tag)?.let { Release(it, tag) }
     }
+
+    /** Version part of [latestRelease]. */
+    fun latestVersion(json: String): String? = latestRelease(json)?.version
 
     /**
      * Expected SHA-256 (lower-case hex) of [asset] from a `sha256sum` listing

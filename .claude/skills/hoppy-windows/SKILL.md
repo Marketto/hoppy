@@ -32,7 +32,9 @@ PoC UX (no console windows):
 - `crates/hoppy-cli/src/update.rs` — tray update check, pure and Linux-tested: semver
   compare with `CARGO_PKG_VERSION`, `releases/latest` JSON, `SHA256SUMS.txt`, install
   location (`%LOCALAPPDATA%\Programs\Hoppy` = setup, else portable → portal link), and
-  `download` (`*.part`, hashed while written, renamed only if the SHA-256 matches) over an
+  `download_fresh` (new `%TEMP%\Hoppy-update-<uuid>` folder via `create_dir`; `*.part`,
+  hashed while written, renamed only if the SHA-256 matches; stale folders >1 day removed
+  at tray start by `remove_stale_update_dirs`) over an
   `Http` trait (fake in tests). `gui.rs` runs it on worker threads (30 s, then daily),
   shows the bold "Update to X…" item / balloon, runs the installer with `/UPDATE=1` and
   exits. Asset names are a contract with `release.yml` (docs/release.md).
@@ -55,7 +57,8 @@ PoC UX (no console windows):
   music: WAVs as `dontcopy` files → `ExtractTemporaryFile` in `InitializeWizard`, winmm
   `PlaySoundW` imported twice (String name / Longint 0 = stop), skipped if `WizardSilent`,
   stopped in `DeinitializeSetup`. `[Run]` relaunches `hoppyw.exe` when `IsUpdate`
-  (`/UPDATE=1`, passed by the tray updater). Keep every section (`grep -n '^\[' hoppy.iss`) after edits.
+  (`/UPDATE=1`, passed by the tray updater with `/VERYSILENT`); if the update fails or
+  stops before `ssPostInstall`, `DeinitializeSetup` relaunches `{app}\hoppyw.exe` instead. Keep every section (`grep -n '^\[' hoppy.iss`) after edits.
 - `apps/windows/install.ps1` — portable zip install into `%LOCALAPPDATA%\Programs\Hoppy`.
 - Docs: `docs/platforms/windows.md`.
 

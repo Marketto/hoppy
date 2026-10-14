@@ -24,8 +24,19 @@ pub const DOWNLOAD_BASE: &str = "https://github.com/Marketto/hoppy/releases/down
 pub const PORTAL_URL: &str = "https://marketto.github.io/hoppy/";
 pub const INSTALLER_ASSET: &str = "Hoppy-Setup-x64.exe";
 pub const SUMS_ASSET: &str = "SHA256SUMS.txt";
-/// Inno Setup flags; `/UPDATE=1` makes hoppy.iss relaunch the tray when done.
-pub const INSTALLER_ARGS: [&str; 4] = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"];
+/// Inno Setup flags. `/VERYSILENT`: no window, so no Cancel button. `/UPDATE=1` makes
+/// hoppy.iss relaunch the tray when done, and also if setup fails.
+pub const INSTALLER_ARGS: [&str; 4] = [
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART",
+    "/UPDATE=1",
+];
+/// Each download gets its own fresh `%TEMP%\Hoppy-update-<uuid>` folder.
+pub const UPDATE_DIR_PREFIX: &str = "Hoppy-update-";
+/// Older update folders are removed when the tray starts (the installer that ran from one
+/// cannot be deleted while it runs, so the tray never removes the folder right away).
+pub const STALE_UPDATE_DIR: Duration = Duration::from_secs(24 * 3600);
 
 /// First check this long after the tray starts (let login settle), then every `CHECK_EVERY`.
 pub const FIRST_CHECK: Duration = Duration::from_secs(30);
@@ -235,6 +246,64 @@ pub fn download(
         let _ = fs::remove_file(&part);
     }
     verified
+}
+
+/// Downloads like [`download`], but into a new private folder under `temp` (random name,
+/// created with `create_dir`, so it can never be an existing or attacker-made folder).
+/// On error the folder is removed again.
+pub fn download_fresh(
+    http: &dyn Http,
+    release: &Release,
+    temp: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    let dir = temp.join(format!(
+        "{UPDATE_DIR_PREFIX}{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    create_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let result = download(http, release, &dir, progress);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    result
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    // Windows: %TEMP% is per-user and the new folder inherits its owner-only ACL.
+    builder.create(dir) // fails if it already exists
+}
+
+/// Removes `Hoppy-update-*` folders in `temp` last modified more than `max_age` ago.
+/// Best effort; symlinks and plain files with that name are left alone.
+pub fn remove_stale_update_dirs(temp: &Path, max_age: Duration) {
+    let Ok(entries) = fs::read_dir(temp) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(UPDATE_DIR_PREFIX))
+        {
+            continue;
+        }
+        // `DirEntry::metadata` does not follow symlinks.
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if meta.is_dir() && old {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn fetch_to(
@@ -455,5 +524,57 @@ mod tests {
         let err = download(&http, &release, dir.path(), &mut |_| {}).unwrap_err();
         assert!(!err.is::<HashMismatch>());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn download_fresh_uses_a_new_folder_and_cleans_up_on_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let installer = b"MZ fake";
+        let http = fake("v0.2.0", installer, &hex(installer));
+        let release = check(&http, "0.1.0").unwrap().unwrap();
+        let a = download_fresh(&http, &release, temp.path(), &mut |_| {}).unwrap();
+        let b = download_fresh(&http, &release, temp.path(), &mut |_| {}).unwrap();
+        assert_ne!(a.parent(), b.parent());
+        for p in [&a, &b] {
+            let parent = p.parent().unwrap();
+            assert_eq!(parent.parent(), Some(temp.path()));
+            let name = parent.file_name().unwrap().to_str().unwrap();
+            assert!(name.starts_with(UPDATE_DIR_PREFIX));
+            assert_eq!(fs::read(p).unwrap(), installer);
+            assert_eq!(fs::read_dir(parent).unwrap().count(), 1);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(parent).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o700);
+            }
+        }
+
+        let bad = fake("v0.2.0", b"tampered", &hex(b"original"));
+        let err = download_fresh(&bad, &release, temp.path(), &mut |_| {}).unwrap_err();
+        assert!(err.is::<HashMismatch>());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn removes_only_stale_update_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join(format!("{UPDATE_DIR_PREFIX}old"));
+        let other = temp.path().join("not-hoppy");
+        let file = temp.path().join(format!("{UPDATE_DIR_PREFIX}file"));
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("Hoppy-Setup-0.2.0.exe"), b"x").unwrap();
+        fs::create_dir(&other).unwrap();
+        fs::write(&file, b"x").unwrap();
+
+        // Fresh folders survive a 1-day limit...
+        remove_stale_update_dirs(temp.path(), STALE_UPDATE_DIR);
+        assert!(old.exists());
+        // ...and go once older than the limit (zero here; mtime is in the past).
+        std::thread::sleep(Duration::from_millis(20));
+        remove_stale_update_dirs(temp.path(), Duration::from_millis(1));
+        assert!(!old.exists());
+        assert!(other.exists());
+        assert!(file.exists());
     }
 }

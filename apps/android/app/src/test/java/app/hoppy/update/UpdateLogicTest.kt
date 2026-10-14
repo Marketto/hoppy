@@ -40,6 +40,13 @@ class UpdateLogicTest {
     }
 
     @Test
+    fun preReleasesAreNeverOffered() {
+        assertFalse(UpdateLogic.isNewer("1.0.1-rc.1", "1.0.0"))
+        assertFalse(UpdateLogic.isNewer("v2.0.0-beta", "1.0.0"))
+        assertTrue(UpdateLogic.isNewer("1.0.0", "1.0.0-rc.1"))
+    }
+
+    @Test
     fun devBuildsAndInterval() {
         assertTrue(UpdateLogic.isDevBuild("0.1.0-dev"))
         assertFalse(UpdateLogic.isDevBuild("0.2.0"))
@@ -59,9 +66,31 @@ class UpdateLogicTest {
               {"name":"SHA256SUMS.txt","size":3}]}
         """.trimIndent()
         assertEquals("0.2.0", UpdateLogic.latestVersion(json))
+        assertEquals(UpdateLogic.Release("0.2.0", "v0.2.0"), UpdateLogic.latestRelease(json))
+        assertEquals(UpdateLogic.Release("0.2.0", "0.2.0"), UpdateLogic.latestRelease(json.replace("v0.2.0", "0.2.0")))
         assertNull(UpdateLogic.latestVersion(json.replace("Hoppy-android.apk", "other.apk")))
+        assertNull(UpdateLogic.latestVersion(json.replace("SHA256SUMS.txt", "sums.txt")))
         assertNull(UpdateLogic.latestVersion(json.replace("v0.2.0", "nightly")))
+        // The tag goes into a URL: only plain vX.Y.Z is accepted.
+        for (bad in listOf("v0.2", "v0.2.0-rc.1", "v0.2.0+b", "v0.2.0/../x", "0.2.0 ", "vv0.2.0")) {
+            assertNull(UpdateLogic.latestRelease(json.replace("v0.2.0", bad)), bad)
+        }
         assertNull(UpdateLogic.latestVersion("{}"))
+    }
+
+    @Test
+    fun buildsUrlsFromTheSameTag() {
+        assertEquals(
+            "https://github.com/Marketto/hoppy/releases/download/v0.2.0/Hoppy-android.apk",
+            UpdateLogic.assetUrl("v0.2.0", UpdateLogic.APK_ASSET),
+        )
+        assertEquals(
+            "https://github.com/Marketto/hoppy/releases/download/V1.2.3/SHA256SUMS.txt",
+            UpdateLogic.assetUrl("V1.2.3", UpdateLogic.SUMS_ASSET),
+        )
+        assertNull(UpdateLogic.assetUrl("latest", UpdateLogic.APK_ASSET))
+        assertNull(UpdateLogic.assetUrl("v1.2.3/../../x", UpdateLogic.APK_ASSET))
+        assertNull(UpdateLogic.assetUrl("", UpdateLogic.APK_ASSET))
     }
 
     @Test
