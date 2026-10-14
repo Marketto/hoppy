@@ -11,6 +11,7 @@ import androidx.core.view.isVisible
 import app.hoppy.Node
 import app.hoppy.Prefs
 import app.hoppy.R
+import app.hoppy.audio.Music
 import app.hoppy.core.Peer
 import app.hoppy.core.SendOutcome
 import app.hoppy.core.TransferClient
@@ -169,6 +170,7 @@ class SendActivity : ThemedActivity() {
         b.confirm.isVisible = false
         adapter.enabled = false
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Music.transferStarted() // faster loop on the next bar; the receiver stays silent
         // Switch mode while hidden: some Material versions throw when switching a
         // visible indicator to indeterminate.
         b.progress.isIndeterminate = true
@@ -200,6 +202,7 @@ class SendActivity : ThemedActivity() {
     private fun onSendResult(peer: Peer, result: Result<SendOutcome>) {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val outcome = result.getOrNull()
+        Music.transferEnded(delivered = outcome == SendOutcome.Delivered)
         if (outcome == SendOutcome.Delivered) {
             val app = applicationContext
             thread(name = "hoppy-shortcuts") { ShareShortcuts.onDelivered(app, peer.device.id, peer.device.name) }

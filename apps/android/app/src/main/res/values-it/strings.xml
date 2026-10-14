@@ -45,13 +45,15 @@
     <string name="theme_card_description">Tema %1$s, %2$d di %3$d. %4$s</string>
     <string name="theme_selected">%1$s selezionato</string>
     <string name="rename">Nome del dispositivo</string>
+    <!-- Menu, con spunta: musica del tema durante l'invio (mai su chi riceve). -->
+    <string name="music">Musica</string>
     <string name="auto_accept">Accetta automaticamente</string>
     <string name="auto_accept_warning">Chiunque sulla tua rete potrà inviarti file senza chiedere. Usalo solo su reti fidate.</string>
     <string name="platform_unknown">Dispositivo</string>
     <string name="shared_text_file">Testo condiviso.txt</string>
     <string name="channel_receiver">Ricezione</string>
     <string name="channel_incoming">File in arrivo</string>
-    <string name="channel_done">Trasferimenti completati</string>
+    <string name="channel_done">File ricevuti</string>
     <string name="receiver_on">Visibile come %1$s</string>
     <string name="receiver_on_detail">Pronto a ricevere file</string>
     <string name="receiving_progress">Ricezione · %1$d%%</string>
@@ -64,8 +66,8 @@
         <item quantity="other">%1$s vuole inviarti %2$d file (%3$s)</item>
     </plurals>
     <plurals name="received_files">
-        <item quantity="one">%1$d file da %2$s</item>
-        <item quantity="other">%1$d file da %2$s</item>
+        <item quantity="one">Ricevuto %1$d file da %2$s</item>
+        <item quantity="other">Ricevuti %1$d file da %2$s</item>
     </plurals>
     <plurals name="send_summary">
         <item quantity="one">%1$d file · %2$s</item>

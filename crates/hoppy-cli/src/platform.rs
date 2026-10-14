@@ -84,10 +84,23 @@ pub enum TrayEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooManyFiles;
 
+/// Music played by `hoppyw send` (assets/music/desktop_*.wav, embedded on Windows only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tune {
+    /// Loop while searching / choosing a device / waiting for the answer.
+    Idle,
+    /// Faster loop once the receiver has accepted.
+    Transfer,
+    /// One-shot jingle on delivery.
+    Done,
+}
+
 /// One entry of a popup menu. Ids must be non-zero (0 means "dismissed").
 #[derive(Debug, Clone, Copy)]
 pub enum MenuItem<'a> {
     Action(u32, &'a str),
+    /// An action drawn with a check mark when `true`.
+    Check(u32, &'a str, bool),
     /// Not selectable; drawn in normal (not greyed) text for contrast.
     Label(&'a str),
     Separator,
@@ -146,6 +159,9 @@ pub mod win {
         POINT, WPARAM,
     };
     use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+    use windows_sys::Win32::Media::Audio::{
+        PlaySoundW, SND_ASYNC, SND_LOOP, SND_MEMORY, SND_NODEFAULT,
+    };
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -154,8 +170,8 @@ pub mod win {
         OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
     use windows_sys::Win32::UI::Shell::{
-        NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD,
-        NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT,
+        NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND,
+        NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT,
         NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW, ShellExecuteW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -163,15 +179,20 @@ pub mod win {
         DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, GetSystemMetrics,
         HICON, IDI_APPLICATION, IDYES, IMAGE_ICON, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
         LoadImageW, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
-        MB_SYSTEMMODAL, MB_TOPMOST, MB_YESNO, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
-        MessageBoxW, PostMessageW, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON,
+        MB_SYSTEMMODAL, MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_DISABLED, MF_SEPARATOR, MF_STRING,
+        MSG, MessageBoxW, PostMessageW, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON,
         SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetProcessDPIAware, SetTimer,
         TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
         TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
         WS_OVERLAPPED,
     };
 
-    use super::{MenuItem, TooManyFiles, TrayEvent, copy_wide, parse_multiselect};
+    use super::{MenuItem, TooManyFiles, TrayEvent, Tune, copy_wide, parse_multiselect};
+
+    // 'static, so the buffers outlive any asynchronous SND_MEMORY playback.
+    static MUSIC_IDLE: &[u8] = include_bytes!("../../../assets/music/desktop_idle.wav");
+    static MUSIC_TRANSFER: &[u8] = include_bytes!("../../../assets/music/desktop_transfer.wav");
+    static MUSIC_DONE: &[u8] = include_bytes!("../../../assets/music/desktop_done.wav");
 
     const WM_TRAY: u32 = WM_APP + 1;
     const WM_WAKE: u32 = WM_APP + 2;
@@ -206,6 +227,30 @@ pub mod win {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect()
+    }
+
+    /// Starts `tune` asynchronously (loops: Idle, Transfer), replacing whatever this process
+    /// was playing. Silent if the PC has no audio device (SND_NODEFAULT: no beep either).
+    pub fn play_tune(tune: Tune) {
+        let (wav, flags) = match tune {
+            Tune::Idle => (MUSIC_IDLE, SND_LOOP),
+            Tune::Transfer => (MUSIC_TRANSFER, SND_LOOP),
+            Tune::Done => (MUSIC_DONE, 0),
+        };
+        // SAFETY: with SND_MEMORY the "name" is a pointer to a complete WAV image; it is
+        // 'static, so it stays valid for the whole asynchronous playback.
+        unsafe {
+            PlaySoundW(
+                wav.as_ptr().cast(),
+                null_mut(),
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT | flags,
+            )
+        };
+    }
+
+    pub fn stop_tune() {
+        // SAFETY: a null sound stops this process's playback.
+        unsafe { PlaySoundW(null(), null_mut(), 0) };
     }
 
     pub fn ui_language_is_italian() -> bool {
@@ -420,12 +465,16 @@ pub mod win {
         }
 
         /// Balloon (a toast on Windows 10/11). Clicking it yields `TrayEvent::BalloonClick`.
-        pub fn balloon(&self, title: &str, text: &str, error: bool) {
+        /// `sound`: the system notification sound (off only when our own jingle plays).
+        pub fn balloon(&self, title: &str, text: &str, error: bool, sound: bool) {
             let mut nid = self.nid();
             nid.uFlags = NIF_INFO;
             copy_wide(&mut nid.szInfoTitle, title);
             copy_wide(&mut nid.szInfo, if text.is_empty() { " " } else { text });
             nid.dwInfoFlags = if error { NIIF_ERROR } else { NIIF_INFO };
+            if !sound {
+                nid.dwInfoFlags |= NIIF_NOSOUND;
+            }
             // SAFETY: `nid` is fully initialised with the right cbSize.
             unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
         }
@@ -455,6 +504,10 @@ pub mod win {
             for item in items {
                 let (flags, id, text) = match *item {
                     MenuItem::Action(id, t) => (MF_STRING, id as usize, Some(t)),
+                    MenuItem::Check(id, t, on) => {
+                        let check = if on { MF_CHECKED } else { 0 };
+                        (MF_STRING | check, id as usize, Some(t))
+                    }
                     MenuItem::Label(t) => (MF_STRING | MF_DISABLED, 0, Some(t)),
                     MenuItem::Separator => (MF_SEPARATOR, 0, None),
                 };
@@ -656,7 +709,12 @@ pub mod win {
 
     use anyhow::{Result, bail};
 
-    use super::{MenuItem, TooManyFiles, TrayEvent};
+    use super::{MenuItem, TooManyFiles, TrayEvent, Tune};
+
+    /// No music off Windows (the assets are not even embedded).
+    pub fn play_tune(_tune: Tune) {}
+
+    pub fn stop_tune() {}
 
     pub struct InstanceGuard;
 
@@ -694,7 +752,7 @@ pub mod win {
         pub fn set_tip(&self, _tip: &str) {
             match self.0 {}
         }
-        pub fn balloon(&self, _title: &str, _text: &str, _error: bool) {
+        pub fn balloon(&self, _title: &str, _text: &str, _error: bool, _sound: bool) {
             match self.0 {}
         }
         pub fn waker(&self) -> Waker {

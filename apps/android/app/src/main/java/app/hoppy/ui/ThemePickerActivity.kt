@@ -14,11 +14,13 @@ import android.widget.LinearLayout
 import androidx.activity.addCallback
 import androidx.annotation.AttrRes
 import androidx.appcompat.view.ContextThemeWrapper
+import androidx.lifecycle.Lifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import app.hoppy.Prefs
 import app.hoppy.R
+import app.hoppy.audio.Music
 import app.hoppy.databinding.ActivityThemePickerBinding
 import app.hoppy.databinding.ItemThemeCardBinding
 import app.hoppy.ui.theme.HoppyTheme
@@ -79,6 +81,16 @@ class ThemePickerActivity : ThemedActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        Music.preview(themes[selected]) // hear the theme on screen
+    }
+
+    override fun onStop() {
+        Music.preview(null)
+        super.onStop()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(STATE_SELECTED, selected)
@@ -86,6 +98,7 @@ class ThemePickerActivity : ThemedActivity() {
 
     private fun select(pos: Int) {
         selected = pos
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) Music.preview(themes[pos])
         for (i in 0 until b.dots.childCount) {
             val dot = b.dots.getChildAt(i)
             val on = i == pos

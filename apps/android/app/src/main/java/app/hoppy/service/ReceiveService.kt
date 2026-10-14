@@ -43,6 +43,7 @@ class ReceiveService : Service() {
     private var server: ServerSocket? = null
     private val pool: ExecutorService = Executors.newCachedThreadPool()
     @Volatile private var lastProgressUpdate = 0L
+    private val sink by lazy { MediaStoreSink(this) }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -85,17 +86,30 @@ class ReceiveService : Service() {
             ?: run { stopSelf(); return }
         server = socket
         Node.receivePort = socket.localPort
-        val sink = MediaStoreSink(this)
         while (running) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
-            pool.execute { TransferServer.handle(client, sink, handler) }
+            pool.execute {
+                val connection = Connection()
+                try {
+                    TransferServer.handle(client, sink, connection)
+                } finally {
+                    if (connection.accepted) receiveEnded()
+                }
+            }
         }
     }
 
-    private val handler = object : ReceiveHandler {
+    /** One incoming connection; [accepted] marks it as an active receive (music stays off). */
+    private inner class Connection : ReceiveHandler {
+        @Volatile var accepted = false
+
         override fun decide(offer: Offer, from: InetAddress): Boolean {
-            if (Prefs.autoAccept(this@ReceiveService)) return true
-            return askUser(offer)
+            val ok = Prefs.autoAccept(this@ReceiveService) || askUser(offer)
+            if (ok) {
+                accepted = true
+                receiveStarted()
+            }
+            return ok
         }
 
         override fun onProgress(from: InetAddress, done: Long, total: Long) {
@@ -115,27 +129,51 @@ class ReceiveService : Service() {
 
         override fun onFinished(from: InetAddress, offer: Offer, saved: List<String>, error: String?) {
             notify(NOTIF_RECEIVER, receiverNotification())
-            val sender = SafeText.label(offer.sender.name)
-            val title = if (error == null) {
-                resources.getQuantityString(R.plurals.received_files, saved.size, saved.size, sender)
-            } else {
-                getString(R.string.receive_failed, sender)
-            }
-            val openDownloads = PendingIntent.getActivity(
-                this@ReceiveService, 0,
-                Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                PendingIntent.FLAG_IMMUTABLE,
-            )
-            notify(
-                nextId.incrementAndGet(),
-                base(HoppyApp.CH_DONE)
-                    .setContentTitle(title)
-                    .setContentText(error?.let { SafeText.label(it, 200) } ?: saved.joinToString(", ") { SafeText.label(it.substringAfterLast('/'), 200) })
-                    .setContentIntent(openDownloads)
-                    .setAutoCancel(true)
-                    .build(),
-            )
+            notifyFinished(offer, saved, error)
         }
+    }
+
+    /**
+     * System notification at the end of every accepted receive ("Received files" channel,
+     * default sound), one id per transfer. Tap: the file itself when there is exactly one
+     * with a viewable type, otherwise the Downloads app (or Hoppy when nothing was saved).
+     */
+    private fun notifyFinished(offer: Offer, saved: List<String>, error: String?) {
+        val uris = saved.map { sink.takeUri(it) }
+        val id = nextId.incrementAndGet()
+        val sender = SafeText.label(offer.sender.name)
+        val title = if (error == null) {
+            resources.getQuantityString(R.plurals.received_files, saved.size, saved.size, sender)
+        } else {
+            getString(R.string.receive_failed, sender)
+        }
+        val single = uris.singleOrNull()?.takeIf { error == null }
+        val type = single?.let { runCatching { contentResolver.getType(it) }.getOrNull() }
+        val open = when {
+            single != null && type != null && type != "application/octet-stream" ->
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(single, type)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            saved.isNotEmpty() ->
+                Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            else -> Intent(this, MainActivity::class.java)
+        }
+        val tap = PendingIntent.getActivity(
+            this, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val text = error?.let { SafeText.label(it, 200) }
+            ?: saved.joinToString(", ") { SafeText.label(it.substringAfterLast('/'), 200) }
+        notify(
+            id,
+            base(HoppyApp.CH_DONE)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setCategory(if (error == null) NotificationCompat.CATEGORY_STATUS else NotificationCompat.CATEGORY_ERROR)
+                .setContentIntent(tap)
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     /** Shows Accept/Decline actions and blocks this connection's thread for up to 60 s. */
@@ -214,6 +252,22 @@ class ReceiveService : Service() {
 
         @Volatile var running = false
             private set
+
+        /** Accepted transfers in progress (offer accepted → connection closed). */
+        private val activeReceives = AtomicInteger(0)
+
+        /** True while this device is receiving: theme music stays silent (`Music`). */
+        val receiving: Boolean get() = activeReceives.get() > 0
+
+        private fun receiveStarted() {
+            activeReceives.incrementAndGet()
+            notifyState()
+        }
+
+        private fun receiveEnded() {
+            activeReceives.decrementAndGet()
+            notifyState()
+        }
         private val stateListeners = CopyOnWriteArraySet<() -> Unit>()
         fun addStateListener(l: () -> Unit) { stateListeners += l }
         fun removeStateListener(l: () -> Unit) { stateListeners -= l }

@@ -47,13 +47,15 @@
     <string name="theme_card_description">%1$s theme, %2$d of %3$d. %4$s</string>
     <string name="theme_selected">%1$s selected</string>
     <string name="rename">Device name</string>
+    <!-- Overflow menu, checkable: theme music while sending (never on the receiver). -->
+    <string name="music">Music</string>
     <string name="auto_accept">Accept automatically</string>
     <string name="auto_accept_warning">Anyone on your network will be able to send you files without asking. Use only on trusted networks.</string>
     <string name="platform_unknown">Device</string>
     <string name="shared_text_file">Shared text.txt</string>
     <string name="channel_receiver">Receiver</string>
     <string name="channel_incoming">Incoming files</string>
-    <string name="channel_done">Completed transfers</string>
+    <string name="channel_done">Received files</string>
     <string name="receiver_on">Visible as %1$s</string>
     <string name="receiver_on_detail">Ready to receive files</string>
     <string name="receiving_progress">Receiving · %1$d%%</string>
@@ -66,8 +68,8 @@
         <item quantity="other">%1$s wants to send %2$d files (%3$s)</item>
     </plurals>
     <plurals name="received_files">
-        <item quantity="one">%1$d file from %2$s</item>
-        <item quantity="other">%1$d files from %2$s</item>
+        <item quantity="one">Received %1$d file from %2$s</item>
+        <item quantity="other">Received %1$d files from %2$s</item>
     </plurals>
     <plurals name="send_summary">
         <item quantity="one">%1$d file · %2$s</item>

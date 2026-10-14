@@ -7,6 +7,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
+import app.hoppy.audio.Music
 import app.hoppy.core.DeviceInfo
 import app.hoppy.core.DiscoveryNode
 import app.hoppy.core.Peer
@@ -24,9 +25,17 @@ class HoppyApp : Application() {
             listOf(
                 NotificationChannel(CH_RECEIVER, getString(R.string.channel_receiver), NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(CH_INCOMING, getString(R.string.channel_incoming), NotificationManager.IMPORTANCE_HIGH),
+                // "Received files": default importance = system default sound. The id stays
+                // "done" so users keep any per-channel setting they already made.
                 NotificationChannel(CH_DONE, getString(R.string.channel_done), NotificationManager.IMPORTANCE_DEFAULT),
             ),
         )
+        Music.init(this)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        Music.trimMemory()
     }
 
     companion object {
@@ -36,7 +45,7 @@ class HoppyApp : Application() {
     }
 }
 
-/** Small preference store: identity, theme, auto-accept. */
+/** Small preference store: identity, theme, auto-accept, music. */
 object Prefs {
     private fun sp(ctx: Context) = ctx.getSharedPreferences("hoppy", Context.MODE_PRIVATE)
 
@@ -81,6 +90,13 @@ object Prefs {
 
     fun setAutoAccept(ctx: Context, value: Boolean) {
         sp(ctx).edit().putBoolean("auto_accept", value).apply()
+    }
+
+    /** Theme music on the sender (overflow menu); on by default. */
+    fun music(ctx: Context): Boolean = sp(ctx).getBoolean("music", true)
+
+    fun setMusic(ctx: Context, value: Boolean) {
+        sp(ctx).edit().putBoolean("music", value).apply()
     }
 
     /** Devices recently sent to, most recent first (share-sheet shortcuts, `ShareShortcuts`). */

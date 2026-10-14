@@ -13,12 +13,19 @@
   will be saved (§4 sanitizer) and strips control/bidi characters from names. Files go to
   `Downloads\Hoppy`; a notification says what arrived and opens the folder when clicked.
   `hoppy receive --yes` (CLI) skips the question (trusted networks only).
-- Tray menu (left or right click): *Send files…*, *Open received folder*, *Quit*.
+- Tray menu (left or right click): *Send files…*, *Open received folder*, *♪ Music while
+  sending* (check mark = on), *Quit*.
 - Installer upgrades/uninstalls stop only the `hoppy.exe`/`hoppyw.exe` running from the
   install folder (PowerShell, path-filtered), not same-named programs elsewhere.
 - Send: right click files → *Send to* → *Hoppy* (Windows 11: *Show more options* first, or
   Shift+right-click) → a menu at the mouse lists nearby devices → click one. Progress is in
   the tray icon tooltip; a notification confirms delivery (or the refusal).
+- Music (only on the sender): the *Send to* flow plays a short 16-bit loop while you pick
+  a device, a faster one once the other side accepts, and a jingle when delivered. Turn it
+  off from the tray menu (*♪ Music while sending*) or with `hoppy music off`
+  (stored as `"music"` in `%APPDATA%\hoppy\device.json`). The tray receiver, `hoppy send`
+  and `hoppy receive` never play music. The installer wizard plays music too (checkbox
+  *♪ Music* bottom-left; silent installs stay silent).
 - Strings follow the Windows display language: Italian, otherwise English.
 - Firewall: the first receive triggers the Windows prompt; allow **Private networks**. The
   rule is per executable, so upgrading from 0.1.0 (`hoppy.exe receive`) asks again for

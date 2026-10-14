@@ -19,6 +19,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import app.hoppy.Node
 import app.hoppy.Prefs
 import app.hoppy.R
+import app.hoppy.audio.Music
 import app.hoppy.core.Peer
 import app.hoppy.databinding.ActivityMainBinding
 import app.hoppy.service.ReceiveService
@@ -179,12 +180,18 @@ class MainActivity : ThemedActivity() {
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.main, menu)
         menu.findItem(R.id.auto_accept).isChecked = Prefs.autoAccept(this)
+        menu.findItem(R.id.music).isChecked = Music.enabled(this)
         return true
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.theme -> { chooseTheme(); true }
         R.id.rename -> { rename(); true }
+        R.id.music -> {
+            item.isChecked = !item.isChecked
+            Music.setEnabled(this, item.isChecked)
+            true
+        }
         R.id.auto_accept -> {
             val value = !item.isChecked
             if (value) {

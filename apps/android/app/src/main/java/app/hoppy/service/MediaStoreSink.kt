@@ -12,6 +12,7 @@ import app.hoppy.core.Protocol
 import java.io.BufferedOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Saves into Download/Hoppy through MediaStore (no storage permission needed).
@@ -19,6 +20,11 @@ import java.io.OutputStream
  */
 class MediaStoreSink(context: Context) : FileSink {
     private val resolver = context.applicationContext.contentResolver
+    /** Location returned by `commit()` → its MediaStore item, until [takeUri]. */
+    private val committed = ConcurrentHashMap<String, Uri>()
+
+    /** The MediaStore item of a location `commit()` returned (once; frees the entry). */
+    fun takeUri(location: String): Uri? = committed.remove(location)
 
     override fun create(name: String, size: Long): PendingFile {
         val ext = name.substringAfterLast('.', "").lowercase()
@@ -45,7 +51,9 @@ class MediaStoreSink(context: Context) : FileSink {
                 output.close()
                 closed = true
                 resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
-                return "${Environment.DIRECTORY_DOWNLOADS}/Hoppy/${displayName(uri) ?: name}"
+                val location = "${Environment.DIRECTORY_DOWNLOADS}/Hoppy/${displayName(uri) ?: name}"
+                committed[location] = uri
+                return location
             }
 
             override fun abort() {
