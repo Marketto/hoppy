@@ -90,11 +90,27 @@ jobs:
       - name: Release keystore (from secrets, never committed)
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         shell: bash
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/hoppy-release.jks"
-            echo "HOPPY_KEYSTORE_FILE=$RUNNER_TEMP/hoppy-release.jks" >> "$GITHUB_ENV"
+            ks="$RUNNER_TEMP/hoppy-release.jks"
+            # Secrets pasted from a phone often gain spaces or line breaks: drop all whitespace.
+            if ! printf '%s' "$KEYSTORE_B64" | tr -d ' \t\r\n' | base64 -d > "$ks" 2>/dev/null; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not valid base64 (truncated or extra characters when pasted). Paste it again as one line."
+              exit 1
+            fi
+            echo "Keystore: $(wc -c < "$ks") bytes"
+            # Fail early with a clear message instead of deep inside Gradle; prints only the
+            # public certificate fingerprint, never the secrets.
+            if ! keytool -list -v -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" -alias "${KEY_ALIAS:-hoppy}" > "$RUNNER_TEMP/ks.txt" 2>&1; then
+              echo "::error::Keystore could not be opened: check ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS ($(grep -m1 -i 'error' "$RUNNER_TEMP/ks.txt" | sed 's/[^[:print:]]//g'))"
+              exit 1
+            fi
+            echo "::notice::Release signing certificate SHA-256: $(grep -m1 'SHA256:' "$RUNNER_TEMP/ks.txt" | sed 's/.*SHA256: //')"
+            rm -f "$RUNNER_TEMP/ks.txt"
+            echo "HOPPY_KEYSTORE_FILE=$ks" >> "$GITHUB_ENV"
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 is not set: the APK is signed with a throwaway debug key and cannot be updated in place by the next release. See docs/release.md."
           fi
