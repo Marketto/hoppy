@@ -1,0 +1,23 @@
+/target/
+**/*.rs.bk
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+*.hoppy-part
+
+# Secrets and signing material: never commit (see AGENTS.md invariant 9)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+key.properties
+keystore.properties
+google-services.json
+GoogleService-Info.plist
+local.properties

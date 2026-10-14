@@ -1,0 +1,47 @@
+---
+name: hoppy-android
+description: Use for the Android app - share target, device picker, receive foreground service, notifications, MediaStore saving, themes in the UI, Gradle setup, and the pure-JVM :core networking module.
+---
+
+# Android
+
+Two modules in `apps/android/`:
+
+- `:core` (`core/src/main/kotlin/app/hoppy/core/`) — **pure JVM** protocol, discovery and
+  transfer. No `android.*` imports. Unit tests in `core/src/test/...`; interop with Rust
+  via `InteropMain.kt` + `tools/interop.sh`.
+- `:app` (`app/src/main/java/app/hoppy/`) — thin Android shell:
+  - `HoppyApp.kt` — `Prefs` (identity, theme, auto-accept) and `Node` (process-wide
+    `DiscoveryNode`, ref-counted, owns the Wi-Fi `MulticastLock`; screens subscribe to `Node`).
+  - `service/ReceiveService.kt` — foreground (`dataSync`) receiver; asks via notification
+    actions (`DecisionReceiver`), 60 s timeout = decline; `onTimeout` stops it (Android 15).
+  - `service/MediaStoreSink.kt` — saves to `Download/Hoppy`, `IS_PENDING` until hash OK.
+  - `ui/MainActivity.kt` (home), `ui/SendActivity.kt` (share target + picker), `ui/Common.kt`
+    (`ThemedActivity`, `PeerAdapter`, `UriSource`, `Format`).
+
+## Rules
+
+- Minimal UI: mascot, one switch, nearby list, one button. No settings screen; options
+  live in the overflow menu.
+- Every screen extends `ThemedActivity` and uses theme attributes (`?attr/hoppyMascot`,
+  `?attr/colorPrimary`…), never hard-coded colors. See `hoppy-themes`.
+- Strings in `values/strings.xml` **and** `values-it/strings.xml` with identical placeholders.
+- Network/disk work off the main thread (`thread {}` or the service pool).
+- Content URIs with unknown size are copied to cache first (protocol needs sizes).
+
+## Build & verify
+
+```
+python3 tools/dev.py android-test    # :core JVM tests (needs Gradle)
+python3 tools/dev.py android-build   # APK (needs Android SDK)
+python3 tools/dev.py interop         # Kotlin core vs Rust vs Python
+```
+No wrapper is committed yet: run `gradle wrapper --gradle-version 8.14.3` once in
+`apps/android` (Android Studio offers it). CI builds with Gradle 8.14.3 and uploads the APK.
+
+## Device test
+
+Phone and PC on the same Wi-Fi: `hoppy receive` on PC → app "Send files"; app switch
+"Ready to receive" → `hoppy send FILE` on PC. Debug the LAN from a laptop with
+`python3 tools/hoppy_ref.py peers`. Guest/corporate Wi-Fi often blocks client-to-client
+traffic: that is the network, not the app.

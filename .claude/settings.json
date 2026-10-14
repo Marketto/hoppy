@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 tools/dev.py:*)",
+      "Bash(python3 tools/hoppy_ref.py:*)",
+      "Bash(python3 tools/gen_mascots.py)",
+      "Bash(bash tools/interop.sh)",
+      "Bash(tools/interop.sh)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo run -p hoppy:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}

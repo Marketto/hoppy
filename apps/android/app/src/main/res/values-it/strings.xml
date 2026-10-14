@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="mascot_description">Hoppy il coniglietto</string>
+    <string name="receive_switch">Pronto a ricevere</string>
+    <string name="receive_on_hint">I dispositivi vicini ti vedono e possono inviarti file.</string>
+    <string name="receive_off_hint">Attiva per farti trovare dai dispositivi vicini.</string>
+    <string name="nearby">Vicino a te</string>
+    <string name="no_peers">Nessun dispositivo per ora. Apri Hoppy sull\'altro dispositivo, sulla stessa Wi-Fi.</string>
+    <string name="send_files">Invia file</string>
+    <string name="send_to">Invia a</string>
+    <string name="searching">Cerco dispositivi vicini…</string>
+    <string name="preparing">Preparo i file…</string>
+    <string name="nothing_to_send">Niente da inviare.</string>
+    <string name="waiting_accept">Aspetto che %1$s accetti…</string>
+    <string name="sending_progress">Invio a %1$s · %2$d%%</string>
+    <string name="delivered">Consegnato a %1$s ✓</string>
+    <string name="declined">%1$s ha rifiutato.</string>
+    <string name="send_failed">Invio non riuscito: %1$s</string>
+    <string name="close">Chiudi</string>
+    <string name="theme">Tema</string>
+    <string name="rename">Nome del dispositivo</string>
+    <string name="auto_accept">Accetta automaticamente</string>
+    <string name="auto_accept_warning">Chiunque sulla tua rete potrà inviarti file senza chiedere. Usalo solo su reti fidate.</string>
+    <string name="platform_unknown">Dispositivo</string>
+    <string name="shared_text_file">Testo condiviso.txt</string>
+    <string name="channel_receiver">Ricezione</string>
+    <string name="channel_incoming">File in arrivo</string>
+    <string name="channel_done">Trasferimenti completati</string>
+    <string name="receiver_on">Visibile come %1$s</string>
+    <string name="receiver_on_detail">Pronto a ricevere file</string>
+    <string name="receiving_progress">Ricezione · %1$d%%</string>
+    <string name="receive_failed">Trasferimento da %1$s non riuscito</string>
+    <string name="accept">Accetta</string>
+    <string name="decline">Rifiuta</string>
+    <string name="stop">Ferma</string>
+    <plurals name="incoming_title">
+        <item quantity="one">%1$s vuole inviarti %2$d file (%3$s)</item>
+        <item quantity="other">%1$s vuole inviarti %2$d file (%3$s)</item>
+    </plurals>
+    <plurals name="received_files">
+        <item quantity="one">%1$d file da %2$s</item>
+        <item quantity="other">%1$d file da %2$s</item>
+    </plurals>
+    <plurals name="send_summary">
+        <item quantity="one">%1$d file · %2$s</item>
+        <item quantity="other">%1$d file · %2$s</item>
+    </plurals>
+</resources>

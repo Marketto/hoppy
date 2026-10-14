@@ -1,0 +1,141 @@
+package app.hoppy
+
+import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.provider.Settings
+import app.hoppy.core.DeviceInfo
+import app.hoppy.core.DiscoveryNode
+import app.hoppy.core.Peer
+import java.util.UUID
+import java.util.concurrent.CopyOnWriteArraySet
+
+class HoppyApp : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannels(
+            listOf(
+                NotificationChannel(CH_RECEIVER, getString(R.string.channel_receiver), NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CH_INCOMING, getString(R.string.channel_incoming), NotificationManager.IMPORTANCE_HIGH),
+                NotificationChannel(CH_DONE, getString(R.string.channel_done), NotificationManager.IMPORTANCE_DEFAULT),
+            ),
+        )
+    }
+
+    companion object {
+        const val CH_RECEIVER = "receiver"
+        const val CH_INCOMING = "incoming"
+        const val CH_DONE = "done"
+    }
+}
+
+/** Small preference store: identity, theme, auto-accept. */
+object Prefs {
+    private fun sp(ctx: Context) = ctx.getSharedPreferences("hoppy", Context.MODE_PRIVATE)
+
+    fun device(ctx: Context): DeviceInfo {
+        val p = sp(ctx)
+        val id = p.getString("device_id", null) ?: UUID.randomUUID().toString().also {
+            p.edit().putString("device_id", it).apply()
+        }
+        return DeviceInfo(id, deviceName(ctx), "android")
+    }
+
+    fun deviceName(ctx: Context): String =
+        sp(ctx).getString("device_name", null)
+            ?: Settings.Global.getString(ctx.contentResolver, Settings.Global.DEVICE_NAME)
+            ?: Build.MODEL
+
+    fun setDeviceName(ctx: Context, name: String) {
+        sp(ctx).edit().putString("device_name", name.trim().take(64)).apply()
+    }
+
+    enum class Theme { KAWAII, PRO }
+
+    fun theme(ctx: Context): Theme =
+        runCatching { Theme.valueOf(sp(ctx).getString("theme", Theme.KAWAII.name)!!) }.getOrDefault(Theme.KAWAII)
+
+    fun setTheme(ctx: Context, theme: Theme) {
+        sp(ctx).edit().putString("theme", theme.name).apply()
+    }
+
+    fun themeRes(ctx: Context): Int = when (theme(ctx)) {
+        Theme.KAWAII -> R.style.Theme_Hoppy_Kawaii
+        Theme.PRO -> R.style.Theme_Hoppy_Pro
+    }
+
+    /** Off by default: anyone on the network could otherwise push files. */
+    fun autoAccept(ctx: Context): Boolean = sp(ctx).getBoolean("auto_accept", false)
+
+    fun setAutoAccept(ctx: Context, value: Boolean) {
+        sp(ctx).edit().putBoolean("auto_accept", value).apply()
+    }
+}
+
+/**
+ * Process-wide discovery: one UDP socket on port 47470 shared by screens and the
+ * receiver service (reference counted), plus the Wi-Fi multicast lock.
+ * Screens subscribe here, not on the DiscoveryNode, so a restart keeps listeners.
+ */
+object Node {
+    private var discovery: DiscoveryNode? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private var users = 0
+    private val listeners = CopyOnWriteArraySet<(List<Peer>) -> Unit>()
+    private val forward: (List<Peer>) -> Unit = { peers -> listeners.forEach { it(peers) } }
+
+    /** TCP port of the running receiver, 0 when not receiving (send-only). */
+    @Volatile var receivePort: Int = 0
+        set(value) {
+            field = value
+            discovery?.transferPort = value
+        }
+
+    fun addListener(l: (List<Peer>) -> Unit) { listeners += l }
+    fun removeListener(l: (List<Peer>) -> Unit) { listeners -= l }
+    fun peers(): List<Peer> = discovery?.peers().orEmpty()
+    fun refresh() { discovery?.refresh() }
+
+    @Synchronized
+    fun acquire(ctx: Context) {
+        users++
+        if (discovery != null) return
+        val app = ctx.applicationContext
+        multicastLock = app.getSystemService(WifiManager::class.java)
+            ?.createMulticastLock("hoppy-discovery")
+            ?.apply { setReferenceCounted(false); acquire() }
+        discovery = newNode(app)
+    }
+
+    @Synchronized
+    fun release() {
+        if (users == 0) return
+        users--
+        if (users == 0) {
+            discovery?.stop()
+            discovery = null
+            multicastLock?.release()
+            multicastLock = null
+        }
+    }
+
+    /** Restart with the current identity (after a rename). */
+    @Synchronized
+    fun restart(ctx: Context) {
+        val old = discovery ?: return
+        old.removeListener(forward)
+        old.stop()
+        discovery = newNode(ctx.applicationContext)
+    }
+
+    private fun newNode(app: Context): DiscoveryNode =
+        DiscoveryNode(Prefs.device(app)).also {
+            it.transferPort = receivePort
+            it.addListener(forward)
+            it.start()
+        }
+}

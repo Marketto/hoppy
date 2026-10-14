@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Palette source of truth: docs/design/themes.md -->
+    <!-- Kawaii: warm mochi cream, strawberry milk, cocoa ink -->
+    <color name="kawaii_background">#FFF6F3</color>
+    <color name="kawaii_surface">#FFFFFF</color>
+    <color name="kawaii_container">#FFEAE5</color>
+    <color name="kawaii_primary">#F0859A</color>
+    <color name="kawaii_on_primary">#FFFFFF</color>
+    <color name="kawaii_primary_container">#FFDDE3</color>
+    <color name="kawaii_on_primary_container">#6B2A38</color>
+    <color name="kawaii_secondary">#A98BD9</color>
+    <color name="kawaii_on_surface">#4A3530</color>
+    <color name="kawaii_on_surface_variant">#8A6E66</color>
+    <color name="kawaii_outline">#E9D3CC</color>
+
+    <!-- Pro: graphite, cool grey, teal accent from the sunglasses -->
+    <color name="pro_background">#121316</color>
+    <color name="pro_surface">#17181C</color>
+    <color name="pro_container">#202126</color>
+    <color name="pro_primary">#4FD1C5</color>
+    <color name="pro_on_primary">#00201D</color>
+    <color name="pro_primary_container">#173F3B</color>
+    <color name="pro_on_primary_container">#A7F2EA</color>
+    <color name="pro_secondary">#B5B5BD</color>
+    <color name="pro_on_surface">#E9E9EC</color>
+    <color name="pro_on_surface_variant">#9A9AA3</color>
+    <color name="pro_outline">#34353B</color>
+
+    <color name="launcher_background">#FFF6F3</color>
+</resources>

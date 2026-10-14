@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Single source of truth for the Hoppy mascots.
+
+Each mascot is a list of shapes on a 200x200 canvas. This script writes:
+  assets/brand/mascot-<theme>.svg                         (docs, desktop, web)
+  apps/android/app/src/main/res/drawable/mascot_<theme>.xml (Android VectorDrawable)
+
+Run after editing: python3 tools/gen_mascots.py
+Only paths, fills, strokes and group rotations are used, so both formats render
+identically. Colors here are the brand palette in docs/design/themes.md.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def ellipse(cx, cy, rx, ry=None):
+    ry = rx if ry is None else ry
+    return (f"M{cx - rx:g},{cy:g} a{rx:g},{ry:g} 0 1,0 {2 * rx:g},0 "
+            f"a{rx:g},{ry:g} 0 1,0 {-2 * rx:g},0 Z")
+
+
+def rrect(x, y, w, h, r):
+    return (f"M{x + r:g},{y:g} h{w - 2 * r:g} a{r:g},{r:g} 0 0,1 {r:g},{r:g} v{h - 2 * r:g} "
+            f"a{r:g},{r:g} 0 0,1 {-r:g},{r:g} h{-(w - 2 * r):g} a{r:g},{r:g} 0 0,1 {-r:g},{-r:g} "
+            f"v{-(h - 2 * r):g} a{r:g},{r:g} 0 0,1 {r:g},{-r:g} Z")
+
+
+def shape(d, fill=None, stroke=None, width=0, opacity=1.0, rotate=None):
+    return {"d": d, "fill": fill, "stroke": stroke, "width": width, "opacity": opacity, "rotate": rotate}
+
+
+# ---------------------------------------------------------------- Kawaii
+# Japanese/Korean "mochi" style: squishy wide body, short ears (one folded),
+# tiny dot eyes set wide and low, ㅅ mouth, manga blush lines, thin warm outline.
+INK = "#6B4E45"
+CREAM = "#FFFDF8"
+EAR_PINK = "#FFD3DC"
+KAWAII = [
+    # ears (behind the body); right ear folds forward at the tip
+    shape(ellipse(76, 72, 15, 36), CREAM, INK, 3, rotate=(-10, 76, 108)),
+    shape(ellipse(76, 76, 6.5, 24), EAR_PINK, rotate=(-10, 76, 108)),
+    shape(ellipse(124, 80, 15, 28), CREAM, INK, 3, rotate=(12, 124, 108)),
+    shape(ellipse(124, 84, 6.5, 17), EAR_PINK, rotate=(12, 124, 108)),
+    shape("M127,60 C129,47 149,45 158,62 C161,70 154,74 149,69 C144,64 136,63 127,60 Z", CREAM, INK, 3),
+    shape("M133,58 C138,52 148,53 153,62", None, EAR_PINK, 3),
+    # mochi body
+    shape("M30,136 C30,98 62,84 100,84 C138,84 170,98 170,136 "
+          "C170,166 142,180 100,180 C58,180 30,166 30,136 Z", CREAM, INK, 3),
+    # little paws
+    shape(ellipse(80, 176, 11, 6.5), CREAM, INK, 3),
+    shape(ellipse(120, 176, 11, 6.5), CREAM, INK, 3),
+    # blush + manga lines
+    shape(ellipse(60, 144, 11, 6), "#FFB3C1", opacity=0.85),
+    shape(ellipse(140, 144, 11, 6), "#FFB3C1", opacity=0.85),
+    shape("M54,147 l4,-6 M60,147 l4,-6 M66,147 l4,-6", None, "#F28CA0", 1.8),
+    shape("M134,147 l4,-6 M140,147 l4,-6 M146,147 l4,-6", None, "#F28CA0", 1.8),
+    # dot eyes with a tiny shine
+    shape(ellipse(74, 131, 5.2), "#3A2A26"),
+    shape(ellipse(126, 131, 5.2), "#3A2A26"),
+    shape(ellipse(75.8, 129.2, 1.5), "#FFFFFF"),
+    shape(ellipse(127.8, 129.2, 1.5), "#FFFFFF"),
+    # ㅅ mouth
+    shape("M93,145 Q98,143 100,137 Q102,143 107,145", None, INK, 2.6),
+]
+
+# ---------------------------------------------------------------- Pro
+PRO = [
+    shape(rrect(64, 14, 28, 96, 14), "#E9E9EC", rotate=(-8, 78, 104)),
+    shape(rrect(71, 26, 14, 70, 7), "#C4C4CC", rotate=(-8, 78, 104)),
+    shape(rrect(108, 14, 28, 96, 14), "#E9E9EC", rotate=(8, 122, 104)),
+    shape(rrect(115, 26, 14, 70, 7), "#C4C4CC", rotate=(8, 122, 104)),
+    shape(ellipse(100, 130, 60, 52), "#E9E9EC"),
+    # sunglasses: top bar, lenses, bridge
+    shape(rrect(46, 106, 108, 8, 4), "#0E0F12"),
+    shape("M52,110 H97 L93,134 Q91,142 83,142 H66 Q57,142 55,134 Z", "#0E0F12"),
+    shape("M103,110 H148 L145,134 Q143,142 134,142 H117 Q109,142 107,134 Z", "#0E0F12"),
+    shape("M60,116 L70,116 L62,136 L56,136 Z", "#FFFFFF", opacity=0.22),
+    shape("M111,116 L121,116 L113,136 L107,136 Z", "#FFFFFF", opacity=0.22),
+    shape(rrect(46, 106, 108, 2.5, 1.25), "#4FD1C5"),
+    # nose + smirk
+    shape(ellipse(100, 150, 5, 3.5), "#B5B5BD"),
+    shape("M93,162 q9,5 17,-3", None, "#5A5A62", 3),
+]
+
+MASCOTS = {"kawaii": KAWAII, "pro": PRO}
+
+
+def to_svg(shapes):
+    out = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">']
+    for s in shapes:
+        attrs = [f'd="{s["d"]}"', f'fill="{s["fill"] or "none"}"']
+        if s["stroke"]:
+            attrs += [f'stroke="{s["stroke"]}"', f'stroke-width="{s["width"]:g}"',
+                      'stroke-linecap="round"', 'stroke-linejoin="round"']
+        if s["opacity"] != 1.0:
+            attrs.append(f'opacity="{s["opacity"]:g}"')
+        if s["rotate"]:
+            a, x, y = s["rotate"]
+            attrs.append(f'transform="rotate({a:g} {x:g} {y:g})"')
+        out.append(f'  <path {" ".join(attrs)}/>')
+    out.append("</svg>\n")
+    return "\n".join(out)
+
+
+def to_vector(shapes):
+    out = ['<?xml version="1.0" encoding="utf-8"?>',
+           "<!-- Generated by tools/gen_mascots.py. Do not edit by hand. -->",
+           '<vector xmlns:android="http://schemas.android.com/apk/res/android"',
+           '    android:width="200dp" android:height="200dp"',
+           '    android:viewportWidth="200" android:viewportHeight="200">']
+    for s in shapes:
+        attrs = [f'android:pathData="{s["d"]}"']
+        if s["fill"]:
+            attrs.append(f'android:fillColor="{s["fill"]}"')
+            if s["opacity"] != 1.0:
+                attrs.append(f'android:fillAlpha="{s["opacity"]:g}"')
+        if s["stroke"]:
+            attrs += [f'android:strokeColor="{s["stroke"]}"', f'android:strokeWidth="{s["width"]:g}"',
+                      'android:strokeLineCap="round"', 'android:strokeLineJoin="round"']
+        path = "<path " + "\n        ".join(attrs) + " />"
+        if s["rotate"]:
+            a, x, y = s["rotate"]
+            out.append(f'    <group android:rotation="{a:g}" android:pivotX="{x:g}" android:pivotY="{y:g}">')
+            out.append("        " + path)
+            out.append("    </group>")
+        else:
+            out.append("    " + path)
+    out.append("</vector>\n")
+    return "\n".join(out)
+
+
+# Monochrome status-bar icon (24x24, white): bunny head silhouette.
+NOTIFICATION = [
+    shape(rrect(6.5, 1.5, 4, 11, 2), "#FFFFFF", rotate=(-8, 8.5, 12)),
+    shape(rrect(13.5, 1.5, 4, 11, 2), "#FFFFFF", rotate=(8, 15.5, 12)),
+    shape(ellipse(12, 15, 8, 6.5), "#FFFFFF"),
+]
+
+
+def main():
+    brand = ROOT / "assets" / "brand"
+    drawable = ROOT / "apps" / "android" / "app" / "src" / "main" / "res" / "drawable"
+    brand.mkdir(parents=True, exist_ok=True)
+    drawable.mkdir(parents=True, exist_ok=True)
+    for name, shapes in MASCOTS.items():
+        (brand / f"mascot-{name}.svg").write_text(to_svg(shapes))
+        (drawable / f"mascot_{name}.xml").write_text(to_vector(shapes))
+        print(f"wrote mascot-{name}")
+    icon = to_vector(NOTIFICATION).replace('android:width="200dp" android:height="200dp"', 'android:width="24dp" android:height="24dp"')
+    icon = icon.replace('android:viewportWidth="200" android:viewportHeight="200"', 'android:viewportWidth="24" android:viewportHeight="24"')
+    (drawable / "ic_notification.xml").write_text(icon)
+    print("wrote ic_notification")
+
+
+if __name__ == "__main__":
+    main()

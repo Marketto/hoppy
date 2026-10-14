@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">Hoppy</string>
+    <string name="share_label" translatable="false">Hoppy</string>
+    <string name="mascot_description">Hoppy the bunny</string>
+    <string name="receive_switch">Ready to receive</string>
+    <string name="receive_on_hint">Nearby devices can see you and send you files.</string>
+    <string name="receive_off_hint">Turn on to be visible to nearby devices.</string>
+    <string name="nearby">Nearby</string>
+    <string name="no_peers">No devices yet. Open Hoppy on the other device, on the same Wi-Fi.</string>
+    <string name="send_files">Send files</string>
+    <string name="send_to">Send to</string>
+    <string name="searching">Looking for nearby devices…</string>
+    <string name="preparing">Getting files ready…</string>
+    <string name="nothing_to_send">Nothing to send.</string>
+    <string name="waiting_accept">Waiting for %1$s to accept…</string>
+    <string name="sending_progress">Sending to %1$s · %2$d%%</string>
+    <string name="delivered">Delivered to %1$s ✓</string>
+    <string name="declined">%1$s said no.</string>
+    <string name="send_failed">Could not send: %1$s</string>
+    <string name="close">Close</string>
+    <string name="theme">Theme</string>
+    <string name="theme_kawaii" translatable="false">Kawaii</string>
+    <string name="theme_pro" translatable="false">Pro</string>
+    <string name="rename">Device name</string>
+    <string name="auto_accept">Accept automatically</string>
+    <string name="auto_accept_warning">Anyone on your network will be able to send you files without asking. Use only on trusted networks.</string>
+    <string name="platform_unknown">Device</string>
+    <string name="shared_text_file">Shared text.txt</string>
+    <string name="channel_receiver">Receiver</string>
+    <string name="channel_incoming">Incoming files</string>
+    <string name="channel_done">Completed transfers</string>
+    <string name="receiver_on">Visible as %1$s</string>
+    <string name="receiver_on_detail">Ready to receive files</string>
+    <string name="receiving_progress">Receiving · %1$d%%</string>
+    <string name="receive_failed">Transfer from %1$s failed</string>
+    <string name="accept">Accept</string>
+    <string name="decline">Decline</string>
+    <string name="stop">Stop</string>
+    <plurals name="incoming_title">
+        <item quantity="one">%1$s wants to send %2$d file (%3$s)</item>
+        <item quantity="other">%1$s wants to send %2$d files (%3$s)</item>
+    </plurals>
+    <plurals name="received_files">
+        <item quantity="one">%1$d file from %2$s</item>
+        <item quantity="other">%1$d files from %2$s</item>
+    </plurals>
+    <plurals name="send_summary">
+        <item quantity="one">%1$d file · %2$s</item>
+        <item quantity="other">%1$d files · %2$s</item>
+    </plurals>
+</resources>

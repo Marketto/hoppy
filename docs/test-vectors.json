@@ -1,0 +1,26 @@
+{
+  "_comment": "Shared conformance vectors for protocol v0. Used by Rust (sanitize.rs, tests), Android unit tests and tools/hoppy_ref.py selftest. Change only together with docs/protocol.md.",
+  "sanitize": [
+    {"input": "foto.jpg", "output": "foto.jpg"},
+    {"input": "../../etc/passwd", "output": "passwd"},
+    {"input": "..\\..\\Windows\\win.ini", "output": "win.ini"},
+    {"input": "C:\\Users\\x\\doc.pdf", "output": "doc.pdf"},
+    {"input": "a<b>c:d\"e|f?g*h.txt", "output": "a_b_c_d_e_f_g_h.txt"},
+    {"input": "tab\there\u0007.txt", "output": "tabhere.txt"},
+    {"input": "  .hidden.  ", "output": "hidden"},
+    {"input": "..", "output": null},
+    {"input": ".", "output": null},
+    {"input": "", "output": null},
+    {"input": "dir/", "output": null},
+    {"input": "CON", "output": "_CON"},
+    {"input": "nul.txt", "output": "_nul.txt"},
+    {"input": "com1.tar.gz", "output": "_com1.tar.gz"},
+    {"input": "console.txt", "output": "console.txt"},
+    {"input": "Relazione è già pronta 🐰.docx", "output": "Relazione è già pronta 🐰.docx"}
+  ],
+  "offer_example": {
+    "files_content_utf8": {"a.txt": "hello"},
+    "offer_json": "{\"sender\":{\"id\":\"00000000-0000-4000-8000-000000000000\",\"name\":\"Test\",\"platform\":\"linux\"},\"files\":[{\"name\":\"a.txt\",\"size\":5}]}",
+    "sha256_hex": {"a.txt": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}
+  }
+}

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Kawaii: soft, round, pastel. -->
+    <style name="Theme.Hoppy.Kawaii" parent="Theme.Material3.Light.NoActionBar">
+        <item name="hoppyMascot">@drawable/mascot_kawaii</item>
+        <item name="android:colorBackground">@color/kawaii_background</item>
+        <item name="colorSurface">@color/kawaii_background</item>
+        <item name="colorSurfaceContainer">@color/kawaii_container</item>
+        <item name="colorSurfaceContainerHighest">@color/kawaii_container</item>
+        <item name="colorPrimary">@color/kawaii_primary</item>
+        <item name="colorOnPrimary">@color/kawaii_on_primary</item>
+        <item name="colorPrimaryContainer">@color/kawaii_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/kawaii_on_primary_container</item>
+        <item name="colorSecondary">@color/kawaii_secondary</item>
+        <item name="colorOnSurface">@color/kawaii_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/kawaii_on_surface_variant</item>
+        <item name="colorOutline">@color/kawaii_outline</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Kawaii</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Kawaii</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- Pro: dark graphite, tighter corners, one teal accent. -->
+    <style name="Theme.Hoppy.Pro" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="hoppyMascot">@drawable/mascot_pro</item>
+        <item name="android:colorBackground">@color/pro_background</item>
+        <item name="colorSurface">@color/pro_background</item>
+        <item name="colorSurfaceContainer">@color/pro_container</item>
+        <item name="colorSurfaceContainerHighest">@color/pro_container</item>
+        <item name="colorPrimary">@color/pro_primary</item>
+        <item name="colorOnPrimary">@color/pro_on_primary</item>
+        <item name="colorPrimaryContainer">@color/pro_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/pro_on_primary_container</item>
+        <item name="colorSecondary">@color/pro_secondary</item>
+        <item name="colorOnSurface">@color/pro_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/pro_on_surface_variant</item>
+        <item name="colorOutline">@color/pro_outline</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Pro</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Pro</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <style name="Shape.Hoppy.Kawaii" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">24dp</item>
+    </style>
+
+    <style name="Shape.Hoppy.Pro" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">10dp</item>
+    </style>
+</resources>
