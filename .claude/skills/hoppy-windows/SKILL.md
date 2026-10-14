@@ -12,13 +12,15 @@ PoC UX (no console windows):
 - **Send**: Explorer → right click → (Win11: *Show more options*, or Shift+right-click) →
   **Send to → Hoppy** runs `hoppyw send FILES`: tray icon "Looking for devices…", then a
   popup menu at the mouse cursor lists nearby devices → click one → progress in the tray
-  tooltip → final balloon → the process exits a few seconds later.
+  tooltip → final balloon → the process exits a few seconds later. Music (sender only,
+  unless `music: false` in device.json): idle loop → transfer loop once accepted → done
+  jingle; stopped on decline/error/cancel/exit. Rules: `docs/design/themes.md` "Music".
   Alternative: click the tray icon → *Send files…* (native Open dialog).
 
 ## Pieces
 
 - `crates/hoppy-cli/src/main.rs` — `hoppy` CLI (console): `send`, `receive`, `peers`,
-  `name`, `install`, `uninstall`. Kept intact for scripts, tests, Linux/macOS, and as a
+  `name`, `music [on|off]`, `install`, `uninstall`. The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
   fallback (`send --pause` when `hoppyw.exe` is missing).
 - `crates/hoppy-cli/src/bin/hoppyw.rs` — GUI-subsystem binary; calls `hoppy::gui::run`.
   Off Windows it prints that it is Windows-only and exits 1.
@@ -31,7 +33,8 @@ PoC UX (no console windows):
   `#[cfg(windows)] mod win`: hidden window + `Shell_NotifyIconW` (NOTIFYICON_VERSION_4,
   re-added on `TaskbarCreated`), popup menus, `GetOpenFileNameW`, `ShellExecuteW`, named
   mutex `Local\HoppyTray` (single instance; a 2nd launch makes the 1st show a balloon), and
-  `install()`. A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
+  `install()`, and `play_tune`/`stop_tune` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`, WAVs
+  from `assets/music/` embedded with `include_bytes!` only in Windows builds). A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
   string-interpolated): `%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk` → `hoppyw.exe send`
   and `...\Startup\Hoppy receiver.lnk` → `hoppyw.exe`.
@@ -39,7 +42,10 @@ PoC UX (no console windows):
   both exes (the tray loads it with `LoadImageW`).
 - `apps/windows/hoppy.iss` — Inno Setup: installs both exes, stops copies running from
   `{app}` (PowerShell, path-filtered) in `PrepareToInstall` (upgrade from the 0.1.0 console
-  receiver) and on uninstall (`usUninstall`), Start menu "Hoppy" → `hoppyw.exe`.
+  receiver) and on uninstall (`usUninstall`), Start menu "Hoppy" → `hoppyw.exe`. Wizard
+  music: WAVs as `dontcopy` files → `ExtractTemporaryFile` in `InitializeWizard`, winmm
+  `PlaySoundW` imported twice (String name / Longint 0 = stop), skipped if `WizardSilent`,
+  stopped in `DeinitializeSetup`. Keep every section (`grep -n '^\[' hoppy.iss`) after edits.
 - `apps/windows/install.ps1` — portable zip install into `%LOCALAPPDATA%\Programs\Hoppy`.
 - Docs: `docs/platforms/windows.md`.
 
@@ -58,6 +64,10 @@ PoC UX (no console windows):
 - `&` in menu text is an accelerator: escape device names (`&&`), done in `popup_menu`.
 - Each exe path gets its own firewall rule: the first `hoppyw` receive triggers the prompt
   again even if `hoppy.exe` was allowed; the user must allow **Private** networks.
+- `PlaySoundW` is one sound per process: a new call replaces the current one, a null name
+  stops it. `SND_MEMORY` + `SND_ASYNC` needs the buffer alive during playback ('static).
+- `device.json` fields added later need `#[serde(default)]`; `config::set_music` re-reads
+  the file before saving so the long-running tray never overwrites a newer name.
 - `std::process::exit` skips destructors: let `Tray` drop (removes the icon) before exiting.
 - Open files cannot be renamed/deleted: close handles first (see `PartFile`).
 - Paths with emoji/non-ASCII: always `PathBuf`/`OsStr` (`encode_wide`/`from_wide`), never
@@ -70,4 +80,5 @@ PoC UX (no console windows):
 Linux can't build the Windows target here. Run `python3 tools/dev.py check`, then rely on
 the `windows-latest` CI job (clippy + `cargo test` + artifacts `hoppy.exe`, `hoppyw.exe`);
 its failures appear as annotations (`tools/ci-annotate.sh`), not only in the log.
-Manual test on a real PC: tray icon at login, accept dialog, balloon click, Send to menu.
+Manual test on a real PC: tray icon at login, accept dialog, balloon click, Send to menu,
+send music (idle → transfer → done, mute toggle), installer music + checkbox.

@@ -1,5 +1,7 @@
-//! Persistent device identity: `<config dir>/hoppy/device.json`.
+//! Persistent device identity and preferences: `<config dir>/hoppy/device.json`.
 //! `HOPPY_CONFIG_DIR` overrides the location (tests, portable installs).
+//! New fields need `#[serde(default)]` so files written by older versions still load
+//! (older versions ignore unknown fields).
 
 use std::fs;
 use std::path::PathBuf;
@@ -12,6 +14,13 @@ use serde::{Deserialize, Serialize};
 pub struct Identity {
     pub id: String,
     pub name: String,
+    /// Windows `hoppyw send` plays music while sending (`hoppy music on|off`, tray menu).
+    #[serde(default = "default_music")]
+    pub music: bool,
+}
+
+fn default_music() -> bool {
+    true
 }
 
 pub fn config_dir() -> Result<PathBuf> {
@@ -34,6 +43,7 @@ pub fn load_or_create() -> Result<Identity> {
     let identity = Identity {
         id: new_id(),
         name: default_name(),
+        music: default_music(),
     };
     save(&identity)?;
     Ok(identity)
@@ -47,6 +57,15 @@ pub fn save(identity: &Identity) -> Result<()> {
         serde_json::to_vec_pretty(identity)?,
     )?;
     Ok(())
+}
+
+/// Turns the send music on/off. Re-reads the file first so a long-running tray does not
+/// overwrite a name changed meanwhile with `hoppy name`.
+pub fn set_music(on: bool) -> Result<Identity> {
+    let mut identity = load_or_create()?;
+    identity.music = on;
+    save(&identity)?;
+    Ok(identity)
 }
 
 pub fn device_info(identity: &Identity) -> DeviceInfo {
@@ -69,4 +88,18 @@ fn default_name() -> String {
 
 fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_device_json_loads_with_music_on() {
+        let old: Identity = serde_json::from_str(r#"{"id":"x","name":"PC"}"#).unwrap();
+        assert!(old.music);
+        let off: Identity =
+            serde_json::from_str(r#"{"id":"x","name":"PC","music":false}"#).unwrap();
+        assert!(!off.music);
+    }
 }

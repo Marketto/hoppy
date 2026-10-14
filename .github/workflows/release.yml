@@ -57,7 +57,11 @@ jobs:
       - name: Set version
         shell: bash
         run: sed -i 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
-      - run: cargo build --release -p hoppy
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release -p hoppy --message-format=short 2>&1 | tee build.log ||
+            { bash tools/ci-annotate.sh "cargo build (release)" build.log; exit 1; }
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
       - name: Build installer

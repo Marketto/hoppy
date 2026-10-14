@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use hoppy::{
     DialogGuard, bind_receiver, config, default_receive_dir, display_file_name, display_name,
     display_platform, human, parse_direct, parse_seeds, platform, start_discovery,
@@ -29,6 +29,12 @@ struct Cli {
     seed: Vec<String>,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -64,6 +70,9 @@ enum Command {
     },
     /// Show or change this device's name.
     Name { new_name: Option<String> },
+    /// Show or change whether the Windows "Send to → Hoppy" window plays music.
+    /// (`hoppy send` is always silent.)
+    Music { state: Option<OnOff> },
     /// Windows: add "Send to → Hoppy" and start the receiver at login.
     Install,
     /// Windows: remove the shortcuts created by `install`.
@@ -115,6 +124,14 @@ fn run(cli: Cli) -> Result<()> {
                 config::save(&identity)?;
             }
             println!("{}", identity.name);
+            Ok(())
+        }
+        Command::Music { state } => {
+            let identity = match state {
+                Some(state) => config::set_music(matches!(state, OnOff::On))?,
+                None => identity,
+            };
+            println!("{}", if identity.music { "on" } else { "off" });
             Ok(())
         }
         Command::Install => platform::install(),

@@ -3,7 +3,9 @@
 //! - `hoppyw` (no args): single instance, notification-area icon, receives into
 //!   Downloads\Hoppy asking Yes/No for each offer, balloon when done.
 //! - `hoppyw send FILE…`: searches nearby devices, shows a popup menu at the cursor, sends
-//!   with progress in the tray tooltip, final balloon, then exits.
+//!   with progress in the tray tooltip, final balloon, then exits. Plays music unless muted
+//!   (`music` in device.json): idle loop → transfer loop once accepted → done jingle.
+//!   The receiver never plays music.
 //!
 //! Safe Rust only: every Win32 call goes through `platform::win` (a stub off Windows, so
 //! this module is compiled and linted everywhere). Worker threads never touch the UI; they
@@ -27,7 +29,7 @@ use hoppy_core::{
 };
 
 use crate::platform::win::{self, Tray, Waker};
-use crate::platform::{self, MenuItem, TooManyFiles, TrayEvent};
+use crate::platform::{self, MenuItem, TooManyFiles, TrayEvent, Tune};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, display_file_name,
     display_name, display_platform, display_text, human, start_discovery,
@@ -52,6 +54,7 @@ pub struct Strings {
     pub menu_header: &'static str,
     pub menu_send: &'static str,
     pub menu_open: &'static str,
+    pub menu_music: &'static str,
     pub menu_quit: &'static str,
     pub pick_title: &'static str,
     pub already_running: &'static str,
@@ -84,6 +87,7 @@ pub const IT: Strings = Strings {
     menu_header: "Hoppy · ricevo come {name}",
     menu_send: "Invia file…",
     menu_open: "Apri cartella ricevuti",
+    menu_music: "♪ Musica durante l'invio",
     menu_quit: "Esci",
     pick_title: "Hoppy — scegli i file da inviare",
     already_running: "Hoppy è già attivo: trovi l'icona vicino all'orologio.",
@@ -116,6 +120,7 @@ pub const EN: Strings = Strings {
     menu_header: "Hoppy · receiving as {name}",
     menu_send: "Send files…",
     menu_open: "Open received folder",
+    menu_music: "♪ Music while sending",
     menu_quit: "Quit",
     pick_title: "Hoppy — choose files to send",
     already_running: "Hoppy is already running: look for its icon near the clock.",
@@ -310,6 +315,7 @@ impl ReceiveHandler for GuiReceiver {
 const ID_SEND: u32 = 1;
 const ID_OPEN: u32 = 2;
 const ID_QUIT: u32 = 3;
+const ID_MUSIC: u32 = 4;
 
 fn tray_mode(s: &'static Strings) -> Result<()> {
     let Some(_instance) = win::single_instance(INSTANCE_MUTEX) else {
@@ -339,10 +345,13 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     while let Some(event) = tray.next_event() {
         match event {
             TrayEvent::Click => {
+                // Re-read: `hoppy music on|off` may have changed it meanwhile.
+                let music = config::load_or_create().map_or(true, |i| i.music);
                 let items = [
                     MenuItem::Label(&header),
                     MenuItem::Action(ID_SEND, s.menu_send),
                     MenuItem::Action(ID_OPEN, s.menu_open),
+                    MenuItem::Check(ID_MUSIC, s.menu_music, music),
                     MenuItem::Separator,
                     MenuItem::Action(ID_QUIT, s.menu_quit),
                 ];
@@ -351,12 +360,17 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                         Ok(files) if files.is_empty() => {}
                         Ok(files) => {
                             if let Err(e) = spawn_sender(&files) {
-                                tray.balloon("Hoppy", &format!("{e:#}"), true);
+                                tray.balloon("Hoppy", &format!("{e:#}"), true, true);
                             }
                         }
                         Err(TooManyFiles) => win::message_box_error("Hoppy", s.too_many_files),
                     },
                     Some(ID_OPEN) => open_dir(&dir),
+                    Some(ID_MUSIC) => {
+                        if let Err(e) = config::set_music(!music) {
+                            tray.balloon("Hoppy", &format!("{e:#}"), true, true);
+                        }
+                    }
                     Some(ID_QUIT) => break,
                     _ => {}
                 }
@@ -366,12 +380,13 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     // Pop first so the lock is not held during the UI call.
                     let next = lock(&notices).pop_front();
                     let Some(n) = next else { break };
-                    tray.balloon(&n.title, &n.text, n.error);
+                    // System sound on: this is the "files arrived" notification.
+                    tray.balloon(&n.title, &n.text, n.error, true);
                     last_ok_balloon = !n.error;
                 }
             }
             TrayEvent::BalloonClick if last_ok_balloon => open_dir(&dir),
-            TrayEvent::Reopen => tray.balloon("Hoppy", s.already_running, false),
+            TrayEvent::Reopen => tray.balloon("Hoppy", s.already_running, false, true),
             _ => {}
         }
     }
@@ -394,9 +409,46 @@ fn spawn_sender(files: &[PathBuf]) -> Result<()> {
 
 // ---------------------------------------------------------------- "Send to → Hoppy"
 
+/// Sender music; stops when dropped (before the process exits).
+struct Music {
+    enabled: bool,
+    playing: Option<Tune>,
+}
+
+impl Music {
+    fn new(enabled: bool) -> Music {
+        Music {
+            enabled,
+            playing: None,
+        }
+    }
+
+    /// Starts `tune` unless muted or already playing (restarting would skip the loop).
+    fn play(&mut self, tune: Tune) {
+        if self.enabled && self.playing != Some(tune) {
+            win::play_tune(tune);
+            self.playing = Some(tune);
+        }
+    }
+
+    fn stop(&mut self) {
+        if self.playing.take().is_some() {
+            win::stop_tune();
+        }
+    }
+}
+
+impl Drop for Music {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[derive(Default)]
 struct SendState {
     peers: Option<Vec<Peer>>,
+    /// The receiver said yes (first `Progress::FileStarted`).
+    accepted: bool,
     pct: Option<u64>,
     outcome: Option<Result<SendOutcome, String>>,
 }
@@ -431,6 +483,9 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let discovery = Arc::new(start_discovery(&me, 0, &[])?);
 
     let tray = Tray::new(SEND_WINDOW, s.searching)?;
+    // Declared after `tray`, so it is dropped (music stopped) before the icon goes.
+    let mut music = Music::new(identity.music);
+    music.play(Tune::Idle);
     let state = Arc::new(Mutex::new(SendState::default()));
     spawn_search(&discovery, &state, tray.waker());
 
@@ -479,11 +534,19 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                 }
             }
             (TrayEvent::Wake, Phase::Sending(name)) => {
-                let (pct, outcome) = {
+                let (accepted, pct, outcome) = {
                     let mut st = lock(&state);
-                    (st.pct, st.outcome.take())
+                    (st.accepted, st.pct, st.outcome.take())
                 };
                 if let Some(outcome) = outcome {
+                    let delivered = matches!(outcome, Ok(SendOutcome::Delivered));
+                    if delivered {
+                        music.play(Tune::Done); // replaces the loop
+                    } else {
+                        music.stop();
+                    }
+                    // Our jingle is the sound of success; skip the system one on top of it.
+                    let sound = !(delivered && music.enabled);
                     let (title, text, error) = match outcome {
                         Ok(SendOutcome::Delivered) => (s.delivered, String::new(), false),
                         Ok(SendOutcome::Declined(reason)) => {
@@ -495,12 +558,17 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     };
                     let title = fill(title, &[("name", name)]);
                     tray.set_tip(&title);
-                    tray.balloon(&title, &text, error);
+                    tray.balloon(&title, &text, error, sound);
                     tray.set_timer(EXIT_TIMER, EXIT_AFTER_MS);
                     phase = Phase::Done;
-                } else if let Some(pct) = pct {
-                    let pct = pct.to_string();
-                    tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
+                } else {
+                    if accepted {
+                        music.play(Tune::Transfer);
+                    }
+                    if let Some(pct) = pct {
+                        let pct = pct.to_string();
+                        tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
+                    }
                 }
             }
             (TrayEvent::Click, Phase::Sending(_)) => {
@@ -544,8 +612,13 @@ fn spawn_send(
     let state = Arc::clone(state);
     thread::spawn(move || {
         let mut last = None;
-        let result = send_files(peer.addr, &me, &files, &mut |p| {
-            if let Progress::Bytes { done, total } = p {
+        let result = send_files(peer.addr, &me, &files, &mut |p| match p {
+            // Only sent after the receiver accepted: switch to the transfer music.
+            Progress::FileStarted { index: 0, .. } => {
+                lock(&state).accepted = true;
+                waker.wake();
+            }
+            Progress::Bytes { done, total } => {
                 let pct = done.saturating_mul(100).checked_div(total).unwrap_or(100);
                 if last != Some(pct) {
                     last = Some(pct);
@@ -553,6 +626,7 @@ fn spawn_send(
                     waker.wake(); // at most ~100 wake-ups per transfer
                 }
             }
+            _ => {}
         });
         lock(&state).outcome = Some(result.map_err(|e| e.to_string()));
         waker.wake();

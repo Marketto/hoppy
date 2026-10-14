@@ -15,7 +15,15 @@ Two modules in `apps/android/`:
     `DiscoveryNode`, ref-counted, owns the Wi-Fi `MulticastLock`; screens subscribe to `Node`).
   - `service/ReceiveService.kt` — foreground (`dataSync`) receiver; asks via notification
     actions (`DecisionReceiver`), 60 s timeout = decline; `onTimeout` stops it (Android 15).
-  - `service/MediaStoreSink.kt` — saves to `Download/Hoppy`, `IS_PENDING` until hash OK.
+    `ReceiveService.receiving` is true from offer accepted to connection closed (state
+    listeners fire); each finished receive posts its own notification (channel `done`,
+    "Received files"; tap opens the single file or Downloads).
+  - `service/MediaStoreSink.kt` — saves to `Download/Hoppy`, `IS_PENDING` until hash OK;
+    `takeUri(location)` maps a committed file to its MediaStore item.
+  - `audio/Music.kt` — theme music (main thread): visible-activity counter, audio focus,
+    idle/transfer/done; `audio/MusicTiming.kt` (pure, + test vs `assets/music/manifest.json`)
+    holds bar lengths and fade curves. Hooks: `SendActivity` (`transferStarted/Ended`),
+    `ThemePickerActivity` (`preview`), menu item *Music*. Rules in `docs/design/themes.md`.
   - `ui/MainActivity.kt` (home), `ui/SendActivity.kt` (share target + picker), `ui/Common.kt`
     (`ThemedActivity`, `PeerAdapter`, `UriSource`, `Format`).
   - `ui/ShareShortcuts.kt` + `res/xml/shortcuts.xml` — sharing shortcuts (Direct Share):
@@ -45,6 +53,8 @@ Two modules in `apps/android/`:
   (`ShareTargets.recentPeer`) or carries the in-process token. Never read `file:` URIs or
   our own providers; never use a provider's `DISPLAY_NAME` as a path.
 - Show peer text through `SafeText.label` / `SafeText.offeredFileName`.
+- Music plays only on the sender and only while a Hoppy screen is visible; never start it
+  over other audio, never on the receiver. New screens get it for free (lifecycle callbacks).
 
 ## Build & verify
 

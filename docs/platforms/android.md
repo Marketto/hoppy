@@ -30,8 +30,16 @@
   are shown as the §4 sanitizer would save them.
 - Receive: switch **Ready to receive** → foreground notification; each transfer asks with
   Accept/Decline (60 s timeout = decline). Files land in `Download/Hoppy`.
+- End of every accepted receive: a system notification on the *Received files* channel
+  (id `done`, default importance/sound), one per transfer: "Received N files from X" (or
+  "Transfer from X failed"); tap opens the file (single file with a known type, `ACTION_VIEW`
+  + read grant on its MediaStore item) or the Downloads app. Needs the notification
+  permission, asked when the receive switch is turned on.
 - First launch: theme picker (Purikura, Showa, Manga, Yume, Night), pre-selected from the OS.
-- Overflow menu: theme, device name, accept automatically (with warning).
+- Theme music (`audio/Music.kt`, rules in `docs/design/themes.md` "Music"): idle loop while
+  the app is visible, faster loop on the sender during a send, jingle on delivery, silence
+  on the receiver while receiving and whenever another app plays audio.
+- Overflow menu: theme, device name, music (on by default), accept automatically (with warning).
 
 ## Platform constraints
 - minSdk 29 (MediaStore Downloads without storage permission), targetSdk 35.
