@@ -98,7 +98,9 @@ jobs:
             ks="$RUNNER_TEMP/hoppy-release.jks"
             # Secrets pasted from a phone often gain spaces or line breaks: drop all whitespace.
             if ! printf '%s' "$KEYSTORE_B64" | tr -d ' \t\r\n' | base64 -d > "$ks" 2>/dev/null; then
-              echo "::error::ANDROID_KEYSTORE_BASE64 is not valid base64 (truncated or extra characters when pasted). Paste it again as one line."
+              clean=$(printf '%s' "$KEYSTORE_B64" | tr -d ' \t\r\n')
+              bad=$(printf '%s' "$clean" | tr -d 'A-Za-z0-9+/=' | wc -c)
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not valid base64: ${#clean} characters (must be a multiple of 4), $bad character(s) outside the base64 alphabet. It was probably truncated or extra text was pasted; paste it again as one line."
               exit 1
             fi
             echo "Keystore: $(wc -c < "$ks") bytes"
