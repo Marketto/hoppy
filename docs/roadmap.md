@@ -6,6 +6,7 @@
 - Android: share target, device picker, receive service with Accept/Decline notification,
   saving to Download/Hoppy.
 - Five animated themes (Purikura, Showa, Manga, Yume, Night) with a first-run picker (ADR 0005).
+- Release pipeline (Windows installer, Android APK; macOS/Ubuntu/iOS gated) and download portal.
 - Agentic setup: AGENTS.md router, skills, subagents, `tools/dev.py`, CI.
 
 ## Next — usable beta

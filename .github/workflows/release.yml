@@ -1,0 +1,222 @@
+name: Release
+
+# Builds the installable packages and publishes a GitHub Release.
+#   - push a tag:        git tag v0.2.0 && git push origin v0.2.0
+#   - or run manually:   Actions → Release → Run workflow (version: 0.2.0)
+# Windows and Android are always built. macOS, Ubuntu and iPhone/iPad are switched on
+# one at a time with repository variables (Settings → Secrets and variables → Actions →
+# Variables): ENABLE_MACOS, ENABLE_LINUX, ENABLE_IOS = true. See docs/release.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without the leading v (e.g. 0.2.0)"
+        required: true
+      publish:
+        description: "Publish the GitHub Release (off = only build the packages as workflow artifacts)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+
+jobs:
+  meta:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          v="${VERSION#v}"
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$v' is not a semantic version (x.y.z)"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows · installer
+    needs: meta
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Set version
+        shell: bash
+        run: sed -i 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
+      - run: cargo build --release -p hoppy
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp `
+            "/DAppVersion=${{ needs.meta.outputs.version }}" `
+            "/DSourceExe=$PWD\target\release\hoppy.exe" apps\windows\hoppy.iss
+          Compress-Archive -Path target\release\hoppy.exe, apps\windows\install.ps1, LICENSE `
+            -DestinationPath dist\Hoppy-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows
+          path: dist/*
+
+  android:
+    name: Android · APK (phone + tablet)
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.14.3
+      - name: Release keystore (from secrets, never committed)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/hoppy-release.jks"
+            echo "HOPPY_KEYSTORE_FILE=$RUNNER_TEMP/hoppy-release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set: the APK is signed with a throwaway debug key and cannot be updated in place by the next release. See docs/release.md."
+          fi
+      - name: Build
+        working-directory: apps/android
+        env:
+          HOPPY_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          HOPPY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          HOPPY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: >
+          gradle :core:test :app:testDebugUnitTest :app:assembleRelease --stacktrace
+          -PhoppyVersionName=${{ needs.meta.outputs.version }}
+          -PhoppyVersionCode=${{ github.run_number }}
+      - name: Collect
+        run: |
+          mkdir -p dist
+          cp apps/android/app/build/outputs/apk/release/app-release.apk dist/Hoppy-android.apk
+          rm -f "$RUNNER_TEMP/hoppy-release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-android
+          path: dist/*
+
+  macos:
+    name: macOS · universal (Intel 2015+ and Apple silicon)
+    needs: meta
+    if: vars.ENABLE_MACOS == 'true'
+    runs-on: macos-latest
+    env:
+      # Macs from 2015 top out at macOS 12 Monterey; build for it and later.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - name: Set version
+        run: sed -i '' 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
+      - run: |
+          cargo build --release -p hoppy --target x86_64-apple-darwin
+          cargo build --release -p hoppy --target aarch64-apple-darwin
+          mkdir -p dist pkg
+          lipo -create -output pkg/hoppy target/x86_64-apple-darwin/release/hoppy target/aarch64-apple-darwin/release/hoppy
+          lipo -info pkg/hoppy
+          cp LICENSE pkg/
+          # TODO(macOS GUI): replace with a signed + notarized Hoppy.app in a .dmg (needs an Apple Developer ID).
+          hdiutil create -volname Hoppy -srcfolder pkg -ov -format UDZO dist/Hoppy-macos-universal.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-macos
+          path: dist/*
+
+  linux:
+    name: Ubuntu · .deb
+    needs: meta
+    if: vars.ENABLE_LINUX == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set version
+        run: sed -i 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
+      - run: cargo install cargo-deb --locked
+      - run: |
+          cargo deb -p hoppy
+          mkdir -p dist
+          cp target/debian/*.deb dist/hoppy_amd64.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux
+          path: dist/*
+
+  ios:
+    name: iPhone/iPad (2021+)
+    needs: meta
+    if: vars.ENABLE_IOS == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Not implemented yet
+        run: |
+          echo "::error::The iOS app does not exist yet. It will ship through TestFlight/App Store (needs an Apple Developer account); see docs/release.md."
+          exit 1
+
+  publish:
+    name: Publish release
+    needs: [meta, windows, android, macos, linux, ios]
+    # Publish when every enabled job succeeded (disabled ones are 'skipped').
+    if: >-
+      always() && needs.meta.result == 'success' && inputs.publish != false &&
+      needs.windows.result == 'success' && needs.android.result == 'success' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.meta.outputs.version }}
+        run: |
+          tag="v$V"
+          cat > notes.md <<EOF
+          ## Hoppy $V
+
+          Download page: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
+          | Platform | File |
+          | --- | --- |
+          | Windows 10/11 (64-bit) | \`Hoppy-Setup-x64.exe\` (installer) · \`Hoppy-windows-x64.zip\` (portable) |
+          | Android 10+ (phone and tablet) | \`Hoppy-android.apk\` |
+
+          > Proof of concept: protocol v0 is **not encrypted**. Use Hoppy only on networks you trust.
+          > Windows may show a SmartScreen warning (the installer is not code-signed yet): More info → Run anyway.
+          EOF
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --title "Hoppy $V" --notes-file notes.md --target "${{ github.sha }}"
+          fi

@@ -20,6 +20,7 @@ Match the request to a row, load the skill, follow it. One request may hit sever
 | Themes, theme picker, animations, mascots, fonts, app icon | `.claude/skills/hoppy-themes/SKILL.md` | `apps/android/app/src/main/java/app/hoppy/ui/theme/`, `tools/gen_mascots.py`, `tools/fonts.py`, `docs/design/themes.md` | `python3 tools/dev.py mascots` (+ CI build) |
 | Cross-implementation bugs ("works Rust→Rust, not with Android") | `.claude/skills/hoppy-interop-test/SKILL.md` | `tools/hoppy_ref.py`, `tools/interop.sh` | `python3 tools/dev.py interop` |
 | New transport (BLE, Wi-Fi Direct/Aware, relay) or new platform | `.claude/skills/hoppy-new-transport/SKILL.md` | `docs/architecture.md`, `docs/roadmap.md` | depends; write an ADR |
+| Releases, installers, download portal, enabling a platform | `.claude/skills/hoppy-release/SKILL.md` | `.github/workflows/release.yml`, `.github/workflows/pages.yml`, `site/`, `docs/release.md` | `python3 tools/site.py serve` + Release run with *publish* off |
 | An architectural decision, or docs for agents | `.claude/skills/hoppy-docs-adr/SKILL.md` | `docs/decisions/`, this file | `python3 tools/dev.py docs` |
 | Anything else / unsure | read `docs/architecture.md`, then pick a row | | `python3 tools/dev.py check` |
 
@@ -34,7 +35,8 @@ crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, san
 crates/hoppy-cli/      `hoppy` binary: send / receive / peers / install (Windows Send To)
 apps/android/core/     Pure-JVM Kotlin: same protocol for Android (unit + interop tested)
 apps/android/app/      Android UI shell: share target, receive service, themes
-apps/windows/          Windows install script
+apps/windows/          Windows installer (Inno Setup) and install script
+site/                  Download portal (GitHub Pages), built by tools/site.py
 tools/dev.py           ONE command runner for everything (see `--help`)
 tools/hoppy_ref.py     Python reference implementation + debugging CLI (stdlib only)
 tools/interop.sh       Rust ↔ Python ↔ Kotlin wire tests
