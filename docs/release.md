@@ -43,7 +43,9 @@ publishing (they appear as workflow artifacts).
   ```
   Secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
   `ANDROID_KEY_PASSWORD`. Without them the APK is signed with a throwaway debug key (a
-  workflow warning says so).
+  workflow warning says so). The workflow ignores whitespace in the base64 secret (handy
+  when pasting from a phone), fails early with a clear error if the keystore can't be opened,
+  and prints the public certificate SHA-256 as a notice so you can check the right key signed.
 - **Windows**: the installer is unsigned, so SmartScreen warns ("More info → Run anyway").
   A code-signing certificate (or Azure Trusted Signing) removes the warning; add a signing
   step after `ISCC.exe` when one exists.
