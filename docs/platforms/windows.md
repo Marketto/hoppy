@@ -14,7 +14,22 @@
   `Downloads\Hoppy`; a notification says what arrived and opens the folder when clicked.
   `hoppy receive --yes` (CLI) skips the question (trusted networks only).
 - Tray menu (left or right click): *Send files…*, *Open received folder*, *♪ Music while
-  sending* (check mark = on), *Quit*.
+  sending* (check mark = on), *Quit*. When an update is available, a bold *Update to X.Y.Z…*
+  comes first.
+- Updates (tray only, `crates/hoppy-cli/src/update.rs`): 30 s after the tray starts and then
+  once a day it asks `api.github.com/repos/Marketto/hoppy/releases/latest` (WinHTTP, system
+  proxy, User-Agent `Hoppy/<version>`); network errors are silent. If the release is newer
+  (semver; pre-releases are never offered) a notification says "Hoppy X.Y.Z is available —
+  click to update". Clicking it (or the menu item) downloads `Hoppy-Setup-x64.exe` into a
+  fresh private folder `%TEMP%\Hoppy-update-<random>\Hoppy-Setup-X.Y.Z.exe` (progress in the
+  tooltip), hashing it while it is written as `*.part` and renaming it only if the SHA-256
+  matches the release's `SHA256SUMS.txt` (mismatch or error: notification, folder removed,
+  nothing installed), runs it at once with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+  /UPDATE=1` (no window, so no Cancel) and quits; the installer restarts the tray, also when
+  setup fails (`DeinitializeSetup`). `Hoppy-update-*` folders older than a day are removed
+  when the tray starts. The installer is unsigned for now (docs/release.md "Trust model"). Only copies installed by the setup (`%LOCALAPPDATA%\Programs\Hoppy`) update
+  themselves; portable copies elsewhere get a notification/menu item that opens the
+  download portal. Dev builds (debug, or a `-dev` version) never check.
 - Installer upgrades/uninstalls stop only the `hoppy.exe`/`hoppyw.exe` running from the
   install folder (PowerShell, path-filtered), not same-named programs elsewhere.
 - Send: right click files → *Send to* → *Hoppy* (Windows 11: *Show more options* first, or

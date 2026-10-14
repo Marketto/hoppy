@@ -34,6 +34,11 @@ Two modules in `apps/android/`:
   - `ui/SafeText.kt` (pure, + test) — labels without control/bidi chars, outgoing file
     names, which shared URIs may be read (`content:` of other apps only).
     Home "Send files" forwards picked URIs as `ACTION_SEND(_MULTIPLE)` + ClipData + grant.
+  - `update/Updater.kt` — update check (home start, ≤ 1/24 h, skipped on `-dev`) against
+    GitHub `releases/latest`, "Updates" channel, home banner, download + SHA-256 check vs
+    `SHA256SUMS.txt`, `PackageInstaller` session; `update/InstallReceiver.kt` handles the
+    session status (user confirmation). Pure semver/JSON/checksum parsing in
+    `update/UpdateLogic.kt` (+ test). Details: `docs/platforms/android.md` "Updates".
   - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
     all animated views (see `hoppy-themes`).
 
@@ -53,6 +58,9 @@ Two modules in `apps/android/`:
   (`ShareTargets.recentPeer`) or carries the in-process token. Never read `file:` URIs or
   our own providers; never use a provider's `DISPLAY_NAME` as a path.
 - Show peer text through `SafeText.label` / `SafeText.offeredFileName`.
+- Updater: never rename the release assets (`Hoppy-android.apk`, `SHA256SUMS.txt`) or the
+  repo path in `Updater.kt`; never install without a matching SHA-256; only start a
+  download from a user tap (banner, or our token-carrying notification).
 - Music plays only on the sender and only while a Hoppy screen is visible; never start it
   over other audio, never on the receiver. New screens get it for free (lifecycle callbacks).
 

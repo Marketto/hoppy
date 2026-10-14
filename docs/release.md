@@ -10,9 +10,39 @@
 | Ubuntu 22.04+ x64 | gated (`ENABLE_LINUX`) | `hoppy_amd64.deb` (`cargo-deb`) | `release.yml` → `linux` |
 | iPhone / iPad from 2021 | gated (`ENABLE_IOS`) | TestFlight / App Store link (no app yet) | `release.yml` → `ios` (placeholder) |
 
-Every release also carries `SHA256SUMS.txt`. Asset names never contain the version, so
+Every release also carries `SHA256SUMS.txt` (`sha256sum` output: `<hex>  <name>` per line).
+Asset names never contain the version, so
 `https://github.com/<owner>/<repo>/releases/latest/download/<asset>` always points at the
-newest build — the portal relies on this.
+newest build — the portal relies on this, and so does the **Android in-app updater**
+(`update/Updater.kt`, docs/platforms/android.md "Updates"): it reads `tag_name` from the
+`releases/latest` API (must be semver, e.g. `v0.2.0`), downloads `Hoppy-android.apk` and
+refuses it unless its SHA-256 matches the `Hoppy-android.apk` line of `SHA256SUMS.txt`.
+Renaming either asset, publishing an APK not listed in the sums, or changing the signing
+key breaks updates for every installed app. Pre-releases and drafts are not offered
+(`releases/latest` skips them).
+
+The **Windows tray updater** (`crates/hoppy-cli/src/update.rs`, docs/platforms/windows.md
+"Updates") relies on the same contract: it reads `tag_name` (`vX.Y.Z`) from
+`releases/latest`, downloads `Hoppy-Setup-x64.exe` and `SHA256SUMS.txt` from
+`releases/download/<tag>/`, refuses the installer unless its SHA-256 matches the
+`Hoppy-Setup-x64.exe` line, then runs it with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+/UPDATE=1` (`hoppy.iss` relaunches the tray when it sees `/UPDATE=1`, also if setup fails). A
+release without both assets is not offered. **Never rename `Hoppy-Setup-x64.exe` or
+`SHA256SUMS.txt`**, never drop the installer from the sums, and keep tags `v` + plain `X.Y.Z`.
+
+**Trust model of updates.** `SHA256SUMS.txt` comes from the same GitHub Release as the
+installer, so it proves *integrity* (no corrupted or truncated download), not *authenticity*:
+anyone who can publish a Release on this repository (a stolen token, a compromised account or
+workflow) can ship a matching installer and sums. Authenticity rests on GitHub and on the
+security of the repository and its CI. Consequences:
+
+- **Windows:** the installer is **not signed** today. Planned: Authenticode-sign
+  `Hoppy-Setup-x64.exe` (and both exes) in `release.yml` with a key from CI secrets, and have
+  the tray verify the signature and publisher (`WinVerifyTrust`) before launching it.
+- **Android:** updates install only if signed with the **same key** as the installed app.
+  The keystore and its `ANDROID_*` CI secrets must never go missing or be rotated casually:
+  losing them means no installed app can ever update again (users would have to uninstall).
+  Keep an offline backup outside GitHub.
 
 ## Cutting a release
 

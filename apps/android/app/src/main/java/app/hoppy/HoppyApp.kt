@@ -14,6 +14,7 @@ import app.hoppy.core.Peer
 import app.hoppy.ui.RecentTarget
 import app.hoppy.ui.ShareTargets
 import app.hoppy.ui.theme.HoppyTheme
+import app.hoppy.update.Updater
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArraySet
 
@@ -28,9 +29,12 @@ class HoppyApp : Application() {
                 // "Received files": default importance = system default sound. The id stays
                 // "done" so users keep any per-channel setting they already made.
                 NotificationChannel(CH_DONE, getString(R.string.channel_done), NotificationManager.IMPORTANCE_DEFAULT),
+                // "Updates": new version available, download progress (silent), errors.
+                NotificationChannel(CH_UPDATES, getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
             ),
         )
         Music.init(this)
+        Updater.init(this)
     }
 
     override fun onTrimMemory(level: Int) {
@@ -42,10 +46,11 @@ class HoppyApp : Application() {
         const val CH_RECEIVER = "receiver"
         const val CH_INCOMING = "incoming"
         const val CH_DONE = "done"
+        const val CH_UPDATES = "updates"
     }
 }
 
-/** Small preference store: identity, theme, auto-accept, music. */
+/** Small preference store: identity, theme, auto-accept, music, update check. */
 object Prefs {
     private fun sp(ctx: Context) = ctx.getSharedPreferences("hoppy", Context.MODE_PRIVATE)
 
@@ -105,6 +110,38 @@ object Prefs {
 
     fun setRecentTargets(ctx: Context, list: List<RecentTarget>) {
         sp(ctx).edit().putString("recent_targets", ShareTargets.encode(list)).apply()
+    }
+
+    /** Last update check (epoch ms), see `update/Updater.kt`. */
+    fun updateCheckedAt(ctx: Context): Long = sp(ctx).getLong("update_checked_at", 0L)
+
+    fun setUpdateCheckedAt(ctx: Context, value: Long) {
+        sp(ctx).edit().putLong("update_checked_at", value).apply()
+    }
+
+    /** Newest release version seen on GitHub (without the leading "v"). */
+    fun latestVersion(ctx: Context): String? = sp(ctx).getString("update_latest", null)
+
+    /** Release tag of [latestVersion] as published (e.g. "v0.2.0"): the APK is fetched from it. */
+    fun latestTag(ctx: Context): String? = sp(ctx).getString("update_latest_tag", null)
+
+    fun setLatestRelease(ctx: Context, version: String, tag: String) {
+        sp(ctx).edit().putString("update_latest", version).putString("update_latest_tag", tag).apply()
+    }
+
+    /** Version the "update available" notification was posted for (once per version). */
+    fun updateNotified(ctx: Context): String? = sp(ctx).getString("update_notified", null)
+
+    fun setUpdateNotified(ctx: Context, value: String) {
+        sp(ctx).edit().putString("update_notified", value).apply()
+    }
+
+    /** Secret carried by our own update notification (MainActivity is exported). */
+    fun updateToken(ctx: Context): String {
+        val p = sp(ctx)
+        return p.getString("update_token", null) ?: UUID.randomUUID().toString().also {
+            p.edit().putString("update_token", it).apply()
+        }
     }
 }
 

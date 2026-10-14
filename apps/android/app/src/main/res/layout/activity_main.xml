@@ -178,6 +178,44 @@
             android:textColor="?attr/colorOnSurface"
             android:textSize="22sp" />
 
+        <!-- "Hoppy x.y.z is available" + Update; shown only when a newer release is known
+             (update/Updater.kt). Same card and text colors as a peer row (contrast-checked). -->
+        <LinearLayout
+            android:id="@+id/updateBanner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginTop="12dp"
+            android:background="?attr/hoppyCardBackground"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal"
+            android:paddingStart="18dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/updateText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="14sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/updateButton"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:text="@string/update_action"
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
         <LinearLayout
             android:id="@+id/receiveCard"
             android:layout_width="match_parent"

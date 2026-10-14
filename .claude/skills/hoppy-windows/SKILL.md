@@ -29,10 +29,21 @@ PoC UX (no console windows):
 - `crates/hoppy-cli/src/gui.rs` — tray receiver + send flow, IT/EN string table
   (`GetUserDefaultUILanguage`), safe Rust only. Worker threads update `Mutex` state and call
   `Waker::wake` (→ `WM_APP` → `TrayEvent::Wake`); only the UI thread touches the tray.
+- `crates/hoppy-cli/src/update.rs` — tray update check, pure and Linux-tested: semver
+  compare with `CARGO_PKG_VERSION`, `releases/latest` JSON, `SHA256SUMS.txt`, install
+  location (`%LOCALAPPDATA%\Programs\Hoppy` = setup, else portable → portal link), and
+  `download_fresh` (new `%TEMP%\Hoppy-update-<uuid>` folder via `create_dir`; `*.part`,
+  hashed while written, renamed only if the SHA-256 matches; stale folders >1 day removed
+  at tray start by `remove_stale_update_dirs`) over an
+  `Http` trait (fake in tests). `gui.rs` runs it on worker threads (30 s, then daily),
+  shows the bold "Update to X…" item / balloon, runs the installer with `/UPDATE=1` and
+  exits. Asset names are a contract with `release.yml` (docs/release.md).
 - `crates/hoppy-cli/src/platform.rs` — **all Win32 FFI** (`windows-sys` 0.61) in
   `#[cfg(windows)] mod win`: hidden window + `Shell_NotifyIconW` (NOTIFYICON_VERSION_4,
   re-added on `TaskbarCreated`), popup menus, `GetOpenFileNameW`, `ShellExecuteW`, named
-  mutex `Local\HoppyTray` (single instance; a 2nd launch makes the 1st show a balloon), and
+  mutex `Local\HoppyTray` (single instance; a 2nd launch makes the 1st show a balloon),
+  `http_get` (WinHTTP, `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`, https only via
+  `split_https_url`; bold menu items = `SetMenuDefaultItem`), and
   `install()`, and `play_tune`/`stop_tune` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`, WAVs
   from `assets/music/` embedded with `include_bytes!` only in Windows builds). A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
@@ -45,7 +56,9 @@ PoC UX (no console windows):
   receiver) and on uninstall (`usUninstall`), Start menu "Hoppy" → `hoppyw.exe`. Wizard
   music: WAVs as `dontcopy` files → `ExtractTemporaryFile` in `InitializeWizard`, winmm
   `PlaySoundW` imported twice (String name / Longint 0 = stop), skipped if `WizardSilent`,
-  stopped in `DeinitializeSetup`. Keep every section (`grep -n '^\[' hoppy.iss`) after edits.
+  stopped in `DeinitializeSetup`. `[Run]` relaunches `hoppyw.exe` when `IsUpdate`
+  (`/UPDATE=1`, passed by the tray updater with `/VERYSILENT`); if the update fails or
+  stops before `ssPostInstall`, `DeinitializeSetup` relaunches `{app}\hoppyw.exe` instead. Keep every section (`grep -n '^\[' hoppy.iss`) after edits.
 - `apps/windows/install.ps1` — portable zip install into `%LOCALAPPDATA%\Programs\Hoppy`.
 - Docs: `docs/platforms/windows.md`.
 
@@ -81,4 +94,5 @@ Linux can't build the Windows target here. Run `python3 tools/dev.py check`, the
 the `windows-latest` CI job (clippy + `cargo test` + artifacts `hoppy.exe`, `hoppyw.exe`);
 its failures appear as annotations (`tools/ci-annotate.sh`), not only in the log.
 Manual test on a real PC: tray icon at login, accept dialog, balloon click, Send to menu,
-send music (idle → transfer → done, mute toggle), installer music + checkbox.
+send music (idle → transfer → done, mute toggle), installer music + checkbox, update flow
+(balloon → download % → silent install → tray back; portable → portal).

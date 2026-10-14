@@ -41,6 +41,41 @@
   on the receiver while receiving and whenever another app plays audio.
 - Overflow menu: theme, device name, music (on by default), accept automatically (with warning).
 
+## Updates (in-app, from GitHub Releases)
+The APK is distributed from GitHub Releases, not the Play Store; every release is signed
+with the same key (docs/release.md), so a new APK installs over the old one in place.
+Code: `update/Updater.kt` (Android side), `update/UpdateLogic.kt` (pure: semver, release
+JSON, `SHA256SUMS.txt` parsing; unit-tested), `update/InstallReceiver.kt`.
+- **Check**: when the home screen starts, at most once per 24 h (`Prefs.updateCheckedAt`),
+  a background thread GETs `https://api.github.com/repos/Marketto/hoppy/releases/latest`
+  (`HttpURLConnection`, `User-Agent: Hoppy/<versionName>`, 15 s/30 s timeouts). Silent on any
+  error; the timestamp is stored only after a complete response, so a failed check
+  retries on the next start. Builds whose `versionName` contains `-dev` (local/CI builds)
+  never check. A release counts only if its `tag_name` is exactly `[vV]?X.Y.Z` (it is
+  used in the download URL) and it carries both `Hoppy-android.apk` and `SHA256SUMS.txt`;
+  version and tag are stored together. Pre-releases are never offered (as on Windows).
+- **Newer version**: one notification per version on the *Updates* channel (`updates`,
+  default importance): "Hoppy <ver> is available — tap to update"; plus a small banner on
+  the home screen (peer-row card + `colorOnSurface`, so it inherits the contrast-checked
+  pair) with an *Update* button. The banner uses the last seen version and disappears
+  once the installed version catches up.
+- **Update**: the notification tap (it carries a secret token from private prefs, since
+  `MainActivity` is exported) or the banner button. If Hoppy may not install unknown apps
+  (`canRequestPackageInstalls()` false) the system page
+  `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` for our package opens first and the update
+  continues when the user comes back with it allowed. Then: `SHA256SUMS.txt` and
+  `Hoppy-android.apk` from `releases/download/<tag>/` of the stored tag, so both come
+  from the same release (redirects stay on https; no stored tag → error and a new check) into
+  `cacheDir/updates/`, progress in a silent notification, SHA-256 compared with the listed
+  hash, package name checked, then a `PackageInstaller` session (`createSession` /
+  `openWrite` / `commit`) and the file is deleted. `InstallReceiver` gets the status:
+  `STATUS_PENDING_USER_ACTION` → starts the system confirmation (`EXTRA_INTENT`) if a
+  Hoppy screen is visible, else posts "tap to install"; errors and hash mismatches → an
+  error notification and the download is deleted. The system rejects an APK signed with a
+  different key.
+- Permission: `REQUEST_INSTALL_PACKAGES`. Notifications need the notification permission
+  (asked when receiving is turned on); without it the banner still works.
+
 ## Platform constraints
 - minSdk 29 (MediaStore Downloads without storage permission), targetSdk 35.
 - Receiver is a `dataSync` foreground service: Android 15 limits it to ~6 h/day; the

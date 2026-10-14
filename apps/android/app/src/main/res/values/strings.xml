@@ -63,6 +63,16 @@
     <string name="accept">Accept</string>
     <string name="decline">Decline</string>
     <string name="stop">Stop</string>
+    <!-- In-app updater (update/Updater.kt). %1$s = version, e.g. 0.2.0. -->
+    <string name="channel_updates">Updates</string>
+    <string name="update_available">Hoppy %1$s is available — tap to update</string>
+    <string name="update_banner">Hoppy %1$s is available</string>
+    <string name="update_action">Update</string>
+    <string name="update_downloading">Downloading the update…</string>
+    <string name="update_ready">Update downloaded — tap to install</string>
+    <string name="update_failed">Update failed: %1$s</string>
+    <string name="update_bad_checksum">the download is damaged (checksum mismatch)</string>
+    <string name="update_install_failed">could not install</string>
     <plurals name="incoming_title">
         <item quantity="one">%1$s wants to send %2$d file (%3$s)</item>
         <item quantity="other">%1$s wants to send %2$d files (%3$s)</item>

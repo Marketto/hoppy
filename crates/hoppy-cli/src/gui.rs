@@ -6,6 +6,9 @@
 //!   with progress in the tray tooltip, final balloon, then exits. Plays music unless muted
 //!   (`music` in device.json): idle loop → transfer loop once accepted → done jingle.
 //!   The receiver never plays music.
+//! - Updates: the tray checks GitHub Releases 30 s after start and then daily (`update.rs`);
+//!   "Update to X…" downloads the installer, verifies SHA256SUMS.txt, runs it silently and
+//!   exits (the installer restarts the tray). Portable copies only link to the portal.
 //!
 //! Safe Rust only: every Win32 call goes through `platform::win` (a stub off Windows, so
 //! this module is compiled and linted everywhere). Worker threads never touch the UI; they
@@ -19,7 +22,7 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, bail};
 use hoppy_core::protocol::TRANSFER_PORT;
@@ -29,10 +32,10 @@ use hoppy_core::{
 };
 
 use crate::platform::win::{self, Tray, Waker};
-use crate::platform::{self, MenuItem, TooManyFiles, TrayEvent, Tune};
+use crate::platform::{self, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, display_file_name,
-    display_name, display_platform, display_text, human, start_discovery,
+    display_name, display_platform, display_text, human, start_discovery, update,
 };
 
 /// Window titles double as identities: `signal_existing` looks for the tray one.
@@ -80,6 +83,13 @@ pub struct Strings {
     pub no_files: &'static str,
     pub too_many_files: &'static str,
     pub usage: &'static str,
+    pub update_ready: &'static str,
+    pub update_portal: &'static str,
+    pub menu_update: &'static str,
+    pub menu_download: &'static str,
+    pub update_progress: &'static str,
+    pub update_failed: &'static str,
+    pub update_mismatch: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -113,6 +123,13 @@ pub const IT: Strings = Strings {
     no_files: "Nessun file da inviare.",
     too_many_files: "Troppi file selezionati: inviali in più volte.",
     usage: "Uso: hoppyw (icona vicino all'orologio) oppure hoppyw send FILE…",
+    update_ready: "Hoppy {version} è disponibile — clic per aggiornare",
+    update_portal: "Hoppy {version} è disponibile — clic per scaricarlo",
+    menu_update: "Aggiorna a {version}…",
+    menu_download: "Scarica Hoppy {version}…",
+    update_progress: "Scarico aggiornamento… {pct}%",
+    update_failed: "Aggiornamento non riuscito",
+    update_mismatch: "Il file scaricato non corrisponde al checksum ufficiale: non è stato installato.",
 };
 
 pub const EN: Strings = Strings {
@@ -146,6 +163,13 @@ pub const EN: Strings = Strings {
     no_files: "Nothing to send.",
     too_many_files: "Too many files selected: send them in several batches.",
     usage: "Usage: hoppyw (icon near the clock) or hoppyw send FILE…",
+    update_ready: "Hoppy {version} is available — click to update",
+    update_portal: "Hoppy {version} is available — click to download it",
+    menu_update: "Update to {version}…",
+    menu_download: "Download Hoppy {version}…",
+    update_progress: "Downloading update… {pct}%",
+    update_failed: "Update failed",
+    update_mismatch: "The downloaded file does not match the official checksum: it was not installed.",
 };
 
 pub fn strings() -> &'static Strings {
@@ -316,6 +340,16 @@ const ID_SEND: u32 = 1;
 const ID_OPEN: u32 = 2;
 const ID_QUIT: u32 = 3;
 const ID_MUSIC: u32 = 4;
+const ID_UPDATE: u32 = 5;
+
+/// What clicking the last balloon does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BalloonAction {
+    Nothing,
+    OpenDir,
+    Update,
+    Portal,
+}
 
 fn tray_mode(s: &'static Strings) -> Result<()> {
     let Some(_instance) = win::single_instance(INSTANCE_MUTEX) else {
@@ -340,22 +374,44 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     let serve_dir = dir.clone();
     thread::spawn(move || serve(listener, serve_dir, handler));
 
+    let updates = Arc::new(Mutex::new(Updates::default()));
+    let mode = update_mode();
+    // Installers of earlier updates (their folder could not be removed while they ran).
+    thread::spawn(|| {
+        update::remove_stale_update_dirs(&std::env::temp_dir(), update::STALE_UPDATE_DIR)
+    });
+    if mode != UpdateMode::Off {
+        spawn_update_checker(&updates, tray.waker());
+    }
+
+    let ready_tip = fill(s.tip_ready, &[("name", &me.name)]);
     let header = fill(s.menu_header, &[("name", &me.name)]);
-    let mut last_ok_balloon = false;
+    let mut balloon_action = BalloonAction::Nothing;
     while let Some(event) = tray.next_event() {
         match event {
             TrayEvent::Click => {
                 // Re-read: `hoppy music on|off` may have changed it meanwhile.
                 let music = config::load_or_create().map_or(true, |i| i.music);
-                let items = [
+                let update_item = update_menu_text(s, &lock(&updates), mode);
+                let mut items = Vec::new();
+                if let Some((clickable, text)) = &update_item {
+                    items.push(if *clickable {
+                        MenuItem::Bold(ID_UPDATE, text)
+                    } else {
+                        MenuItem::Label(text)
+                    });
+                    items.push(MenuItem::Separator);
+                }
+                items.extend([
                     MenuItem::Label(&header),
                     MenuItem::Action(ID_SEND, s.menu_send),
                     MenuItem::Action(ID_OPEN, s.menu_open),
                     MenuItem::Check(ID_MUSIC, s.menu_music, music),
                     MenuItem::Separator,
                     MenuItem::Action(ID_QUIT, s.menu_quit),
-                ];
+                ]);
                 match tray.popup_menu(&items, true) {
+                    Some(ID_UPDATE) => start_update(s, &updates, mode, tray.waker()),
                     Some(ID_SEND) => match tray.pick_files(s.pick_title) {
                         Ok(files) if files.is_empty() => {}
                         Ok(files) => {
@@ -382,16 +438,231 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     let Some(n) = next else { break };
                     // System sound on: this is the "files arrived" notification.
                     tray.balloon(&n.title, &n.text, n.error, true);
-                    last_ok_balloon = !n.error;
+                    balloon_action = if n.error {
+                        BalloonAction::Nothing
+                    } else {
+                        BalloonAction::OpenDir
+                    };
+                }
+                let upd = update_wake(&tray, s, &updates, mode, &ready_tip);
+                if let Some(action) = upd.balloon {
+                    balloon_action = action;
+                }
+                if let Some(path) = upd.launch {
+                    match Command::new(&path).args(update::INSTALLER_ARGS).spawn() {
+                        // The installer stops running copies anyway; leave cleanly first
+                        // (dropping `tray` removes the icon) and let it restart us.
+                        Ok(_) => break,
+                        Err(e) => {
+                            let text = display_text(&e.to_string(), SHOW_TEXT_MAX);
+                            tray.set_tip(&ready_tip);
+                            tray.balloon(s.update_failed, &text, true, true);
+                            balloon_action = BalloonAction::Nothing;
+                        }
+                    }
                 }
             }
-            TrayEvent::BalloonClick if last_ok_balloon => open_dir(&dir),
+            TrayEvent::BalloonClick => match balloon_action {
+                BalloonAction::OpenDir => open_dir(&dir),
+                BalloonAction::Update => start_update(s, &updates, mode, tray.waker()),
+                BalloonAction::Portal => {
+                    win::open_url(update::PORTAL_URL);
+                }
+                BalloonAction::Nothing => {}
+            },
             TrayEvent::Reopen => tray.balloon("Hoppy", s.already_running, false, true),
             _ => {}
         }
     }
     // Locals drop in reverse order: the tray icon goes first, then discovery says "bye".
     Ok(())
+}
+
+// ---------------------------------------------------------------- updates
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateMode {
+    /// Dev build: never check.
+    Off,
+    /// Installed by Hoppy-Setup: download, verify and run the installer.
+    Setup,
+    /// Portable copy: only point to the download portal.
+    Portal,
+}
+
+fn update_mode() -> UpdateMode {
+    if cfg!(debug_assertions) || update::is_dev_version(update::CURRENT_VERSION) {
+        return UpdateMode::Off;
+    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.to_string_lossy().into_owned()));
+    let local = std::env::var_os("LOCALAPPDATA").map(|l| l.to_string_lossy().into_owned());
+    match (exe_dir, local) {
+        (Some(dir), Some(local)) if update::is_setup_install(&dir, &local) => UpdateMode::Setup,
+        _ => UpdateMode::Portal,
+    }
+}
+
+/// Shared between the update threads and the UI thread.
+#[derive(Default)]
+struct Updates {
+    available: Option<update::Release>,
+    /// `available` changed and has not been announced with a balloon yet.
+    fresh: bool,
+    /// Some(percent) while the installer is downloading.
+    downloading: Option<u64>,
+    /// The download thread's result: the verified installer, or a message to show.
+    finished: Option<Result<PathBuf, String>>,
+}
+
+struct WinHttp;
+
+impl update::Http for WinHttp {
+    fn get(&self, url: &str, sink: &mut HttpSink<'_>) -> Result<()> {
+        win::http_get(url, update::USER_AGENT, sink)
+    }
+}
+
+/// Checks after `FIRST_CHECK`, then once per `CHECK_EVERY` of wall-clock time (hourly
+/// ticks, so a PC that sleeps a lot still checks daily). Network errors are ignored.
+fn spawn_update_checker(updates: &Arc<Mutex<Updates>>, waker: Waker) {
+    let updates = Arc::clone(updates);
+    thread::spawn(move || {
+        thread::sleep(update::FIRST_CHECK);
+        loop {
+            if let Ok(Some(release)) = update::check(&WinHttp, update::CURRENT_VERSION) {
+                let mut u = lock(&updates);
+                if u.available.as_ref() != Some(&release) && u.downloading.is_none() {
+                    u.available = Some(release);
+                    u.fresh = true;
+                    drop(u);
+                    waker.wake();
+                }
+            }
+            let checked = SystemTime::now();
+            loop {
+                thread::sleep(Duration::from_secs(3600));
+                let elapsed = checked.elapsed().unwrap_or(update::CHECK_EVERY);
+                if elapsed >= update::CHECK_EVERY {
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Top menu entry: (clickable, text). Bold "Update to X…", or the progress while
+/// downloading.
+fn update_menu_text(s: &Strings, u: &Updates, mode: UpdateMode) -> Option<(bool, String)> {
+    if let Some(pct) = u.downloading {
+        return Some((false, fill(s.update_progress, &[("pct", &pct.to_string())])));
+    }
+    let version = u.available.as_ref()?.version.to_string();
+    let template = match mode {
+        UpdateMode::Setup => s.menu_update,
+        UpdateMode::Portal => s.menu_download,
+        UpdateMode::Off => return None,
+    };
+    Some((true, fill(template, &[("version", &version)])))
+}
+
+/// Starts the download (Setup) or opens the portal (portable). One download at a time.
+fn start_update(
+    s: &'static Strings,
+    updates: &Arc<Mutex<Updates>>,
+    mode: UpdateMode,
+    waker: Waker,
+) {
+    if mode == UpdateMode::Portal {
+        win::open_url(update::PORTAL_URL);
+        return;
+    }
+    let release = {
+        let mut u = lock(updates);
+        if mode != UpdateMode::Setup || u.downloading.is_some() {
+            return;
+        }
+        let Some(release) = u.available.clone() else {
+            return;
+        };
+        u.downloading = Some(0);
+        release
+    };
+    waker.wake(); // show 0% now
+    let updates = Arc::clone(updates);
+    thread::spawn(move || {
+        let temp = std::env::temp_dir();
+        let result = update::download_fresh(&WinHttp, &release, &temp, &mut |pct| {
+            let mut u = lock(&updates);
+            if u.downloading != Some(pct) {
+                u.downloading = Some(pct);
+                drop(u);
+                waker.wake(); // at most ~100 wake-ups
+            }
+        });
+        let result = result.map_err(|e| {
+            if e.is::<update::HashMismatch>() {
+                s.update_mismatch.to_owned()
+            } else {
+                display_text(&format!("{e:#}"), SHOW_TEXT_MAX)
+            }
+        });
+        lock(&updates).finished = Some(result);
+        waker.wake();
+    });
+}
+
+#[derive(Default)]
+struct UpdateWake {
+    /// New action for clicks on the balloon just shown.
+    balloon: Option<BalloonAction>,
+    /// Verified installer to run now.
+    launch: Option<PathBuf>,
+}
+
+/// UI-thread side of `Wake` for updates: announce, show progress, report the result.
+fn update_wake(
+    tray: &Tray,
+    s: &Strings,
+    updates: &Mutex<Updates>,
+    mode: UpdateMode,
+    ready_tip: &str,
+) -> UpdateWake {
+    let (announce, pct, finished) = {
+        let mut u = lock(updates);
+        let announce = std::mem::take(&mut u.fresh)
+            .then(|| u.available.as_ref().map(|r| r.version.to_string()))
+            .flatten();
+        let finished = u.finished.take();
+        if finished.is_some() {
+            u.downloading = None;
+        }
+        (announce, u.downloading, finished)
+    };
+    let mut out = UpdateWake::default();
+    if let Some(version) = announce {
+        let (template, action) = match mode {
+            UpdateMode::Setup => (s.update_ready, BalloonAction::Update),
+            _ => (s.update_portal, BalloonAction::Portal),
+        };
+        tray.balloon(&fill(template, &[("version", &version)]), "", false, true);
+        out.balloon = Some(action);
+    }
+    match finished {
+        Some(Ok(path)) => out.launch = Some(path),
+        Some(Err(text)) => {
+            tray.set_tip(ready_tip);
+            tray.balloon(s.update_failed, &text, true, true);
+            out.balloon = Some(BalloonAction::Nothing);
+        }
+        None => {
+            if let Some(pct) = pct {
+                tray.set_tip(&fill(s.update_progress, &[("pct", &pct.to_string())]));
+            }
+        }
+    }
+    out
 }
 
 fn open_dir(dir: &std::path::Path) {
@@ -665,6 +936,11 @@ mod tests {
                 s.declined,
                 s.send_failed,
                 s.not_a_file,
+                s.update_ready,
+                s.update_portal,
+                s.menu_update,
+                s.menu_download,
+                s.update_progress,
             ]
         };
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {

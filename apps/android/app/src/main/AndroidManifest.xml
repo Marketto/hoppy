@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- In-app updater (update/Updater.kt): installs the signed APK from GitHub Releases. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".HoppyApp"
@@ -64,6 +66,11 @@
 
         <receiver
             android:name=".service.DecisionReceiver"
+            android:exported="false" />
+
+        <!-- PackageInstaller session status for self-updates (update/InstallReceiver.kt). -->
+        <receiver
+            android:name=".update.InstallReceiver"
             android:exported="false" />
     </application>
 </manifest>
