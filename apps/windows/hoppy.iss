@@ -61,7 +61,14 @@ Filename: "{app}\hoppy.exe"; Parameters: "install"; Flags: runhidden waituntilte
 Filename: "{app}\hoppyw.exe"; Description: "{cm:StartNow}"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
-; Running copies are stopped first by CurUninstallStepChanged (see [Code]
+; Running copies are stopped first by CurUninstallStepChanged (see [Code]).
+Filename: "{app}\hoppy.exe"; Parameters: "uninstall"; Flags: runhidden; RunOnceId: "RemoveShortcuts"
+
+[Messages]
+it.FinishedLabel=Hoppy è installato e riceve file in background: trovi la sua icona nell'area di notifica, vicino all'orologio (clic per inviare file). Per inviare da Esplora file: tasto destro su un file → Mostra altre opzioni → Invia a → Hoppy (oppure Maiusc+tasto destro).
+en.FinishedLabel=Hoppy is installed and receives files in the background: look for its icon in the notification area, near the clock (click it to send files). To send from File Explorer: right-click a file → Show more options → Send to → Hoppy (or Shift+right-click).
+
+[Code]
 // Stops hoppy.exe / hoppyw.exe, but only the copies running from this install folder (an
 // unrelated "hoppy.exe" elsewhere is left alone). Upgrades from 0.1.0 run `hoppy.exe
 // receive` in a console, which CloseApplications cannot close, nor the tray app.
