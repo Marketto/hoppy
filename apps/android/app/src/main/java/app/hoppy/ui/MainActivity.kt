@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.animation.OvershootInterpolator
@@ -25,6 +27,7 @@ import app.hoppy.databinding.ActivityMainBinding
 import app.hoppy.service.ReceiveService
 import app.hoppy.ui.theme.HomeDecor
 import app.hoppy.ui.theme.Motion
+import app.hoppy.update.Updater
 import kotlin.concurrent.thread
 
 /** Home: mascot, receive switch, nearby devices, "send files". Deliberately minimal. */
@@ -36,6 +39,7 @@ class MainActivity : ThemedActivity() {
 
     private val peersListener: (List<Peer>) -> Unit = { peers -> runOnUiThread { showPeers(peers) } }
     private val stateListener: () -> Unit = { runOnUiThread { syncSwitch() } }
+    private val updateListener: () -> Unit = { runOnUiThread { syncUpdate() } }
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
@@ -46,6 +50,11 @@ class MainActivity : ThemedActivity() {
 
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         startReceiving()
+    }
+
+    /** Back from "Install unknown apps" for Hoppy: continue only if the user allowed it. */
+    private val allowInstalls = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (packageManager.canRequestPackageInstalls()) Updater.download(this)
     }
 
     private lateinit var decor: HomeDecor
@@ -72,6 +81,7 @@ class MainActivity : ThemedActivity() {
             if (checked) requestThenReceive() else ReceiveService.stop(this)
         }
         b.mascot.setOnClickListener { Node.refresh() }
+        b.updateButton.setOnClickListener { startUpdate() }
         decor = HomeDecor(b)
         styleSwitch()
         // Puts "Hoppy · nearby" in the share sheet's top row before the first send.
@@ -79,6 +89,7 @@ class MainActivity : ThemedActivity() {
         thread(name = "hoppy-shortcuts") { ShareShortcuts.publishNearby(app) }
         if (savedInstanceState == null) {
             handleShortcut(intent)
+            handleUpdate(intent)
         } else {
             targetPeerId = savedInstanceState.getString(EXTRA_PEER)
         }
@@ -92,7 +103,38 @@ class MainActivity : ThemedActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (::b.isInitialized) handleShortcut(intent)
+        if (::b.isInitialized) {
+            handleShortcut(intent)
+            handleUpdate(intent)
+        }
+    }
+
+    /** Tap on our own "update available" notification (token-checked: this activity is exported). */
+    private fun handleUpdate(intent: Intent) {
+        if (Updater.isUpdateIntent(this, intent)) startUpdate()
+    }
+
+    /**
+     * Download + install the newer release. Without "Install unknown apps" for Hoppy we
+     * open that setting first and continue when the user comes back with it allowed.
+     */
+    private fun startUpdate() {
+        if (Updater.availableVersion(this) == null) return
+        if (!packageManager.canRequestPackageInstalls()) {
+            val settings = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+            if (runCatching { allowInstalls.launch(settings) }.isSuccess) return
+        }
+        Updater.download(this)
+        syncUpdate()
+    }
+
+    private fun syncUpdate() {
+        val version = Updater.availableVersion(this)
+        b.updateBanner.isVisible = version != null
+        if (version == null) return
+        val busy = Updater.downloading
+        b.updateText.text = if (busy) getString(R.string.update_downloading) else getString(R.string.update_banner, version)
+        b.updateButton.isEnabled = !busy
     }
 
     /**
@@ -135,6 +177,9 @@ class MainActivity : ThemedActivity() {
         b.deviceName.text = Prefs.deviceName(this)
         Node.addListener(peersListener)
         ReceiveService.addStateListener(stateListener)
+        Updater.addListener(updateListener)
+        syncUpdate()
+        Updater.maybeCheck(this)
         Node.acquire(this)
         Node.refresh()
         showPeers(Node.peers())
@@ -147,6 +192,7 @@ class MainActivity : ThemedActivity() {
         decor.stop()
         Node.removeListener(peersListener)
         ReceiveService.removeStateListener(stateListener)
+        Updater.removeListener(updateListener)
         Node.release()
         super.onStop()
     }

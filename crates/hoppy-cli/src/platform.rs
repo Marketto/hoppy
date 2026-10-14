@@ -101,6 +101,8 @@ pub enum MenuItem<'a> {
     Action(u32, &'a str),
     /// An action drawn with a check mark when `true`.
     Check(u32, &'a str, bool),
+    /// An action drawn in bold (the menu's default item); at most one per menu.
+    Bold(u32, &'a str),
     /// Not selectable; drawn in normal (not greyed) text for contrast.
     Label(&'a str),
     Separator,
@@ -142,6 +144,26 @@ pub fn parse_multiselect(buf: &[u16], to_path: impl Fn(&[u16]) -> PathBuf) -> Ve
     }
 }
 
+/// Receives each chunk of an HTTP body plus the Content-Length when known; an error
+/// aborts the transfer.
+pub type HttpSink<'a> = dyn FnMut(&[u8], Option<u64>) -> Result<()> + 'a;
+
+/// Splits `https://host/path?query` into (`host`, `/path?query`) for WinHTTP. Only plain
+/// https on the default port: no user info, no explicit port.
+pub fn split_https_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("https://")?;
+    let (host, path) = match rest.find(['/', '?', '#']) {
+        Some(i) if rest.as_bytes()[i] == b'/' => (&rest[..i], &rest[i..]),
+        Some(_) => return None,
+        None => (rest, "/"),
+    };
+    let valid = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    valid.then_some((host, path))
+}
+
 #[cfg(windows)]
 pub mod win {
     use std::cell::RefCell;
@@ -162,6 +184,12 @@ pub mod win {
     use windows_sys::Win32::Media::Audio::{
         PlaySoundW, SND_ASYNC, SND_LOOP, SND_MEMORY, SND_NODEFAULT,
     };
+    use windows_sys::Win32::Networking::WinHttp::{
+        INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
+        WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_FLAG_NUMBER64, WINHTTP_QUERY_STATUS_CODE,
+        WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
+        WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
+    };
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -181,13 +209,16 @@ pub mod win {
         LoadImageW, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
         MB_SYSTEMMODAL, MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_DISABLED, MF_SEPARATOR, MF_STRING,
         MSG, MessageBoxW, PostMessageW, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON,
-        SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetProcessDPIAware, SetTimer,
-        TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+        SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetProcessDPIAware,
+        SetTimer, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
         TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
         WS_OVERLAPPED,
     };
 
-    use super::{MenuItem, TooManyFiles, TrayEvent, Tune, copy_wide, parse_multiselect};
+    use super::{
+        HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune, copy_wide, parse_multiselect,
+        split_https_url,
+    };
 
     // 'static, so the buffers outlive any asynchronous SND_MEMORY playback.
     static MUSIC_IDLE: &[u8] = include_bytes!("../../../assets/music/desktop_idle.wav");
@@ -277,7 +308,16 @@ pub mod win {
 
     /// Opens a folder in Explorer.
     pub fn open_folder(dir: &Path) -> bool {
-        let (verb, file) = (wide("open"), wide_path(dir));
+        shell_open(&wide_path(dir))
+    }
+
+    /// Opens a web page in the default browser.
+    pub fn open_url(url: &str) -> bool {
+        shell_open(&wide(url))
+    }
+
+    fn shell_open(file: &[u16]) -> bool {
+        let verb = wide("open");
         // SAFETY: NUL-terminated buffers alive for the call; null params/dir are allowed.
         let r = unsafe {
             ShellExecuteW(
@@ -290,6 +330,116 @@ pub mod win {
             )
         };
         r as isize > 32
+    }
+
+    /// A WinHTTP handle, closed on drop.
+    struct Internet(*mut core::ffi::c_void);
+
+    impl Drop for Internet {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: handle returned by WinHTTP, closed exactly once.
+                unsafe { WinHttpCloseHandle(self.0) };
+            }
+        }
+    }
+
+    fn net_error(what: &str) -> anyhow::Error {
+        // SAFETY: reads this thread's last-error value, set by the failed WinHTTP call.
+        anyhow::anyhow!("{what} failed (WinHTTP error {})", unsafe {
+            GetLastError()
+        })
+    }
+
+    fn query_u64(request: &Internet, info: u32) -> Option<u64> {
+        let mut value: u64 = 0;
+        let mut len = size_of::<u64>() as u32;
+        // SAFETY: live request; the out-buffer is a u64 and `len` says so.
+        let ok = unsafe {
+            WinHttpQueryHeaders(
+                request.0,
+                info | WINHTTP_QUERY_FLAG_NUMBER64,
+                null(),
+                (&raw mut value).cast(),
+                &mut len,
+                null_mut(),
+            )
+        };
+        (ok != 0).then_some(value)
+    }
+
+    /// HTTPS GET through WinHTTP (system proxy, OS TLS, https redirects followed). `sink`
+    /// gets each chunk and the Content-Length when known; non-200 is an error. Blocking:
+    /// call it from a worker thread.
+    pub fn http_get(url: &str, user_agent: &str, sink: &mut HttpSink<'_>) -> Result<()> {
+        let (host, path) = split_https_url(url).context("unsupported URL")?;
+        let (agent, host, path, verb) = (wide(user_agent), wide(host), wide(path), wide("GET"));
+        // SAFETY: NUL-terminated buffers alive for the call; null proxy = automatic.
+        let session = Internet(unsafe {
+            WinHttpOpen(
+                agent.as_ptr(),
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                null(),
+                null(),
+                0,
+            )
+        });
+        if session.0.is_null() {
+            return Err(net_error("WinHttpOpen"));
+        }
+        // SAFETY: live session handle; timeouts in milliseconds.
+        unsafe { WinHttpSetTimeouts(session.0, 15_000, 15_000, 30_000, 30_000) };
+        // SAFETY: live session; host is NUL-terminated and alive for the call.
+        let connect = Internet(unsafe {
+            WinHttpConnect(session.0, host.as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0)
+        });
+        if connect.0.is_null() {
+            return Err(net_error("WinHttpConnect"));
+        }
+        // SAFETY: live connection; strings alive for the call; null = HTTP/1.1, no
+        // referrer, no accept types.
+        let request = Internet(unsafe {
+            WinHttpOpenRequest(
+                connect.0,
+                verb.as_ptr(),
+                path.as_ptr(),
+                null(),
+                null(),
+                null(),
+                WINHTTP_FLAG_SECURE,
+            )
+        });
+        if request.0.is_null() {
+            return Err(net_error("WinHttpOpenRequest"));
+        }
+        // SAFETY: live request; no extra headers and no body.
+        let sent = unsafe {
+            WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) != 0
+                && WinHttpReceiveResponse(request.0, null_mut()) != 0
+        };
+        if !sent {
+            return Err(net_error("HTTPS request"));
+        }
+        match query_u64(&request, WINHTTP_QUERY_STATUS_CODE) {
+            Some(200) => {}
+            status => bail!("HTTP status {}", status.unwrap_or(0)),
+        }
+        let total = query_u64(&request, WINHTTP_QUERY_CONTENT_LENGTH);
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let mut n: u32 = 0;
+            // SAFETY: live request; `buf` is writable for `buf.len()` bytes.
+            let ok = unsafe {
+                WinHttpReadData(request.0, buf.as_mut_ptr().cast(), buf.len() as u32, &mut n)
+            };
+            if ok == 0 {
+                return Err(net_error("WinHttpReadData"));
+            }
+            if n == 0 {
+                return Ok(());
+            }
+            sink(&buf[..n as usize], total)?;
+        }
     }
 
     /// Held for the life of the process; a second holder of the same name gets `None`.
@@ -508,6 +658,7 @@ pub mod win {
                         let check = if on { MF_CHECKED } else { 0 };
                         (MF_STRING | check, id as usize, Some(t))
                     }
+                    MenuItem::Bold(id, t) => (MF_STRING, id as usize, Some(t)),
                     MenuItem::Label(t) => (MF_STRING | MF_DISABLED, 0, Some(t)),
                     MenuItem::Separator => (MF_SEPARATOR, 0, None),
                 };
@@ -516,6 +667,10 @@ pub mod win {
                 let ptr = text.as_ref().map_or(null(), |t| t.as_ptr());
                 // SAFETY: live menu; AppendMenuW copies the string.
                 unsafe { AppendMenuW(menu, flags, id, ptr) };
+                if let MenuItem::Bold(id, _) = *item {
+                    // SAFETY: live menu; `id` was just appended (by command, not position).
+                    unsafe { SetMenuDefaultItem(menu, id, 0) };
+                }
             }
             let mut flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON;
             if above {
@@ -709,7 +864,7 @@ pub mod win {
 
     use anyhow::{Result, bail};
 
-    use super::{MenuItem, TooManyFiles, TrayEvent, Tune};
+    use super::{HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
 
     /// No music off Windows (the assets are not even embedded).
     pub fn play_tune(_tune: Tune) {}
@@ -732,6 +887,14 @@ pub mod win {
 
     pub fn open_folder(_dir: &Path) -> bool {
         false
+    }
+
+    pub fn open_url(_url: &str) -> bool {
+        false
+    }
+
+    pub fn http_get(_url: &str, _user_agent: &str, _sink: &mut HttpSink<'_>) -> Result<()> {
+        bail!("the update check is Windows-only")
     }
 
     #[derive(Clone)]
@@ -823,5 +986,27 @@ mod tests {
             vec![dir.join("a.txt"), dir.join("b 🐰.png")]
         );
         assert!(parse_multiselect(&[0, 0], path).is_empty());
+    }
+
+    #[test]
+    fn splits_https_urls() {
+        assert_eq!(
+            split_https_url("https://api.github.com/repos/Marketto/hoppy/releases/latest"),
+            Some(("api.github.com", "/repos/Marketto/hoppy/releases/latest"))
+        );
+        assert_eq!(
+            split_https_url("https://example.org"),
+            Some(("example.org", "/"))
+        );
+        for bad in [
+            "http://example.org/",
+            "https:///x",
+            "https://user:pw@host/", // user info (no "x@y.z": the secrets scan)
+            "https://example.org:8443/",
+            "https://example.org?x",
+            "ftp://example.org/",
+        ] {
+            assert_eq!(split_https_url(bad), None, "{bad}");
+        }
     }
 }

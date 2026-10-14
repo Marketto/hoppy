@@ -7,6 +7,7 @@
 pub mod config;
 pub mod gui;
 pub mod platform;
+pub mod update;
 
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::PathBuf;
