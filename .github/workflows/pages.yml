@@ -1,0 +1,52 @@
+name: Portal
+
+# Publishes the download portal (site/) to GitHub Pages.
+# One-time setup by a repo admin: Settings → Pages → Build and deployment → Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "tools/site.py"
+      - "assets/brand/**"
+      - "apps/android/app/src/main/res/font/**"
+      - ".github/workflows/pages.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: pages
+        uses: actions/configure-pages@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install segno fonttools brotli
+      - run: python3 tools/site.py build --out _site --base-url "${{ steps.pages.outputs.base_url }}" --repo "${{ github.repository }}"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

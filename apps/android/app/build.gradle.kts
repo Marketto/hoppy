@@ -13,15 +13,29 @@ android {
         applicationId = "app.hoppy"
         minSdk = 29 // Android 10: scoped storage + MediaStore.Downloads
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-poc"
+        // The release workflow passes -PhoppyVersionName=1.2.3 -PhoppyVersionCode=<run number>.
+        versionCode = (project.findProperty("hoppyVersionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("hoppyVersionName") as String?) ?: "0.1.0-dev"
+    }
+
+    // Release signing comes ONLY from CI secrets (docs/release.md); nothing is committed.
+    // Without them (local builds, forks) release falls back to the debug key.
+    val keystoreFile = System.getenv("HOPPY_KEYSTORE_FILE")
+    signingConfigs {
+        if (keystoreFile != null) {
+            create("release") {
+                storeFile = file(keystoreFile)
+                storePassword = System.getenv("HOPPY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("HOPPY_KEY_ALIAS")
+                keyPassword = System.getenv("HOPPY_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // PoC: release is signed with the debug key so CI artifacts install directly.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
