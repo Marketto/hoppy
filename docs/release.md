@@ -19,7 +19,7 @@ newest build — the portal relies on this.
 ```
 git tag v0.2.0 && git push origin v0.2.0        # or Actions → Release → Run workflow
 ```
-`release.yml` stamps the version into Cargo (Windows `hoppy.exe`, installer) and Android
+`release.yml` stamps the version into Cargo (Windows `hoppy.exe` + `hoppyw.exe`, installer) and Android
 (`versionName`, `versionCode` = run number), builds every enabled platform, then creates the
 GitHub Release. Use **Run workflow** with *publish* unticked to build packages without
 publishing (they appear as workflow artifacts).

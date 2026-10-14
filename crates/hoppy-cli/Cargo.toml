@@ -3,6 +3,20 @@ name = "hoppy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# `cargo run -p hoppy` keeps meaning the CLI; `hoppyw` is the Windows tray/GUI binary.
+default-run = "hoppy"
+
+[lib]
+name = "hoppy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hoppy"
+path = "src/main.rs"
+
+[[bin]]
+name = "hoppyw"
+path = "src/bin/hoppyw.rs"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -15,7 +29,18 @@ serde_json = "1.0.154"
 uuid = { version = "1.28.0", features = ["v4"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -9,7 +9,7 @@ device. The app chooses the fastest available path; the user never picks a trans
 
 ```
 ┌────────────── platform shells (thin) ──────────────┐
-│ Windows: Send To + console     Android: share target │
+│ Windows: Send To + tray icon   Android: share target │
 │ (crates/hoppy-cli)             (apps/android/app)    │
 ├────────────── engine (per language) ────────────────┤
 │ Rust: crates/hoppy-core   Kotlin: apps/android/core  │

@@ -2,17 +2,23 @@ package app.hoppy.ui
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.color.MaterialColors
 import app.hoppy.Prefs
 import app.hoppy.R
 import app.hoppy.core.Peer
@@ -23,6 +29,7 @@ import app.hoppy.ui.theme.HostAware
 import app.hoppy.ui.theme.ThemeFonts
 import java.io.File
 import java.io.InputStream
+import java.util.UUID
 
 /**
  * Applies the user's [HoppyTheme] before any view is created, sets the system bar
@@ -88,7 +95,10 @@ object Format {
     }
 }
 
-/** A content URI to send. Unknown sizes are copied to cache first (the protocol needs sizes). */
+/**
+ * A content URI to send. Unknown sizes are copied to cache first (the protocol needs sizes),
+ * each into its own fresh directory under `cache/outgoing/`.
+ */
 class UriSource private constructor(
     private val ctx: Context,
     private val uri: Uri?,
@@ -99,9 +109,21 @@ class UriSource private constructor(
     override fun open(): InputStream =
         file?.inputStream() ?: ctx.contentResolver.openInputStream(uri!!) ?: error("cannot open $uri")
 
+    /** Deletes the cache copy, if any. Blocking. */
+    fun cleanup() {
+        file?.parentFile?.deleteRecursively()
+    }
+
     companion object {
+        private const val STALE_MS = 24 * 60 * 60 * 1000L
+
+        /** Only other apps' `content:` URIs (see [SafeText.isReadableShare]). */
+        fun isReadable(ctx: Context, uri: Uri): Boolean =
+            SafeText.isReadableShare(uri.scheme, uri.authority, ctx.packageName)
+
         /** Blocking: call off the main thread. */
         fun resolve(ctx: Context, uri: Uri): UriSource {
+            require(isReadable(ctx, uri)) { "refusing to read $uri" }
             var name: String? = null
             var size = -1L
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
@@ -111,18 +133,37 @@ class UriSource private constructor(
                         if (!c.isNull(1)) size = c.getLong(1)
                     }
                 }
-            val displayName = name ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+            // DISPLAY_NAME comes from the other app: never use it as a path as-is.
+            val displayName = SafeText.outgoingFileName(name ?: uri.lastPathSegment)
             if (size >= 0) return UriSource(ctx, uri, null, displayName, size)
-            val copy = File(ctx.cacheDir, "outgoing").apply { mkdirs() }.let { File(it, displayName) }
-            ctx.contentResolver.openInputStream(uri)!!.use { input -> copy.outputStream().use { input.copyTo(it) } }
+            val copy = cacheFile(ctx, displayName)
+            val input = ctx.contentResolver.openInputStream(uri) ?: error("cannot open $uri")
+            input.use { copy.outputStream().use { out -> it.copyTo(out) } }
             return UriSource(ctx, null, copy, displayName, copy.length())
         }
 
-        /** Shared text (no file) becomes a small .txt. */
+        /** Shared text (no file) becomes a small .txt. Blocking. */
         fun fromText(ctx: Context, text: String): UriSource {
-            val f = File(File(ctx.cacheDir, "outgoing").apply { mkdirs() }, ctx.getString(R.string.shared_text_file))
+            val f = cacheFile(ctx, SafeText.outgoingFileName(ctx.getString(R.string.shared_text_file)))
             f.writeText(text)
             return UriSource(ctx, null, f, f.name, f.length())
+        }
+
+        /** `cache/outgoing/<random>/<name>`, checked to stay inside that directory. */
+        private fun cacheFile(ctx: Context, name: String): File {
+            val root = File(ctx.cacheDir, "outgoing").apply { mkdirs() }
+            pruneStale(root)
+            val dir = File(root, UUID.randomUUID().toString())
+            check(dir.mkdirs()) { "cannot create $dir" }
+            val file = File(dir, name)
+            check(file.canonicalFile.parentFile == dir.canonicalFile) { "unsafe name" }
+            return file
+        }
+
+        /** Copies left behind by a killed process. */
+        private fun pruneStale(root: File) {
+            val old = System.currentTimeMillis() - STALE_MS
+            root.listFiles()?.filter { it.lastModified() < old }?.forEach { it.deleteRecursively() }
         }
     }
 }
@@ -139,7 +180,31 @@ class PeerAdapter(private val onClick: (Peer) -> Unit) :
             notifyItemRangeChanged(0, itemCount)
         }
 
-    class Holder(val b: ItemPeerBinding) : RecyclerView.ViewHolder(b.root)
+    /** Device shown emphasised (framed, "Selected") — a preselection waiting for a tap. */
+    var highlightId: String? = null
+        set(value) {
+            if (field == value) return
+            field = value
+            notifyItemRangeChanged(0, itemCount)
+        }
+
+    class Holder(val b: ItemPeerBinding) : RecyclerView.ViewHolder(b.root) {
+        val ripple: Drawable? = b.root.foreground
+        val emphasised: Drawable by lazy { LayerDrawable(listOfNotNull(ripple, frame()).toTypedArray()) }
+
+        private fun frame(): Drawable {
+            val ctx = b.root.context
+            val dm = ctx.resources.displayMetrics
+            val corner = TypedValue().also { ctx.theme.resolveAttribute(R.attr.hoppyCorner, it, true) }
+            return GradientDrawable().apply {
+                cornerRadius = corner.getDimension(dm)
+                setStroke(
+                    (3 * dm.density).toInt(),
+                    MaterialColors.getColor(b.root, androidx.appcompat.R.attr.colorPrimary),
+                )
+            }
+        }
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
         Holder(ItemPeerBinding.inflate(LayoutInflater.from(parent.context), parent, false)).also {
@@ -150,9 +215,13 @@ class PeerAdapter(private val onClick: (Peer) -> Unit) :
     override fun onBindViewHolder(h: Holder, position: Int) {
         val peer = getItem(position)
         val ctx = h.b.root.context
-        h.b.initial.text = peer.device.name.trim().take(1).uppercase().ifEmpty { "?" }
-        h.b.name.text = peer.device.name
+        val name = SafeText.label(peer.device.name)
+        h.b.initial.text = name.take(1).uppercase()
+        h.b.name.text = name
         h.b.platform.text = Format.platform(ctx, peer.device.platform)
+        val highlighted = peer.device.id == highlightId
+        h.b.root.foreground = if (highlighted) h.emphasised else h.ripple
+        ViewCompat.setStateDescription(h.b.root, if (highlighted) ctx.getString(R.string.peer_selected) else null)
         h.b.root.isEnabled = enabled
         h.b.root.alpha = if (enabled) 1f else 0.5f
         h.b.root.setOnClickListener { if (enabled) onClick(peer) }

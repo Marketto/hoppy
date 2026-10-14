@@ -16,6 +16,13 @@
     <string name="delivered">Consegnato a %1$s ✓</string>
     <string name="declined">%1$s ha rifiutato.</string>
     <string name="send_failed">Invio non riuscito: %1$s</string>
+    <!-- Conferma con un tocco per il dispositivo preselezionato: nome, poi indirizzo IP. -->
+    <string name="send_to_device">Invia a %1$s\n%2$s</string>
+    <string name="peer_selected">Selezionato</string>
+    <string name="looking_for">Cerco %1$s…</string>
+    <string name="shortcut_nearby">Hoppy · qui vicino</string>
+    <string name="shortcut_nearby_long">Invia a un dispositivo vicino</string>
+    <string name="shortcut_send_to">Invia a %1$s</string>
     <string name="close">Chiudi</string>
     <string name="theme">Tema</string>
     <string name="theme_purikura">Purikura</string>

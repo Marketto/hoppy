@@ -27,6 +27,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Sharing shortcuts: Hoppy in the share sheet's top row (ShareShortcuts.kt). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- First-run theme choice ("installation-time"), also opened from the menu. -->

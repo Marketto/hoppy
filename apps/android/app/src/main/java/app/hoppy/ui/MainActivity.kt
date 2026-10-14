@@ -1,6 +1,8 @@
 package app.hoppy.ui
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.os.Build
@@ -22,21 +24,23 @@ import app.hoppy.databinding.ActivityMainBinding
 import app.hoppy.service.ReceiveService
 import app.hoppy.ui.theme.HomeDecor
 import app.hoppy.ui.theme.Motion
+import kotlin.concurrent.thread
 
 /** Home: mascot, receive switch, nearby devices, "send files". Deliberately minimal. */
 class MainActivity : ThemedActivity() {
     private lateinit var b: ActivityMainBinding
-    private val adapter = PeerAdapter { peer -> pickFor(peer) }
-    private var targetPeer: Peer? = null
+    private val adapter = PeerAdapter { peer -> pickFor(peer.device.id) }
+    /** Device to send the picked files to (tapped in the list or a launcher shortcut). */
+    private var targetPeerId: String? = null
 
     private val peersListener: (List<Peer>) -> Unit = { peers -> runOnUiThread { showPeers(peers) } }
     private val stateListener: () -> Unit = { runOnUiThread { syncSwitch() } }
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
-            startActivity(SendActivity.intent(this, uris, targetPeer?.device?.id))
+            startActivity(SendActivity.intent(this, uris, targetPeerId))
         }
-        targetPeer = null
+        targetPeerId = null
     }
 
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -69,6 +73,35 @@ class MainActivity : ThemedActivity() {
         b.mascot.setOnClickListener { Node.refresh() }
         decor = HomeDecor(b)
         styleSwitch()
+        // Puts "Hoppy · nearby" in the share sheet's top row before the first send.
+        val app = applicationContext
+        thread(name = "hoppy-shortcuts") { ShareShortcuts.publishNearby(app) }
+        if (savedInstanceState == null) {
+            handleShortcut(intent)
+        } else {
+            targetPeerId = savedInstanceState.getString(EXTRA_PEER)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(EXTRA_PEER, targetPeerId)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (::b.isInitialized) handleShortcut(intent)
+    }
+
+    /**
+     * Launcher long-press shortcut ("Hoppy · nearby" or a device): open the picker. This
+     * action is exported, so the device is only a preselection (SendActivity asks for a
+     * tap) and only for a device we already sent to.
+     */
+    private fun handleShortcut(intent: Intent) {
+        if (intent.action != ACTION_SEND_FILES) return
+        pickFor(ShareTargets.recentPeer(intent.getStringExtra(EXTRA_PEER), Prefs.recentTargets(this)))
     }
 
     /** Thumb/track tinted per theme; the thumb springs (overshoot) when toggled. */
@@ -128,8 +161,8 @@ class MainActivity : ThemedActivity() {
         decor.setReceiving(ReceiveService.running)
     }
 
-    private fun pickFor(peer: Peer?) {
-        targetPeer = peer
+    private fun pickFor(peerId: String?) {
+        targetPeerId = peerId
         pickFiles.launch(arrayOf("*/*"))
     }
 
@@ -196,5 +229,16 @@ class MainActivity : ThemedActivity() {
                 }
             }
             .show()
+    }
+
+    companion object {
+        private const val ACTION_SEND_FILES = "app.hoppy.action.SEND_FILES"
+        private const val EXTRA_PEER = "app.hoppy.PEER_ID"
+
+        /** Intent of the share/launcher shortcuts: home + file picker (+ device). */
+        fun sendFilesIntent(ctx: Context, peerId: String?): Intent =
+            Intent(ctx, MainActivity::class.java)
+                .setAction(ACTION_SEND_FILES)
+                .apply { if (peerId != null) putExtra(EXTRA_PEER, peerId) }
     }
 }

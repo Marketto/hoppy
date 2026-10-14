@@ -23,6 +23,7 @@ import app.hoppy.core.ReceiveHandler
 import app.hoppy.core.TransferServer
 import app.hoppy.ui.MainActivity
 import app.hoppy.ui.Format
+import app.hoppy.ui.SafeText
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CompletableFuture
@@ -114,10 +115,11 @@ class ReceiveService : Service() {
 
         override fun onFinished(from: InetAddress, offer: Offer, saved: List<String>, error: String?) {
             notify(NOTIF_RECEIVER, receiverNotification())
+            val sender = SafeText.label(offer.sender.name)
             val title = if (error == null) {
-                resources.getQuantityString(R.plurals.received_files, saved.size, saved.size, offer.sender.name)
+                resources.getQuantityString(R.plurals.received_files, saved.size, saved.size, sender)
             } else {
-                getString(R.string.receive_failed, offer.sender.name)
+                getString(R.string.receive_failed, sender)
             }
             val openDownloads = PendingIntent.getActivity(
                 this@ReceiveService, 0,
@@ -128,7 +130,7 @@ class ReceiveService : Service() {
                 nextId.incrementAndGet(),
                 base(HoppyApp.CH_DONE)
                     .setContentTitle(title)
-                    .setContentText(error ?: saved.joinToString(", ") { it.substringAfterLast('/') })
+                    .setContentText(error?.let { SafeText.label(it, 200) } ?: saved.joinToString(", ") { SafeText.label(it.substringAfterLast('/'), 200) })
                     .setContentIntent(openDownloads)
                     .setAutoCancel(true)
                     .build(),
@@ -149,14 +151,16 @@ class ReceiveService : Service() {
                 .putExtra(DecisionReceiver.EXTRA_ACCEPT, accept),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val names = offer.files.take(3).joinToString(", ") { it.name } +
+        // Peer-supplied: show names as they would be saved (§4) and without bidi tricks.
+        val names = offer.files.take(3).joinToString(", ") { SafeText.offeredFileName(it.name) } +
             if (offer.files.size > 3) " +${offer.files.size - 3}" else ""
+        val sender = SafeText.label(offer.sender.name)
         notify(
             id,
             base(HoppyApp.CH_INCOMING)
                 .setContentTitle(
                     resources.getQuantityString(
-                        R.plurals.incoming_title, offer.files.size, offer.sender.name, offer.files.size,
+                        R.plurals.incoming_title, offer.files.size, sender, offer.files.size,
                         Format.size(offer.totalSize),
                     ),
                 )

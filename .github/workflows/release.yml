@@ -64,10 +64,16 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp `
+          # ISCC output is surfaced as annotations on failure (logs aren't always readable).
+          $out = & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp `
             "/DAppVersion=${{ needs.meta.outputs.version }}" `
-            "/DSourceExe=$PWD\target\release\hoppy.exe" apps\windows\hoppy.iss
-          Compress-Archive -Path target\release\hoppy.exe, apps\windows\install.ps1, LICENSE `
+            "/DSourceExe=$PWD\target\release\hoppy.exe" `
+            "/DSourceGuiExe=$PWD\target\release\hoppyw.exe" apps\windows\hoppy.iss 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $out | Select-Object -Last 9 | ForEach-Object { Write-Output "::error::ISCC: $_" }
+            exit 1
+          }
+          Compress-Archive -Path target\release\hoppy.exe, target\release\hoppyw.exe, apps\windows\install.ps1, LICENSE `
             -DestinationPath dist\Hoppy-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:

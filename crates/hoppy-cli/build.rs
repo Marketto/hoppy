@@ -1,4 +1,6 @@
-//! Embeds the Hoppy icon and version info into hoppy.exe (shown by "Send to → Hoppy").
+//! Embeds the Hoppy icon (resource id 1, loaded by the tray in platform.rs) and version info
+//! into every binary of this package: hoppy.exe and hoppyw.exe (`compile()` emits
+//! `rustc-link-arg`, which applies to all bins).
 fn main() {
     println!("cargo:rerun-if-changed=../../assets/brand/hoppy.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

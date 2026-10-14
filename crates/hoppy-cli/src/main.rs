@@ -1,22 +1,24 @@
-//! `hoppy` desktop client (PoC). Windows integration: `hoppy install` adds
-//! "Send to → Hoppy", which runs `hoppy send --pause <files>`.
-
-mod config;
-mod platform;
+//! `hoppy` desktop CLI (PoC). On Windows, `hoppy install` adds "Send to → Hoppy" and a
+//! login item, both pointing at the `hoppyw` tray/GUI binary when it sits next to this one
+//! (fallback: `hoppy send --pause` / `hoppy receive`). Shared code: `src/lib.rs`.
 
 use std::io::{self, BufRead, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use hoppy::{
+    DialogGuard, bind_receiver, config, default_receive_dir, display_file_name, display_name,
+    display_platform, human, parse_direct, parse_seeds, platform, start_discovery,
+};
 use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
 use hoppy_core::{
-    DeviceInfo, Discovery, DiscoveryConfig, Error, Offer, Peer, Progress, ReceiveHandler,
-    SendOutcome, send_files,
+    DeviceInfo, Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, send_files,
 };
 
 #[derive(Parser)]
@@ -120,29 +122,6 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn parse_seeds(raw: &[String]) -> Result<Vec<SocketAddr>> {
-    raw.iter()
-        .map(|s| {
-            s.parse::<SocketAddr>()
-                .or_else(|_| {
-                    s.parse::<IpAddr>()
-                        .map(|ip| SocketAddr::new(ip, hoppy_core::protocol::DISCOVERY_PORT))
-                })
-                .with_context(|| format!("invalid --seed {s:?}"))
-        })
-        .collect()
-}
-
-/// `transfer_port == 0` → send-only node on an ephemeral UDP port (spec §2 rule 6).
-fn start_discovery(me: &DeviceInfo, transfer_port: u16, seeds: &[SocketAddr]) -> Result<Discovery> {
-    let mut cfg = DiscoveryConfig::new(me.clone(), transfer_port);
-    cfg.seeds = seeds.to_vec();
-    if transfer_port == 0 {
-        cfg.bind_port = 0;
-    }
-    Discovery::start(cfg).context("starting discovery (is the UDP port blocked?)")
-}
-
 fn cmd_send(
     me: &DeviceInfo,
     seeds: &[SocketAddr],
@@ -207,15 +186,6 @@ fn cmd_send(
     Ok(())
 }
 
-/// `IP` or `IP:PORT` given with `--to`.
-fn parse_direct(s: &str) -> Option<SocketAddr> {
-    s.parse::<SocketAddr>().ok().or_else(|| {
-        s.parse::<IpAddr>()
-            .ok()
-            .map(|ip| SocketAddr::new(ip, TRANSFER_PORT))
-    })
-}
-
 fn pick_peer(discovery: &Discovery, wanted: Option<&str>, wait: Duration) -> Result<Peer> {
     if let Some(wanted) = wanted {
         let w = wanted.to_lowercase();
@@ -276,14 +246,9 @@ fn cmd_receive(
 ) -> Result<()> {
     let dir = match dir {
         Some(d) => d,
-        None => dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .context("no Downloads folder")?
-            .join("Hoppy"),
+        None => default_receive_dir()?,
     };
-    let listener = TcpListener::bind(("0.0.0.0", port))
-        .or_else(|_| TcpListener::bind(("0.0.0.0", 0)))
-        .context("cannot open a TCP port for receiving")?;
+    let listener = bind_receiver(port)?;
     let port = listener.local_addr()?.port();
     let _discovery = start_discovery(me, port, seeds)?;
     println!("🐰 Hoppy is receiving as \"{}\" on port {port}", me.name);
@@ -291,26 +256,32 @@ fn cmd_receive(
     if yes {
         println!("   ⚠ Auto-accept is ON: anyone on this network can send you files.");
     }
-    serve(listener, dir, Arc::new(CliReceiver { auto_accept: yes }))
+    let handler = CliReceiver {
+        auto_accept: yes,
+        asking: AtomicBool::new(false),
+    };
+    serve(listener, dir, Arc::new(handler))
 }
 
 struct CliReceiver {
     auto_accept: bool,
+    /// One prompt at a time; offers arriving meanwhile are declined.
+    asking: AtomicBool,
 }
 
 impl ReceiveHandler for CliReceiver {
     fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
-        let names: Vec<&str> = offer
+        let names: Vec<String> = offer
             .files
             .iter()
             .take(5)
-            .map(|f| f.name.as_str())
+            .map(|f| display_file_name(&f.name))
             .collect();
         let more = offer.files.len().saturating_sub(names.len());
         let mut body = format!(
             "{} ({}, {}) wants to send {} file(s), {}:\n• {}",
-            offer.sender.name,
-            offer.sender.platform,
+            display_name(&offer.sender.name),
+            display_platform(&offer.sender.platform),
             from.ip(),
             offer.files.len(),
             human(offer.total_size()),
@@ -323,6 +294,10 @@ impl ReceiveHandler for CliReceiver {
             println!("\n{body}\n→ accepted automatically");
             return true;
         }
+        let Some(_asking) = DialogGuard::try_take(&self.asking) else {
+            println!("\n{body}\n→ declined: another offer is waiting for an answer");
+            return false;
+        };
         platform::ask_accept("Hoppy — incoming files", &body)
     }
 
@@ -365,45 +340,5 @@ impl ProgressLine {
         if self.last_pct.is_some() {
             println!();
         }
-    }
-}
-
-fn human(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut v = bytes as f64;
-    let mut unit = 0;
-    while v >= 1024.0 && unit < UNITS.len() - 1 {
-        v /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{v:.1} {}", UNITS[unit])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn human_sizes() {
-        assert_eq!(human(0), "0 B");
-        assert_eq!(human(1536), "1.5 KB");
-        assert_eq!(human(5 * 1024 * 1024), "5.0 MB");
-    }
-
-    #[test]
-    fn direct_targets() {
-        assert_eq!(
-            parse_direct("192.168.1.5"),
-            Some("192.168.1.5:47471".parse().unwrap())
-        );
-        assert_eq!(
-            parse_direct("10.0.0.2:5000"),
-            Some("10.0.0.2:5000".parse().unwrap())
-        );
-        assert_eq!(parse_direct("Pixel"), None);
     }
 }
