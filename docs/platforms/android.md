@@ -4,7 +4,8 @@
 - Send: *Share → Hoppy* from any app, or *Send files* in the app → tap a device.
 - Receive: switch **Ready to receive** → foreground notification; each transfer asks with
   Accept/Decline (60 s timeout = decline). Files land in `Download/Hoppy`.
-- Overflow menu: theme (Kawaii/Pro), device name, accept automatically (with warning).
+- First launch: theme picker (Purikura, Showa, Manga, Yume, Night), pre-selected from the OS.
+- Overflow menu: theme, device name, accept automatically (with warning).
 
 ## Platform constraints
 - minSdk 29 (MediaStore Downloads without storage permission), targetSdk 35.

@@ -17,7 +17,7 @@ Match the request to a row, load the skill, follow it. One request may hit sever
 | Rust core (discovery, transfer, sanitizing) | `.claude/skills/hoppy-rust-core/SKILL.md` | `crates/hoppy-core/src/` | `python3 tools/dev.py check` |
 | Desktop CLI, Windows "Send to", installer | `.claude/skills/hoppy-windows/SKILL.md` | `crates/hoppy-cli/src/`, `apps/windows/` | `python3 tools/dev.py check` |
 | Android app (UI, service, share target, storage) | `.claude/skills/hoppy-android/SKILL.md` | `apps/android/` | `python3 tools/dev.py android-test` (+ CI build) |
-| Themes, mascots, colors, app icon | `.claude/skills/hoppy-themes/SKILL.md` | `tools/gen_mascots.py`, `docs/design/themes.md` | `python3 tools/dev.py mascots` |
+| Themes, theme picker, animations, mascots, fonts, app icon | `.claude/skills/hoppy-themes/SKILL.md` | `apps/android/app/src/main/java/app/hoppy/ui/theme/`, `tools/gen_mascots.py`, `tools/fonts.py`, `docs/design/themes.md` | `python3 tools/dev.py mascots` (+ CI build) |
 | Cross-implementation bugs ("works Rust→Rust, not with Android") | `.claude/skills/hoppy-interop-test/SKILL.md` | `tools/hoppy_ref.py`, `tools/interop.sh` | `python3 tools/dev.py interop` |
 | New transport (BLE, Wi-Fi Direct/Aware, relay) or new platform | `.claude/skills/hoppy-new-transport/SKILL.md` | `docs/architecture.md`, `docs/roadmap.md` | depends; write an ADR |
 | An architectural decision, or docs for agents | `.claude/skills/hoppy-docs-adr/SKILL.md` | `docs/decisions/`, this file | `python3 tools/dev.py docs` |
@@ -38,7 +38,8 @@ apps/windows/          Windows install script
 tools/dev.py           ONE command runner for everything (see `--help`)
 tools/hoppy_ref.py     Python reference implementation + debugging CLI (stdlib only)
 tools/interop.sh       Rust ↔ Python ↔ Kotlin wire tests
-tools/gen_mascots.py   Mascot source of truth → SVG + Android vectors
+tools/gen_mascots.py   Mascot source of truth → SVG + Android vectors + animations
+tools/fonts.py         Bundles subsetted OFL Japanese fonts into the Android app
 docs/                  protocol, architecture, roadmap, decisions (ADRs), design, platforms
 assets/brand/          Generated mascot SVGs + preview
 ```
@@ -53,7 +54,8 @@ assets/brand/          Generated mascot SVGs + preview
 3. **Never auto-accept by default.** Receiving asks the user unless they explicitly opt in.
 4. **Android `:core` stays pure JVM** (no `android.*` imports) so it is testable off-device.
 5. **No network work on the Android main thread**; `DiscoveryNode` already hops threads.
-6. **Mascots are generated**: edit `tools/gen_mascots.py`, never the XML/SVG outputs.
+6. **Mascots and fonts are generated**: edit `tools/gen_mascots.py` / run `tools/fonts.py`,
+   never edit the XML/SVG/TTF outputs.
 7. **v0 is unencrypted** (ADR 0003). Do not ship outside trusted LANs; v1 adds encryption.
 8. **Original art only.** Mascots must not resemble existing characters or brands.
 9. **Public repo: never commit sensitive data** — credentials, tokens, keystores, `.env`,

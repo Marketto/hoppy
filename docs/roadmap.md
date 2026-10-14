@@ -4,7 +4,8 @@
 - Protocol v0 spec + shared test vectors; Rust, Kotlin and Python implementations, interop-tested.
 - Windows: `hoppy` CLI, "Send to → Hoppy", startup receiver, native accept dialog.
 - Android: share target, device picker, receive service with Accept/Decline notification,
-  saving to Download/Hoppy, Kawaii and Pro themes.
+  saving to Download/Hoppy.
+- Five animated themes (Purikura, Showa, Manga, Yume, Night) with a first-run picker (ADR 0005).
 - Agentic setup: AGENTS.md router, skills, subagents, `tools/dev.py`, CI.
 
 ## Next — usable beta

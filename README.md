@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/brand/mascots-preview.png" width="420" alt="Hoppy: tema Kawaii e tema Pro"></p>
+<p align="center"><img src="assets/brand/mascots-preview.png" width="420" alt="Le mascotte di Hoppy"></p>
 
 # Hoppy
 
@@ -19,8 +19,8 @@ veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto
 | **Android** | *Condividi → Hoppy* o pulsante *Invia file* | interruttore *Pronto a ricevere*, conferma da notifica |
 | **Linux / macOS** | `hoppy send` | `hoppy receive` |
 
-Due temi nell'app: **Kawaii** (coniglietto mochi in stile giapponese/coreano) e **Pro**
-(coniglio stilizzato con occhiali da sole).
+Cinque temi animati da scegliere al primo avvio: **Purikura** (predefinito), **Showa**,
+**Manga** (proposto con il contrasto elevato), **Yume** e **Notte** (proposto con il tema scuro).
 
 ## Provarlo
 

@@ -1,37 +1,40 @@
 ---
 name: hoppy-themes
-description: Use when touching Hoppy's look - the Kawaii and Pro themes, mascots, palette, corner radii, app/notification icons, or adding a new theme.
+description: Use when touching Hoppy's look - the five themes (Purikura, Showa, Manga, Yume, Night), the first-run theme picker, mascots and their animations, palettes, bundled fonts, app/notification icons, or adding a new theme.
 ---
 
 # Themes and mascots
 
-Spec: `docs/design/themes.md` (palette, mood, do/don't). Two themes today:
+Spec and palettes: `docs/design/themes.md`. Decision: `docs/decisions/0005-five-themes-first-run-picker.md`.
 
-- **Kawaii** — Japanese/Korean cute style: mochi-shaped cream bunny, short ears (one
-  folded), tiny dot eyes set wide and low, ㅅ mouth, manga blush lines, thin cocoa outline,
-  pastel strawberry-milk palette, 24dp corners.
-- **Pro** — stylized flat grey bunny with black sunglasses and a teal accent, graphite
-  dark palette, 10dp corners.
+## Where things are
 
-## Mascots are code
-
-`tools/gen_mascots.py` defines each mascot as shapes on a 200×200 canvas and writes:
-`assets/brand/mascot-<theme>.svg` and `apps/android/app/src/main/res/drawable/mascot_<theme>.xml`
-(+ `ic_notification.xml`). **Never edit the outputs.** After editing run
-`python3 tools/dev.py mascots`, then render a preview (any browser) and check both themes at
-300px and 64px.
-
-## Adding a theme (checklist)
-
-1. Palette + mood in `docs/design/themes.md`.
-2. Mascot list in `tools/gen_mascots.py` (`MASCOTS["name"]`).
-3. Colors in `res/values/colors.xml`, style `Theme.Hoppy.<Name>` in `res/values/themes.xml`
-   setting `hoppyMascot`, Material color roles and `shapeAppearanceCorner*`.
-4. Enum value in `Prefs.Theme`, mapping in `Prefs.themeRes`, label string (en + it),
-   status-bar style in `ThemedActivity`.
+| What | Where |
+| --- | --- |
+| Theme enum, styles, migration | `apps/android/app/src/main/java/app/hoppy/ui/theme/HoppyTheme.kt`, `res/values/themes.xml`, `res/values/attrs.xml` |
+| OS-based suggestion (+ unit test) | `ui/theme/ThemeSuggestion.kt`, `app/src/test/java/app/hoppy/ui/theme/ThemeSuggestionTest.kt` |
+| First-run picker | `ui/ThemePickerActivity.kt`, `res/layout/activity_theme_picker.xml`, `item_theme_card.xml` |
+| Animated views | `ui/theme/ThemeBackgroundView.kt`, `MascotStageView.kt`, `MascotView.kt`, `HoppyButton.kt`, `ShineDrawable.kt`, `ButtonFx.kt`, `HomeDecor.kt`, `Motion.kt` |
+| Mascots + animations (generated) | `tools/gen_mascots.py` → `res/drawable/mascot_*.xml`, `res/animator/mascot_*.xml`, `assets/brand/` |
+| Japanese decor copy | `res/values/decor.xml` |
+| Fonts (generated, OFL) | `tools/fonts.py` → `res/font/*.ttf`, licences in `apps/android/app/src/main/assets/licenses/fonts/` |
 
 ## Rules
 
-- Original characters only; no resemblance to existing mascots/brands.
-- Only paths, fills, strokes, opacity and group rotation (so SVG = VectorDrawable).
-- Contrast: text colors on backgrounds ≥ 4.5:1.
+- Never edit generated files: run `python3 tools/dev.py mascots` or `python3 tools/fonts.py`.
+- After adding Japanese text anywhere in `res/values*/`, run `python3 tools/fonts.py`.
+- The `hoppyThemeKind` attr enum order must match `HoppyTheme` order.
+- Motion stops in `onStop`, on detach, when hidden, and when system animations are off
+  (`Motion`); new animated views implement `HostAware`. Draw with Canvas, no per-frame bitmaps.
+- Original characters only; only paths, fills, strokes, alpha and group rotate/scale/translate
+  in mascots (SVG = VectorDrawable).
+- Contrast ≥ 4.5:1; Manga is the high-contrast theme and must stay that way.
+
+## Adding a theme (checklist)
+
+1. Mood, palette, fonts, motion in `docs/design/themes.md`.
+2. Value in `HoppyTheme` (style, mascot, label, isDark) and in the `hoppyThemeKind` enum (same order).
+3. `Theme.Hoppy.<Name>` in `themes.xml` (Material color roles, fonts, `shapeAppearanceCorner*`).
+4. Drawing branches in `ThemeBackgroundView`, `MascotStageView`, `HoppyButton`, `HomeDecor`; body motion in `MascotView`.
+5. Label + description strings in `values/strings.xml` and `values-it/strings.xml`; new fonts in `tools/fonts.py`.
+6. If it should be auto-suggested, extend `ThemeSuggestion` and its test.

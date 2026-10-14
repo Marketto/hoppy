@@ -18,13 +18,15 @@ Two modules in `apps/android/`:
   - `service/MediaStoreSink.kt` — saves to `Download/Hoppy`, `IS_PENDING` until hash OK.
   - `ui/MainActivity.kt` (home), `ui/SendActivity.kt` (share target + picker), `ui/Common.kt`
     (`ThemedActivity`, `PeerAdapter`, `UriSource`, `Format`).
+  - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
+    all animated views (see `hoppy-themes`).
 
 ## Rules
 
 - Minimal UI: mascot, one switch, nearby list, one button. No settings screen; options
   live in the overflow menu.
-- Every screen extends `ThemedActivity` and uses theme attributes (`?attr/hoppyMascot`,
-  `?attr/colorPrimary`…), never hard-coded colors. See `hoppy-themes`.
+- Every screen extends `ThemedActivity` and uses theme attributes or `HoppyTheme`, never
+  hard-coded colors. See `hoppy-themes`.
 - Strings in `values/strings.xml` **and** `values-it/strings.xml` with identical placeholders.
 - Network/disk work off the main thread (`thread {}` or the service pool).
 - Content URIs with unknown size are copied to cache first (protocol needs sizes).
@@ -32,7 +34,7 @@ Two modules in `apps/android/`:
 ## Build & verify
 
 ```
-python3 tools/dev.py android-test    # :core JVM tests (needs Gradle)
+python3 tools/dev.py android-test    # :core JVM tests (needs Gradle); CI also runs :app:testDebugUnitTest
 python3 tools/dev.py android-build   # APK (needs Android SDK)
 python3 tools/dev.py interop         # Kotlin core vs Rust vs Python
 ```
