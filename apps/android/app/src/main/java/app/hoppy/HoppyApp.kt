@@ -10,6 +10,7 @@ import android.provider.Settings
 import app.hoppy.core.DeviceInfo
 import app.hoppy.core.DiscoveryNode
 import app.hoppy.core.Peer
+import app.hoppy.ui.theme.HoppyTheme
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArraySet
 
@@ -54,18 +55,23 @@ object Prefs {
         sp(ctx).edit().putString("device_name", name.trim().take(64)).apply()
     }
 
-    enum class Theme { KAWAII, PRO }
+    /** Stored theme; pre-v2 values KAWAII / PRO migrate to PURIKURA / NIGHT. */
+    fun theme(ctx: Context): HoppyTheme =
+        HoppyTheme.fromStored(sp(ctx).getString("theme", null)) ?: HoppyTheme.DEFAULT
 
-    fun theme(ctx: Context): Theme =
-        runCatching { Theme.valueOf(sp(ctx).getString("theme", Theme.KAWAII.name)!!) }.getOrDefault(Theme.KAWAII)
-
-    fun setTheme(ctx: Context, theme: Theme) {
+    fun setTheme(ctx: Context, theme: HoppyTheme) {
         sp(ctx).edit().putString("theme", theme.name).apply()
     }
 
-    fun themeRes(ctx: Context): Int = when (theme(ctx)) {
-        Theme.KAWAII -> R.style.Theme_Hoppy_Kawaii
-        Theme.PRO -> R.style.Theme_Hoppy_Pro
+    /**
+     * First-run flag: the theme picker is the "installation-time" choice. Users of the
+     * old two-theme app already picked (or saw) a theme, so a stored theme counts.
+     */
+    fun themeChosen(ctx: Context): Boolean =
+        sp(ctx).getBoolean("theme_chosen", false) || sp(ctx).contains("theme")
+
+    fun setThemeChosen(ctx: Context, value: Boolean) {
+        sp(ctx).edit().putBoolean("theme_chosen", value).apply()
     }
 
     /** Off by default: anyone on the network could otherwise push files. */

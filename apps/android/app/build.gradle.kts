@@ -46,4 +46,7 @@ dependencies {
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.recyclerview)
     implementation(libs.material)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }

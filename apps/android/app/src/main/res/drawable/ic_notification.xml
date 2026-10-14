@@ -4,11 +4,11 @@
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
     <group android:rotation="-8" android:pivotX="8.5" android:pivotY="12">
-        <path android:pathData="M8.5,1.5 h0 a2,2 0 0,1 2,2 v7 a2,2 0 0,1 -2,2 h0 a2,2 0 0,1 -2,-2 v-7 a2,2 0 0,1 2,-2 Z"
+      <path android:pathData="M8.5,1.5 h0 a2,2 0 0,1 2,2 v7 a2,2 0 0,1 -2,2 h0 a2,2 0 0,1 -2,-2 v-7 a2,2 0 0,1 2,-2 Z"
         android:fillColor="#FFFFFF" />
     </group>
     <group android:rotation="8" android:pivotX="15.5" android:pivotY="12">
-        <path android:pathData="M15.5,1.5 h0 a2,2 0 0,1 2,2 v7 a2,2 0 0,1 -2,2 h0 a2,2 0 0,1 -2,-2 v-7 a2,2 0 0,1 2,-2 Z"
+      <path android:pathData="M15.5,1.5 h0 a2,2 0 0,1 2,2 v7 a2,2 0 0,1 -2,2 h0 a2,2 0 0,1 -2,-2 v-7 a2,2 0 0,1 2,-2 Z"
         android:fillColor="#FFFFFF" />
     </group>
     <path android:pathData="M4,15 a8,6.5 0 1,0 16,0 a8,6.5 0 1,0 -16,0 Z"

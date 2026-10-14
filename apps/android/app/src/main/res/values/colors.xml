@@ -1,31 +1,70 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Palette source of truth: docs/design/themes.md -->
-    <!-- Kawaii: warm mochi cream, strawberry milk, cocoa ink -->
-    <color name="kawaii_background">#FFF6F3</color>
-    <color name="kawaii_surface">#FFFFFF</color>
-    <color name="kawaii_container">#FFEAE5</color>
-    <color name="kawaii_primary">#F0859A</color>
-    <color name="kawaii_on_primary">#FFFFFF</color>
-    <color name="kawaii_primary_container">#FFDDE3</color>
-    <color name="kawaii_on_primary_container">#6B2A38</color>
-    <color name="kawaii_secondary">#A98BD9</color>
-    <color name="kawaii_on_surface">#4A3530</color>
-    <color name="kawaii_on_surface_variant">#8A6E66</color>
-    <color name="kawaii_outline">#E9D3CC</color>
+    <!-- Palette source of truth: docs/design/themes.md (approved theme comps). -->
 
-    <!-- Pro: graphite, cool grey, teal accent from the sunglasses -->
-    <color name="pro_background">#121316</color>
-    <color name="pro_surface">#17181C</color>
-    <color name="pro_container">#202126</color>
-    <color name="pro_primary">#4FD1C5</color>
-    <color name="pro_on_primary">#00201D</color>
-    <color name="pro_primary_container">#173F3B</color>
-    <color name="pro_on_primary_container">#A7F2EA</color>
-    <color name="pro_secondary">#B5B5BD</color>
-    <color name="pro_on_surface">#E9E9EC</color>
-    <color name="pro_on_surface_variant">#9A9AA3</color>
-    <color name="pro_outline">#34353B</color>
+    <!-- Purikura: photo-sticker booth, strawberry milk, lavender, yellow tape. -->
+    <color name="purikura_bg">#FFE9F0</color>
+    <color name="purikura_check_a">#FFD8E5</color>
+    <color name="purikura_check_b">#FFEDF3</color>
+    <color name="purikura_primary">#F0859A</color>
+    <color name="purikura_primary_dark">#D9466F</color>
+    <color name="purikura_text">#5B3A44</color>
+    <color name="purikura_muted">#8A5B69</color>
+    <color name="purikura_yellow">#FFE066</color>
+    <color name="purikura_lavender">#B994E8</color>
+    <color name="purikura_ring">#F7B6CA</color>
+    <color name="purikura_btn_top">#F79AAE</color>
+    <color name="purikura_btn_bottom">#EC7690</color>
+    <color name="purikura_drop">#E4C7F7</color>
+    <color name="purikura_card">#E0FFFFFF</color>
+    <color name="purikura_container">#FFDDE6</color>
 
+    <!-- Showa: 1960s Japanese ad, cream paper, ink, vermilion, teal, mustard. -->
+    <color name="showa_bg">#F4E9D0</color>
+    <color name="showa_card">#FBF4E3</color>
+    <color name="showa_ink">#2B2320</color>
+    <color name="showa_vermilion">#D9472B</color>
+    <color name="showa_teal">#1F7A78</color>
+    <color name="showa_mustard">#E9B93A</color>
+    <color name="showa_muted">#5E5047</color>
+    <color name="showa_divider">#B9A781</color>
+    <color name="showa_container">#EFE0BC</color>
+
+    <!-- Manga: black and white comic, one pink accent. High-contrast theme. -->
+    <color name="manga_bg">#FFFFFF</color>
+    <color name="manga_ink">#111111</color>
+    <color name="manga_pink">#F0859A</color>
+    <color name="manga_tone">#C9C9C9</color>
+    <color name="manga_muted">#333333</color>
+    <color name="manga_container">#F2F2F2</color>
+
+    <!-- Yume: dreamy pastel gradient, frosted glass. -->
+    <color name="yume_1">#DCCBFF</color>
+    <color name="yume_2">#F6D8F2</color>
+    <color name="yume_3">#FFE6EF</color>
+    <color name="yume_4">#D6F5EC</color>
+    <color name="yume_text">#4E3F86</color>
+    <color name="yume_muted">#6E5FA6</color>
+    <color name="yume_primary">#8B6FE0</color>
+    <color name="yume_mid">#B486E6</color>
+    <color name="yume_pink">#EE97BE</color>
+    <color name="yume_mint">#8CD6BE</color>
+    <color name="yume_glass">#9EFFFFFF</color>
+    <color name="yume_container">#EDE4FF</color>
+
+    <!-- Night: graphite, teal accent, lavender. Serious but friendly. -->
+    <color name="night_bg">#14151B</color>
+    <color name="night_surface">#1E2027</color>
+    <color name="night_container">#262833</color>
+    <color name="night_text">#ECECF1</color>
+    <color name="night_muted">#9A9AA8</color>
+    <color name="night_teal">#4FD1C5</color>
+    <color name="night_on_teal">#00201D</color>
+    <color name="night_teal_container">#173F3B</color>
+    <color name="night_on_teal_container">#A7F2EA</color>
+    <color name="night_lavender">#B8A6FF</color>
+    <color name="night_outline">#34374A</color>
+
+    <color name="white">#FFFFFF</color>
     <color name="launcher_background">#FFF6F3</color>
 </resources>

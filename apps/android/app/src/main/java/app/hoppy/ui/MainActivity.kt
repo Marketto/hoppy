@@ -2,14 +2,17 @@ package app.hoppy.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Build
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
+import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import app.hoppy.Node
 import app.hoppy.Prefs
@@ -17,6 +20,8 @@ import app.hoppy.R
 import app.hoppy.core.Peer
 import app.hoppy.databinding.ActivityMainBinding
 import app.hoppy.service.ReceiveService
+import app.hoppy.ui.theme.HomeDecor
+import app.hoppy.ui.theme.Motion
 
 /** Home: mascot, receive switch, nearby devices, "send files". Deliberately minimal. */
 class MainActivity : ThemedActivity() {
@@ -38,8 +43,17 @@ class MainActivity : ThemedActivity() {
         startReceiving()
     }
 
+    private lateinit var decor: HomeDecor
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!Prefs.themeChosen(this)) {
+            // First run: the theme choice comes before anything else (Android has no
+            // install-time UI). The picker restarts MainActivity in the chosen theme.
+            startActivity(ThemePickerActivity.intent(this, firstRun = true))
+            finish()
+            return
+        }
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
         setSupportActionBar(b.toolbar)
@@ -49,13 +63,41 @@ class MainActivity : ThemedActivity() {
         b.sendButton.setOnClickListener { pickFor(null) }
         b.receiveSwitch.setOnCheckedChangeListener { _, checked ->
             if (checked == ReceiveService.running) return@setOnCheckedChangeListener
+            springSwitch()
             if (checked) requestThenReceive() else ReceiveService.stop(this)
         }
         b.mascot.setOnClickListener { Node.refresh() }
+        decor = HomeDecor(b)
+        styleSwitch()
+    }
+
+    /** Thumb/track tinted per theme; the thumb springs (overshoot) when toggled. */
+    private fun styleSwitch() {
+        val sw = b.receiveSwitch
+        val on = MaterialColors.getColor(sw, androidx.appcompat.R.attr.colorPrimary)
+        val onThumb = MaterialColors.getColor(sw, com.google.android.material.R.attr.colorOnPrimary)
+        val off = MaterialColors.getColor(sw, com.google.android.material.R.attr.colorOutline)
+        val offTrack = MaterialColors.getColor(sw, com.google.android.material.R.attr.colorSurfaceContainerHighest)
+        val checked = intArrayOf(android.R.attr.state_checked)
+        val unchecked = intArrayOf()
+        sw.thumbTintList = ColorStateList(arrayOf(checked, unchecked), intArrayOf(onThumb, off))
+        sw.trackTintList = ColorStateList(arrayOf(checked, unchecked), intArrayOf(on, offTrack))
+        sw.trackDecorationTintList = ColorStateList(arrayOf(checked, unchecked), intArrayOf(on, off))
+    }
+
+    /** Springy feedback on the whole switch (the Material thumb itself is not animatable from outside). */
+    private fun springSwitch() {
+        if (!Motion.enabled()) return
+        val sw = b.receiveSwitch
+        sw.animate().cancel()
+        sw.scaleX = 0.96f
+        sw.scaleY = 0.96f
+        sw.animate().scaleX(1f).scaleY(1f).setDuration(380L).setInterpolator(OvershootInterpolator(3f)).start()
     }
 
     override fun onStart() {
         super.onStart()
+        if (!::b.isInitialized) return // first run: finishing towards the theme picker
         b.deviceName.text = Prefs.deviceName(this)
         Node.addListener(peersListener)
         ReceiveService.addStateListener(stateListener)
@@ -63,9 +105,12 @@ class MainActivity : ThemedActivity() {
         Node.refresh()
         showPeers(Node.peers())
         syncSwitch()
+        decor.start()
     }
 
     override fun onStop() {
+        if (!::b.isInitialized) return super.onStop()
+        decor.stop()
         Node.removeListener(peersListener)
         ReceiveService.removeStateListener(stateListener)
         Node.release()
@@ -80,6 +125,7 @@ class MainActivity : ThemedActivity() {
     private fun syncSwitch() {
         b.receiveSwitch.isChecked = ReceiveService.running
         b.receiveHint.setText(if (ReceiveService.running) R.string.receive_on_hint else R.string.receive_off_hint)
+        decor.setReceiving(ReceiveService.running)
     }
 
     private fun pickFor(peer: Peer?) {
@@ -128,18 +174,7 @@ class MainActivity : ThemedActivity() {
     }
 
     private fun chooseTheme() {
-        val themes = Prefs.Theme.entries
-        val labels = arrayOf(getString(R.string.theme_kawaii), getString(R.string.theme_pro))
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.theme)
-            .setSingleChoiceItems(labels, themes.indexOf(Prefs.theme(this))) { dialog, which ->
-                dialog.dismiss()
-                if (themes[which] != Prefs.theme(this)) {
-                    Prefs.setTheme(this, themes[which])
-                    recreate()
-                }
-            }
-            .show()
+        startActivity(ThemePickerActivity.intent(this, firstRun = false))
     }
 
     private fun rename() {

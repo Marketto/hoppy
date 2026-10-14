@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One theme in the picker: a live mini preview inflated with that theme's
+  ContextThemeWrapper, so every ?attr below resolves to the card's own theme.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/cardRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:layout_marginHorizontal="6dp"
+    android:clickable="true"
+    android:focusable="true">
+
+    <!-- Clipped preview window (corner radius + frame set from code per theme). -->
+    <FrameLayout
+        android:id="@+id/frame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginBottom="6dp"
+        android:layout_marginEnd="6dp">
+
+        <app.hoppy.ui.theme.ThemeBackgroundView
+            android:id="@+id/background"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:importantForAccessibility="no" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipChildren="false"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:id="@+id/pill"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="start"
+                android:background="@drawable/decor_pill"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="4dp"
+                android:textColor="?attr/colorOnPrimary"
+                android:textSize="12sp"
+                android:visibility="invisible" />
+
+            <app.hoppy.ui.theme.MascotStageView
+                android:id="@+id/stage"
+                android:layout_width="150dp"
+                android:layout_height="150dp"
+                android:layout_marginTop="8dp">
+
+                <app.hoppy.ui.theme.MascotView
+                    android:id="@+id/mascot"
+                    android:layout_width="112dp"
+                    android:layout_height="112dp"
+                    android:layout_gravity="center"
+                    android:importantForAccessibility="no" />
+            </app.hoppy.ui.theme.MascotStageView>
+
+            <TextView
+                android:id="@+id/name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:textColor="?attr/hoppyInk"
+                android:textSize="28sp" />
+
+            <TextView
+                android:id="@+id/description"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/tagline"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:importantForAccessibility="no"
+                android:textColor="?attr/colorPrimary"
+                android:textSize="15sp" />
+
+            <!-- A sample of the theme's primary button (not interactive). -->
+            <app.hoppy.ui.theme.HoppyButton
+                android:id="@+id/sample"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="16dp"
+                android:clickable="false"
+                android:focusable="false"
+                android:importantForAccessibility="no"
+                android:text="@string/send_files" />
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>

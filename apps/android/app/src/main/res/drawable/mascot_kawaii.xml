@@ -3,41 +3,45 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="200dp" android:height="200dp"
     android:viewportWidth="200" android:viewportHeight="200">
-    <group android:rotation="-10" android:pivotX="76" android:pivotY="108">
-        <path android:pathData="M61,72 a15,36 0 1,0 30,0 a15,36 0 1,0 -30,0 Z"
-        android:fillColor="#FFFDF8"
-        android:strokeColor="#6B4E45"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+    <group android:name="ear_l" android:pivotX="76" android:pivotY="112">
+        <group android:rotation="-10" android:pivotX="76" android:pivotY="108">
+          <path android:pathData="M61,72 a15,36 0 1,0 30,0 a15,36 0 1,0 -30,0 Z"
+            android:fillColor="#FFFDF8"
+            android:strokeColor="#6B4E45"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        </group>
+        <group android:rotation="-10" android:pivotX="76" android:pivotY="108">
+          <path android:pathData="M69.5,76 a6.5,24 0 1,0 13,0 a6.5,24 0 1,0 -13,0 Z"
+            android:fillColor="#FFD3DC" />
+        </group>
     </group>
-    <group android:rotation="-10" android:pivotX="76" android:pivotY="108">
-        <path android:pathData="M69.5,76 a6.5,24 0 1,0 13,0 a6.5,24 0 1,0 -13,0 Z"
-        android:fillColor="#FFD3DC" />
+    <group android:name="ear_r" android:pivotX="124" android:pivotY="112">
+        <group android:rotation="12" android:pivotX="124" android:pivotY="108">
+          <path android:pathData="M109,80 a15,28 0 1,0 30,0 a15,28 0 1,0 -30,0 Z"
+            android:fillColor="#FFFDF8"
+            android:strokeColor="#6B4E45"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        </group>
+        <group android:rotation="12" android:pivotX="124" android:pivotY="108">
+          <path android:pathData="M117.5,84 a6.5,17 0 1,0 13,0 a6.5,17 0 1,0 -13,0 Z"
+            android:fillColor="#FFD3DC" />
+        </group>
+        <path android:pathData="M127,60 C129,47 149,45 158,62 C161,70 154,74 149,69 C144,64 136,63 127,60 Z"
+            android:fillColor="#FFFDF8"
+            android:strokeColor="#6B4E45"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path android:pathData="M133,58 C138,52 148,53 153,62"
+            android:strokeColor="#FFD3DC"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
     </group>
-    <group android:rotation="12" android:pivotX="124" android:pivotY="108">
-        <path android:pathData="M109,80 a15,28 0 1,0 30,0 a15,28 0 1,0 -30,0 Z"
-        android:fillColor="#FFFDF8"
-        android:strokeColor="#6B4E45"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-    </group>
-    <group android:rotation="12" android:pivotX="124" android:pivotY="108">
-        <path android:pathData="M117.5,84 a6.5,17 0 1,0 13,0 a6.5,17 0 1,0 -13,0 Z"
-        android:fillColor="#FFD3DC" />
-    </group>
-    <path android:pathData="M127,60 C129,47 149,45 158,62 C161,70 154,74 149,69 C144,64 136,63 127,60 Z"
-        android:fillColor="#FFFDF8"
-        android:strokeColor="#6B4E45"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-    <path android:pathData="M133,58 C138,52 148,53 153,62"
-        android:strokeColor="#FFD3DC"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
     <path android:pathData="M30,136 C30,98 62,84 100,84 C138,84 170,98 170,136 C170,166 142,180 100,180 C58,180 30,166 30,136 Z"
         android:fillColor="#FFFDF8"
         android:strokeColor="#6B4E45"
@@ -56,10 +60,12 @@
         android:strokeWidth="3"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
-    <path android:pathData="M49,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z"
+    <path android:name="cheek_l"
+        android:pathData="M49,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z"
         android:fillColor="#FFB3C1"
         android:fillAlpha="0.85" />
-    <path android:pathData="M129,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z"
+    <path android:name="cheek_r"
+        android:pathData="M129,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z"
         android:fillColor="#FFB3C1"
         android:fillAlpha="0.85" />
     <path android:pathData="M54,147 l4,-6 M60,147 l4,-6 M66,147 l4,-6"
@@ -72,14 +78,16 @@
         android:strokeWidth="1.8"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
-    <path android:pathData="M68.8,131 a5.2,5.2 0 1,0 10.4,0 a5.2,5.2 0 1,0 -10.4,0 Z"
-        android:fillColor="#3A2A26" />
-    <path android:pathData="M120.8,131 a5.2,5.2 0 1,0 10.4,0 a5.2,5.2 0 1,0 -10.4,0 Z"
-        android:fillColor="#3A2A26" />
-    <path android:pathData="M74.3,129.2 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0 Z"
-        android:fillColor="#FFFFFF" />
-    <path android:pathData="M126.3,129.2 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0 Z"
-        android:fillColor="#FFFFFF" />
+    <group android:name="eyes" android:pivotX="100" android:pivotY="131">
+        <path android:pathData="M68.8,131 a5.2,5.2 0 1,0 10.4,0 a5.2,5.2 0 1,0 -10.4,0 Z"
+            android:fillColor="#3A2A26" />
+        <path android:pathData="M120.8,131 a5.2,5.2 0 1,0 10.4,0 a5.2,5.2 0 1,0 -10.4,0 Z"
+            android:fillColor="#3A2A26" />
+        <path android:pathData="M74.3,129.2 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0 Z"
+            android:fillColor="#FFFFFF" />
+        <path android:pathData="M126.3,129.2 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0 Z"
+            android:fillColor="#FFFFFF" />
+    </group>
     <path android:pathData="M93,145 Q98,143 100,137 Q102,143 107,145"
         android:strokeColor="#6B4E45"
         android:strokeWidth="2.6"
