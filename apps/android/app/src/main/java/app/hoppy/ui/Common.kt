@@ -18,20 +18,33 @@ import app.hoppy.R
 import app.hoppy.core.Peer
 import app.hoppy.core.Source
 import app.hoppy.databinding.ItemPeerBinding
+import app.hoppy.ui.theme.HoppyTheme
+import app.hoppy.ui.theme.HostAware
+import app.hoppy.ui.theme.ThemeFonts
 import java.io.File
 import java.io.InputStream
 
-/** Applies the user's theme (Kawaii / Pro) before any view is created. */
+/**
+ * Applies the user's [HoppyTheme] before any view is created, sets the system bar
+ * icon style from the theme (not from the system night mode) and pauses/resumes the
+ * decorative animations of the whole view tree with the activity lifecycle.
+ */
 abstract class ThemedActivity : AppCompatActivity() {
-    private var appliedTheme: Prefs.Theme? = null
+    private var appliedTheme: HoppyTheme? = null
+
+    /** Theme this activity was created with. */
+    protected val hoppyTheme: HoppyTheme get() = appliedTheme ?: wantedTheme()
+
+    /** Theme to apply; the stored one unless a screen overrides it (first-run picker). */
+    protected open fun wantedTheme(): HoppyTheme = Prefs.theme(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val theme = Prefs.theme(this)
+        val theme = wantedTheme()
         appliedTheme = theme
-        setTheme(Prefs.themeRes(this))
+        setTheme(theme.styleRes)
         // Bar icon colour must follow the app theme, not the system night mode
-        // (default enableEdgeToEdge() would put dark icons on the dark Pro theme).
-        val bars = if (theme == Prefs.Theme.PRO) {
+        // (default enableEdgeToEdge() would put dark icons on the dark Night theme).
+        val bars = if (theme.isDark) {
             SystemBarStyle.dark(Color.TRANSPARENT)
         } else {
             SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
@@ -40,9 +53,19 @@ abstract class ThemedActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
     }
 
+    override fun onStart() {
+        super.onStart()
+        HostAware.dispatch(window.decorView, true)
+    }
+
     override fun onResume() {
         super.onResume()
-        if (appliedTheme != null && appliedTheme != Prefs.theme(this)) recreate()
+        if (appliedTheme != null && appliedTheme != wantedTheme()) recreate()
+    }
+
+    override fun onStop() {
+        HostAware.dispatch(window.decorView, false)
+        super.onStop()
     }
 }
 
@@ -119,7 +142,10 @@ class PeerAdapter(private val onClick: (Peer) -> Unit) :
     class Holder(val b: ItemPeerBinding) : RecyclerView.ViewHolder(b.root)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
-        Holder(ItemPeerBinding.inflate(LayoutInflater.from(parent.context), parent, false))
+        Holder(ItemPeerBinding.inflate(LayoutInflater.from(parent.context), parent, false)).also {
+            ThemeFonts.applyBodyBold(it.b.name)
+            ThemeFonts.applyDisplay(it.b.initial)
+        }
 
     override fun onBindViewHolder(h: Holder, position: Int) {
         val peer = getItem(position)

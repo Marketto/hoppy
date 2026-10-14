@@ -1,54 +1,238 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hoppy themes (docs/design/themes.md). Each style is listed in HoppyTheme.kt; the
+  `hoppyThemeKind` value must match the enum ordinal. Drawing code (backgrounds,
+  mascot stage, buttons) reads the palette from res/values/colors.xml per theme.
+-->
 <resources>
-    <!-- Kawaii: soft, round, pastel. -->
-    <style name="Theme.Hoppy.Kawaii" parent="Theme.Material3.Light.NoActionBar">
+    <!-- A · Purikura: photo-sticker booth, pastel and cute (default). -->
+    <style name="Theme.Hoppy.Purikura" parent="Theme.Material3.Light.NoActionBar">
+        <item name="hoppyThemeKind">purikura</item>
         <item name="hoppyMascot">@drawable/mascot_kawaii</item>
-        <item name="android:colorBackground">@color/kawaii_background</item>
-        <item name="colorSurface">@color/kawaii_background</item>
-        <item name="colorSurfaceContainer">@color/kawaii_container</item>
-        <item name="colorSurfaceContainerHighest">@color/kawaii_container</item>
-        <item name="colorPrimary">@color/kawaii_primary</item>
-        <item name="colorOnPrimary">@color/kawaii_on_primary</item>
-        <item name="colorPrimaryContainer">@color/kawaii_primary_container</item>
-        <item name="colorOnPrimaryContainer">@color/kawaii_on_primary_container</item>
-        <item name="colorSecondary">@color/kawaii_secondary</item>
-        <item name="colorOnSurface">@color/kawaii_on_surface</item>
-        <item name="colorOnSurfaceVariant">@color/kawaii_on_surface_variant</item>
-        <item name="colorOutline">@color/kawaii_outline</item>
-        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Kawaii</item>
-        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Kawaii</item>
+        <item name="hoppyDisplayFont">@font/mochiy_pop_one</item>
+        <item name="hoppyBodyBoldFont">@font/zen_maru_gothic_black</item>
+        <item name="android:fontFamily">@font/zen_maru_gothic_medium</item>
+        <item name="fontFamily">@font/zen_maru_gothic_medium</item>
+        <item name="hoppyInk">@color/purikura_primary_dark</item>
+        <item name="hoppyCorner">24dp</item>
+        <item name="hoppyFrameStroke">3dp</item>
+        <item name="hoppyFrameStrokeColor">@color/white</item>
+        <item name="hoppyCardShadow">0dp</item>
+        <item name="hoppyCardBackground">@drawable/card_purikura</item>
+        <item name="hoppyReceiveCardBackground">@drawable/card_purikura_receive</item>
+        <item name="android:colorBackground">@color/purikura_bg</item>
+        <item name="colorSurface">@color/purikura_bg</item>
+        <item name="colorSurfaceContainerLowest">@color/white</item>
+        <item name="colorSurfaceContainerLow">@color/purikura_check_b</item>
+        <item name="colorSurfaceContainer">@color/purikura_container</item>
+        <item name="colorSurfaceContainerHigh">@color/purikura_check_b</item>
+        <item name="colorSurfaceContainerHighest">@color/purikura_container</item>
+        <item name="colorPrimary">@color/purikura_primary</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorPrimaryContainer">@color/purikura_container</item>
+        <item name="colorOnPrimaryContainer">@color/purikura_text</item>
+        <item name="colorSecondary">@color/purikura_lavender</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="colorTertiary">@color/purikura_yellow</item>
+        <item name="colorOnSurface">@color/purikura_text</item>
+        <item name="colorOnBackground">@color/purikura_text</item>
+        <item name="colorOnSurfaceVariant">@color/purikura_muted</item>
+        <item name="colorOutline">@color/purikura_ring</item>
+        <item name="colorOutlineVariant">@color/purikura_ring</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Purikura</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Purikura</item>
+        <item name="shapeAppearanceCornerExtraLarge">@style/Shape.Hoppy.Purikura</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
     </style>
 
-    <!-- Pro: dark graphite, tighter corners, one teal accent. -->
-    <style name="Theme.Hoppy.Pro" parent="Theme.Material3.Dark.NoActionBar">
+    <!-- B · Showa: 1960s Japanese advert, sharp corners, ink borders, hard shadows. -->
+    <style name="Theme.Hoppy.Showa" parent="Theme.Material3.Light.NoActionBar">
+        <item name="hoppyThemeKind">showa</item>
+        <item name="hoppyMascot">@drawable/mascot_kawaii</item>
+        <item name="hoppyDisplayFont">@font/dela_gothic_one</item>
+        <item name="hoppyBodyBoldFont">@font/zen_old_mincho_bold</item>
+        <item name="android:fontFamily">@font/zen_old_mincho_bold</item>
+        <item name="fontFamily">@font/zen_old_mincho_bold</item>
+        <item name="hoppyInk">@color/showa_ink</item>
+        <item name="hoppyCorner">0dp</item>
+        <item name="hoppyFrameStroke">4dp</item>
+        <item name="hoppyFrameStrokeColor">@color/showa_ink</item>
+        <item name="hoppyCardShadow">5dp</item>
+        <item name="hoppyCardBackground">@drawable/card_showa</item>
+        <item name="hoppyReceiveCardBackground">@drawable/card_showa</item>
+        <item name="android:colorBackground">@color/showa_bg</item>
+        <item name="colorSurface">@color/showa_bg</item>
+        <item name="colorSurfaceContainerLowest">@color/showa_card</item>
+        <item name="colorSurfaceContainerLow">@color/showa_card</item>
+        <item name="colorSurfaceContainer">@color/showa_card</item>
+        <item name="colorSurfaceContainerHigh">@color/showa_card</item>
+        <item name="colorSurfaceContainerHighest">@color/showa_container</item>
+        <item name="colorPrimary">@color/showa_vermilion</item>
+        <item name="colorOnPrimary">@color/showa_card</item>
+        <item name="colorPrimaryContainer">@color/showa_mustard</item>
+        <item name="colorOnPrimaryContainer">@color/showa_ink</item>
+        <item name="colorSecondary">@color/showa_teal</item>
+        <item name="colorOnSecondary">@color/showa_card</item>
+        <item name="colorTertiary">@color/showa_mustard</item>
+        <item name="colorOnSurface">@color/showa_ink</item>
+        <item name="colorOnBackground">@color/showa_ink</item>
+        <item name="colorOnSurfaceVariant">@color/showa_muted</item>
+        <item name="colorOutline">@color/showa_ink</item>
+        <item name="colorOutlineVariant">@color/showa_divider</item>
+        <item name="shapeAppearanceCornerSmall">@style/Shape.Hoppy.Sharp</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Sharp</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Sharp</item>
+        <item name="shapeAppearanceCornerExtraLarge">@style/Shape.Hoppy.Sharp</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- C · Manga: black and white comic with one pink accent; the high-contrast theme. -->
+    <style name="Theme.Hoppy.Manga" parent="Theme.Material3.Light.NoActionBar">
+        <item name="hoppyThemeKind">manga</item>
+        <item name="hoppyMascot">@drawable/mascot_kawaii</item>
+        <item name="hoppyDisplayFont">@font/dela_gothic_one</item>
+        <item name="hoppyBodyBoldFont">@font/zen_kaku_gothic_new_black</item>
+        <item name="android:fontFamily">@font/zen_kaku_gothic_new_medium</item>
+        <item name="fontFamily">@font/zen_kaku_gothic_new_medium</item>
+        <item name="hoppyInk">@color/manga_ink</item>
+        <item name="hoppyCorner">0dp</item>
+        <item name="hoppyFrameStroke">4dp</item>
+        <item name="hoppyFrameStrokeColor">@color/manga_ink</item>
+        <item name="hoppyCardShadow">4dp</item>
+        <item name="hoppyCardBackground">@drawable/card_manga</item>
+        <item name="hoppyReceiveCardBackground">@drawable/card_manga</item>
+        <item name="android:colorBackground">@color/manga_bg</item>
+        <item name="colorSurface">@color/manga_bg</item>
+        <item name="colorSurfaceContainerLowest">@color/manga_bg</item>
+        <item name="colorSurfaceContainerLow">@color/manga_bg</item>
+        <item name="colorSurfaceContainer">@color/manga_bg</item>
+        <item name="colorSurfaceContainerHigh">@color/manga_bg</item>
+        <item name="colorSurfaceContainerHighest">@color/manga_container</item>
+        <item name="colorPrimary">@color/manga_ink</item>
+        <item name="colorOnPrimary">@color/manga_bg</item>
+        <item name="colorPrimaryContainer">@color/manga_pink</item>
+        <item name="colorOnPrimaryContainer">@color/manga_ink</item>
+        <item name="colorSecondary">@color/manga_pink</item>
+        <item name="colorOnSecondary">@color/manga_ink</item>
+        <item name="colorTertiary">@color/manga_pink</item>
+        <item name="colorOnSurface">@color/manga_ink</item>
+        <item name="colorOnBackground">@color/manga_ink</item>
+        <item name="colorOnSurfaceVariant">@color/manga_muted</item>
+        <item name="colorOutline">@color/manga_ink</item>
+        <item name="colorOutlineVariant">@color/manga_ink</item>
+        <item name="shapeAppearanceCornerSmall">@style/Shape.Hoppy.Sharp</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Sharp</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Sharp</item>
+        <item name="shapeAppearanceCornerExtraLarge">@style/Shape.Hoppy.Sharp</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- D · Yume: dreamy pastel gradient, frosted glass cards. -->
+    <style name="Theme.Hoppy.Yume" parent="Theme.Material3.Light.NoActionBar">
+        <item name="hoppyThemeKind">yume</item>
+        <item name="hoppyMascot">@drawable/mascot_kawaii</item>
+        <item name="hoppyDisplayFont">@font/hachi_maru_pop</item>
+        <item name="hoppyBodyBoldFont">@font/kiwi_maru_medium</item>
+        <item name="android:fontFamily">@font/kiwi_maru_medium</item>
+        <item name="fontFamily">@font/kiwi_maru_medium</item>
+        <item name="hoppyInk">@color/yume_text</item>
+        <item name="hoppyCorner">26dp</item>
+        <item name="hoppyFrameStroke">2dp</item>
+        <item name="hoppyFrameStrokeColor">@color/white</item>
+        <item name="hoppyCardShadow">0dp</item>
+        <item name="hoppyCardBackground">@drawable/card_yume</item>
+        <item name="hoppyReceiveCardBackground">@drawable/card_yume</item>
+        <item name="android:colorBackground">@color/yume_2</item>
+        <item name="colorSurface">@color/yume_2</item>
+        <item name="colorSurfaceContainerLowest">@color/white</item>
+        <item name="colorSurfaceContainerLow">@color/yume_3</item>
+        <item name="colorSurfaceContainer">@color/yume_container</item>
+        <item name="colorSurfaceContainerHigh">@color/yume_3</item>
+        <item name="colorSurfaceContainerHighest">@color/yume_container</item>
+        <item name="colorPrimary">@color/yume_primary</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorPrimaryContainer">@color/yume_container</item>
+        <item name="colorOnPrimaryContainer">@color/yume_text</item>
+        <item name="colorSecondary">@color/yume_pink</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="colorTertiary">@color/yume_mint</item>
+        <item name="colorOnSurface">@color/yume_text</item>
+        <item name="colorOnBackground">@color/yume_text</item>
+        <item name="colorOnSurfaceVariant">@color/yume_muted</item>
+        <item name="colorOutline">@color/yume_mid</item>
+        <item name="colorOutlineVariant">@color/yume_1</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Yume</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Yume</item>
+        <item name="shapeAppearanceCornerExtraLarge">@style/Shape.Hoppy.Yume</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- E · Night: serious dark graphite, teal accent, still friendly. -->
+    <style name="Theme.Hoppy.Night" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="hoppyThemeKind">night</item>
         <item name="hoppyMascot">@drawable/mascot_pro</item>
-        <item name="android:colorBackground">@color/pro_background</item>
-        <item name="colorSurface">@color/pro_background</item>
-        <item name="colorSurfaceContainer">@color/pro_container</item>
-        <item name="colorSurfaceContainerHighest">@color/pro_container</item>
-        <item name="colorPrimary">@color/pro_primary</item>
-        <item name="colorOnPrimary">@color/pro_on_primary</item>
-        <item name="colorPrimaryContainer">@color/pro_primary_container</item>
-        <item name="colorOnPrimaryContainer">@color/pro_on_primary_container</item>
-        <item name="colorSecondary">@color/pro_secondary</item>
-        <item name="colorOnSurface">@color/pro_on_surface</item>
-        <item name="colorOnSurfaceVariant">@color/pro_on_surface_variant</item>
-        <item name="colorOutline">@color/pro_outline</item>
-        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Pro</item>
-        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Pro</item>
+        <item name="hoppyDisplayFont">@font/zen_kaku_gothic_new_black</item>
+        <item name="hoppyBodyBoldFont">@font/zen_kaku_gothic_new_black</item>
+        <item name="android:fontFamily">@font/zen_kaku_gothic_new_medium</item>
+        <item name="fontFamily">@font/zen_kaku_gothic_new_medium</item>
+        <item name="hoppyInk">@color/night_text</item>
+        <item name="hoppyCorner">16dp</item>
+        <item name="hoppyFrameStroke">1dp</item>
+        <item name="hoppyFrameStrokeColor">@color/night_outline</item>
+        <item name="hoppyCardShadow">0dp</item>
+        <item name="hoppyCardBackground">@drawable/card_night</item>
+        <item name="hoppyReceiveCardBackground">@drawable/card_night</item>
+        <item name="android:colorBackground">@color/night_bg</item>
+        <item name="colorSurface">@color/night_bg</item>
+        <item name="colorSurfaceContainerLowest">@color/night_bg</item>
+        <item name="colorSurfaceContainerLow">@color/night_surface</item>
+        <item name="colorSurfaceContainer">@color/night_surface</item>
+        <item name="colorSurfaceContainerHigh">@color/night_container</item>
+        <item name="colorSurfaceContainerHighest">@color/night_container</item>
+        <item name="colorPrimary">@color/night_teal</item>
+        <item name="colorOnPrimary">@color/night_on_teal</item>
+        <item name="colorPrimaryContainer">@color/night_teal_container</item>
+        <item name="colorOnPrimaryContainer">@color/night_on_teal_container</item>
+        <item name="colorSecondary">@color/night_lavender</item>
+        <item name="colorOnSecondary">@color/night_bg</item>
+        <item name="colorTertiary">@color/night_lavender</item>
+        <item name="colorOnSurface">@color/night_text</item>
+        <item name="colorOnBackground">@color/night_text</item>
+        <item name="colorOnSurfaceVariant">@color/night_muted</item>
+        <item name="colorOutline">@color/night_outline</item>
+        <item name="colorOutlineVariant">@color/night_outline</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Hoppy.Night</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Hoppy.Night</item>
+        <item name="shapeAppearanceCornerExtraLarge">@style/Shape.Hoppy.Night</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>
 
-    <style name="Shape.Hoppy.Kawaii" parent="">
+    <!-- Old names (Kawaii / Pro) kept as aliases so stale references keep working. -->
+    <style name="Theme.Hoppy.Kawaii" parent="Theme.Hoppy.Purikura" />
+    <style name="Theme.Hoppy.Pro" parent="Theme.Hoppy.Night" />
+
+    <style name="Shape.Hoppy.Purikura" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">22dp</item>
+    </style>
+
+    <style name="Shape.Hoppy.Sharp" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">0dp</item>
+    </style>
+
+    <style name="Shape.Hoppy.Yume" parent="">
         <item name="cornerFamily">rounded</item>
         <item name="cornerSize">24dp</item>
     </style>
 
-    <style name="Shape.Hoppy.Pro" parent="">
+    <style name="Shape.Hoppy.Night" parent="">
         <item name="cornerFamily">rounded</item>
-        <item name="cornerSize">10dp</item>
+        <item name="cornerSize">16dp</item>
     </style>
 </resources>

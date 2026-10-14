@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <g class="ear_l">
+    <path d="M61,72 a15,36 0 1,0 30,0 a15,36 0 1,0 -30,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" transform="rotate(-10 76 108)"/>
+    <path d="M69.5,76 a6.5,24 0 1,0 13,0 a6.5,24 0 1,0 -13,0 Z" fill="#FFD3DC" transform="rotate(-10 76 108)"/>
+  </g>
+  <g class="ear_r">
+    <path d="M109,80 a15,28 0 1,0 30,0 a15,28 0 1,0 -30,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" transform="rotate(12 124 108)"/>
+    <path d="M117.5,84 a6.5,17 0 1,0 13,0 a6.5,17 0 1,0 -13,0 Z" fill="#FFD3DC" transform="rotate(12 124 108)"/>
+    <path d="M127,60 C129,47 149,45 158,62 C161,70 154,74 149,69 C144,64 136,63 127,60 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M133,58 C138,52 148,53 153,62" fill="none" stroke="#FFD3DC" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M30,136 C30,98 62,84 100,84 C138,84 170,98 170,136 C170,166 142,180 100,180 C58,180 30,166 30,136 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M69,176 a11,6.5 0 1,0 22,0 a11,6.5 0 1,0 -22,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M109,176 a11,6.5 0 1,0 22,0 a11,6.5 0 1,0 -22,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M49,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z" fill="#FFB3C1" opacity="0.85" class="cheek_l"/>
+  <path d="M129,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z" fill="#FFB3C1" opacity="0.85" class="cheek_r"/>
+  <path d="M54,147 l4,-6 M60,147 l4,-6 M66,147 l4,-6" fill="none" stroke="#F28CA0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M134,147 l4,-6 M140,147 l4,-6 M146,147 l4,-6" fill="none" stroke="#F28CA0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <g class="eyes">
+    <path d="M66,134 Q74,124 82,134" fill="none" stroke="#3A2A26" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M118,134 Q126,124 134,134" fill="none" stroke="#3A2A26" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M92,141 Q100,141 108,141 Q106,153 100,153 Q94,153 92,141 Z" fill="#E8758D" stroke="#6B4E45" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

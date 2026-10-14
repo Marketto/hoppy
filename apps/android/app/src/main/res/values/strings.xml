@@ -20,8 +20,25 @@
     <string name="send_failed">Could not send: %1$s</string>
     <string name="close">Close</string>
     <string name="theme">Theme</string>
-    <string name="theme_kawaii" translatable="false">Kawaii</string>
-    <string name="theme_pro" translatable="false">Pro</string>
+    <string name="theme_purikura">Purikura</string>
+    <string name="theme_showa">Showa</string>
+    <string name="theme_manga">Manga</string>
+    <string name="theme_yume">Yume</string>
+    <string name="theme_night">Night</string>
+    <string name="theme_desc_purikura">Photo-sticker booth: pastel, sparkly and cute.</string>
+    <string name="theme_desc_showa">A 1960s Japanese poster: cream paper and ink.</string>
+    <string name="theme_desc_manga">Black and white comic. Easiest to read.</string>
+    <string name="theme_desc_yume">A dreamy pastel sky with clouds and bubbles.</string>
+    <string name="theme_desc_night">Dark and calm, easy on the eyes.</string>
+    <string name="theme_picker_title">Choose your Hoppy</string>
+    <string name="theme_picker_subtitle">You can change it anytime from the menu.</string>
+    <string name="theme_use">Use this theme</string>
+    <string name="theme_recommended">Recommended</string>
+    <string name="theme_reason_dark">dark theme is on</string>
+    <string name="theme_reason_contrast">high contrast is on</string>
+    <string name="theme_recommended_reason">Recommended · %1$s</string>
+    <string name="theme_card_description">%1$s theme, %2$d of %3$d. %4$s</string>
+    <string name="theme_selected">%1$s selected</string>
     <string name="rename">Device name</string>
     <string name="auto_accept">Accept automatically</string>
     <string name="auto_accept_warning">Anyone on your network will be able to send you files without asking. Use only on trusted networks.</string>

@@ -14,6 +14,9 @@ import app.hoppy.core.Peer
 import app.hoppy.core.SendOutcome
 import app.hoppy.core.TransferClient
 import app.hoppy.databinding.ActivitySendBinding
+import app.hoppy.ui.theme.ButtonFx
+import app.hoppy.ui.theme.Motion
+import app.hoppy.ui.theme.ThemeFonts
 import kotlin.concurrent.thread
 
 /**
@@ -37,6 +40,8 @@ class SendActivity : ThemedActivity() {
         b.close.setOnClickListener { finish() }
         preselected = intent.getStringExtra(EXTRA_PEER)
         b.summary.setText(R.string.preparing)
+        ThemeFonts.applyDisplay(b.delivered, b.sendToHeader)
+        ThemeFonts.applyBodyBold(b.summary)
 
         val uris = incomingUris(intent)
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
@@ -127,10 +132,10 @@ class SendActivity : ThemedActivity() {
         if (outcome == SendOutcome.Delivered) {
             b.progress.setProgressCompat(100, true)
             b.status.text = getString(R.string.delivered, peer.device.name)
-            b.mascot.animate().translationY(-24f).setDuration(160).withEndAction {
-                b.mascot.animate().translationY(0f).setDuration(160).start()
-            }.start()
-            b.root.postDelayed({ finish() }, 1400)
+            b.mascot.celebrate()
+            b.delivered.isVisible = true
+            if (Motion.enabled()) ButtonFx.popIn(b.delivered).start()
+            b.root.postDelayed({ if (!isFinishing) finish() }, 1800)
             return
         }
         sending = false

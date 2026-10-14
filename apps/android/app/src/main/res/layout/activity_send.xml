@@ -1,87 +1,131 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="?android:colorBackground"
-    android:fitsSystemWindows="true"
-    android:orientation="vertical"
-    android:padding="20dp">
+    android:background="?android:colorBackground">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/close"
-        style="?attr/materialIconButtonStyle"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="end"
-        android:contentDescription="@string/close"
-        app:icon="@drawable/ic_close" />
-
-    <ImageView
-        android:id="@+id/mascot"
-        android:layout_width="96dp"
-        android:layout_height="96dp"
-        android:layout_gravity="center_horizontal"
-        android:contentDescription="@string/mascot_description"
-        android:src="?attr/hoppyMascot" />
-
-    <TextView
-        android:id="@+id/summary"
+    <app.hoppy.ui.theme.ThemeBackgroundView
+        android:id="@+id/background"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:gravity="center"
-        android:textAppearance="?attr/textAppearanceTitleLarge"
-        android:textColor="?attr/colorOnSurface" />
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no" />
 
-    <TextView
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        android:layout_marginBottom="4dp"
-        android:paddingHorizontal="4dp"
-        android:text="@string/send_to"
-        android:textAppearance="?attr/textAppearanceLabelLarge"
-        android:textColor="?attr/colorOnSurfaceVariant" />
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:fitsSystemWindows="true"
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/close"
+            style="?attr/materialIconButtonStyle"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="end"
+            android:contentDescription="@string/close"
+            app:icon="@drawable/ic_close"
+            app:iconTint="?attr/colorOnSurface" />
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/peers"
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+            android:layout_height="132dp"
+            android:clipChildren="false"
+            android:clipToPadding="false">
+
+            <app.hoppy.ui.theme.MascotStageView
+                android:id="@+id/stage"
+                android:layout_width="132dp"
+                android:layout_height="132dp"
+                android:layout_gravity="center">
+
+                <app.hoppy.ui.theme.MascotView
+                    android:id="@+id/mascot"
+                    android:layout_width="100dp"
+                    android:layout_height="100dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@string/mascot_description" />
+            </app.hoppy.ui.theme.MascotStageView>
+
+            <!-- "とどいた！" pops in on delivery; the status line carries the accessible text. -->
+            <TextView
+                android:id="@+id/delivered"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_marginEnd="8dp"
+                android:importantForAccessibility="no"
+                android:rotation="-6"
+                android:text="@string/decor_delivered"
+                android:textColor="?attr/colorPrimary"
+                android:textSize="26sp"
+                android:visibility="gone" />
+        </FrameLayout>
 
         <TextView
-            android:id="@+id/empty"
+            android:id="@+id/summary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="12dp"
             android:gravity="center"
-            android:text="@string/searching"
-            android:textAppearance="?attr/textAppearanceBodyMedium"
-            android:textColor="?attr/colorOnSurfaceVariant" />
-    </FrameLayout>
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="22sp" />
 
-    <com.google.android.material.progressindicator.LinearProgressIndicator
-        android:id="@+id/progress"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:max="100"
-        android:visibility="gone"
-        app:trackCornerRadius="8dp"
-        app:trackThickness="8dp" />
+        <TextView
+            android:id="@+id/sendToHeader"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="4dp"
+            android:accessibilityHeading="true"
+            android:paddingHorizontal="4dp"
+            android:text="@string/send_to"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:textSize="14sp" />
 
-    <TextView
-        android:id="@+id/status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:gravity="center"
-        android:textAppearance="?attr/textAppearanceBodyLarge"
-        android:textColor="?attr/colorOnSurface"
-        android:visibility="gone" />
-</LinearLayout>
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/peers"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+
+            <TextView
+                android:id="@+id/empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:text="@string/searching"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="14sp" />
+        </FrameLayout>
+
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="100"
+            android:visibility="gone"
+            app:trackCornerRadius="8dp"
+            app:trackThickness="8dp" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:accessibilityLiveRegion="polite"
+            android:gravity="center"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="16sp"
+            android:visibility="gone" />
+    </LinearLayout>
+</FrameLayout>

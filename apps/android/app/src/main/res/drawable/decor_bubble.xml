@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Manga speech-bubble oval: white with a 3dp ink border. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/manga_bg" />
+    <stroke android:width="3dp" android:color="@color/manga_ink" />
+</shape>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Japanese decorative copy used by the themes (not translated: it is part of the look).
+  Every character here is kept in the bundled fonts: run `python3 tools/fonts.py`
+  after adding or changing text in this file. Meanings are in docs/design/themes.md.
+-->
+<resources>
+    <string name="decor_logo" translatable="false">ホッピー</string>
+    <string name="decor_pyon" translatable="false">ぴょん！</string>
+    <string name="decor_pyon_loud" translatable="false">ピョン!!</string>
+    <string name="decor_tagline_purikura" translatable="false">ファイルを、ぴょんっと！</string>
+    <string name="decor_tagline_showa" translatable="false">ぴょんと送れる、ふしぎなうさぎ。</string>
+    <string name="decor_tagline_yume" translatable="false">ゆめみたいに、かんたん。</string>
+    <string name="decor_new" translatable="false">新登場</string>
+    <string name="decor_receiving" translatable="false">受信中</string>
+    <string name="decor_sending" translatable="false">送信中</string>
+    <string name="decor_delivered" translatable="false">とどいた！</string>
+    <string name="decor_nearby_showa" translatable="false">近くの端末</string>
+    <string name="decor_nearby_manga" translatable="false">近くにいるよ</string>
+    <string name="decor_anyone" translatable="false">だれかいる？</string>
+    <string name="decor_good_evening" translatable="false">こんばんは</string>
+    <string name="decor_dress_up" translatable="false">きせかえ</string>
+    <string name="decor_which" translatable="false">どれにする？</string>
+</resources>

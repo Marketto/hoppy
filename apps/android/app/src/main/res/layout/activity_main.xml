@@ -1,104 +1,317 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  Home. One layout for all themes: theme-specific decor views start hidden and are
+  shown/filled by HomeDecor.kt. Animated views stop themselves when not visible.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="?android:colorBackground"
-    android:fitsSystemWindows="true"
-    android:orientation="vertical">
+    android:background="?android:colorBackground">
 
-    <com.google.android.material.appbar.MaterialToolbar
-        android:id="@+id/toolbar"
+    <app.hoppy.ui.theme.ThemeBackgroundView
+        android:id="@+id/background"
         android:layout_width="match_parent"
-        android:layout_height="?attr/actionBarSize"
-        android:background="@android:color/transparent" />
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no" />
 
-    <ImageView
-        android:id="@+id/mascot"
-        android:layout_width="148dp"
-        android:layout_height="148dp"
-        android:layout_gravity="center_horizontal"
-        android:contentDescription="@string/mascot_description"
-        android:src="?attr/hoppyMascot" />
-
-    <TextView
-        android:id="@+id/deviceName"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="8dp"
-        android:textAppearance="?attr/textAppearanceHeadlineSmall"
-        android:textColor="?attr/colorOnSurface" />
-
-    <com.google.android.material.card.MaterialCardView
-        style="?attr/materialCardViewFilledStyle"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="20dp"
-        android:layout_marginTop="24dp">
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:fitsSystemWindows="true"
+        android:orientation="vertical">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:background="@android:color/transparent">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/logo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/app_name"
+                    android:textColor="?attr/hoppyInk"
+                    android:textSize="26sp" />
+
+                <TextView
+                    android:id="@+id/logoSub"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:importantForAccessibility="no"
+                    android:text="@string/decor_good_evening"
+                    android:textColor="?attr/colorSecondary"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </com.google.android.material.appbar.MaterialToolbar>
+
+        <!-- Stage: mascot + theme decor around it. -->
+        <FrameLayout
+            android:id="@+id/stageArea"
+            android:layout_width="match_parent"
+            android:layout_height="184dp"
+            android:clipChildren="false"
+            android:clipToPadding="false">
+
+            <app.hoppy.ui.theme.MascotStageView
+                android:id="@+id/stage"
+                android:layout_width="184dp"
+                android:layout_height="184dp"
+                android:layout_gravity="center">
+
+                <app.hoppy.ui.theme.MascotView
+                    android:id="@+id/mascot"
+                    android:layout_width="140dp"
+                    android:layout_height="140dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@string/mascot_description" />
+            </app.hoppy.ui.theme.MascotStageView>
+
+            <!-- Manga: speech bubble "だれかいる？" -->
+            <TextView
+                android:id="@+id/speechBubble"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="4dp"
+                android:layout_marginEnd="20dp"
+                android:background="@drawable/decor_bubble"
+                android:importantForAccessibility="no"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="12dp"
+                android:text="@string/decor_anyone"
+                android:textColor="?attr/hoppyInk"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <!-- Showa: round "受信中" stamp with radar rings, only while receiving. -->
+            <FrameLayout
+                android:id="@+id/stamp"
+                android:layout_width="76dp"
+                android:layout_height="76dp"
+                android:layout_gravity="end|center_vertical"
+                android:layout_marginEnd="16dp"
+                android:importantForAccessibility="noHideDescendants"
+                android:visibility="gone">
+
+                <View
+                    android:id="@+id/radar1"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/decor_radar_ring" />
+
+                <View
+                    android:id="@+id/radar2"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/decor_radar_ring" />
+
+                <TextView
+                    android:id="@+id/stampText"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/decor_stamp"
+                    android:gravity="center"
+                    android:rotation="-12"
+                    android:text="@string/decor_receiving"
+                    android:textColor="?attr/colorPrimary"
+                    android:textSize="15sp" />
+            </FrameLayout>
+
+            <!-- Yume: twinkling stars around the stage. -->
+            <ImageView
+                android:id="@+id/star1"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="64dp"
+                android:layout_marginTop="18dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/decor_star"
+                android:visibility="gone"
+                tools:ignore="ContentDescription" />
+
+            <ImageView
+                android:id="@+id/star2"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:layout_gravity="bottom|end"
+                android:layout_marginEnd="72dp"
+                android:layout_marginBottom="30dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/decor_star"
+                android:visibility="gone"
+                tools:ignore="ContentDescription" />
+
+            <ImageView
+                android:id="@+id/star3"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="10dp"
+                android:layout_marginEnd="58dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/decor_star"
+                android:visibility="gone"
+                tools:ignore="ContentDescription" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/deviceName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="22sp" />
 
         <LinearLayout
+            android:id="@+id/receiveCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginTop="16dp"
+            android:background="?attr/hoppyReceiveCardBackground"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:paddingHorizontal="20dp"
+            android:paddingVertical="14dp">
 
             <com.google.android.material.materialswitch.MaterialSwitch
                 android:id="@+id/receiveSwitch"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:minHeight="48dp"
                 android:text="@string/receive_switch"
-                android:textAppearance="?attr/textAppearanceTitleMedium" />
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="17sp" />
 
             <TextView
                 android:id="@+id/receiveHint"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textAppearance="?attr/textAppearanceBodySmall"
-                android:textColor="?attr/colorOnSurfaceVariant" />
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="13sp" />
         </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="24dp"
-        android:layout_marginTop="24dp"
-        android:layout_marginBottom="4dp"
-        android:text="@string/nearby"
-        android:textAppearance="?attr/textAppearanceLabelLarge"
-        android:textColor="?attr/colorOnSurfaceVariant" />
-
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/peers"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingHorizontal="12dp"
-            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
-
-        <TextView
-            android:id="@+id/empty"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginHorizontal="32dp"
-            android:layout_marginTop="16dp"
-            android:gravity="center"
-            android:text="@string/no_peers"
-            android:textAppearance="?attr/textAppearanceBodyMedium"
-            android:textColor="?attr/colorOnSurfaceVariant" />
-    </FrameLayout>
+            android:layout_marginHorizontal="24dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/sendButton"
-        android:layout_width="match_parent"
-        android:layout_height="64dp"
-        android:layout_margin="20dp"
-        android:text="@string/send_files"
-        android:textAppearance="?attr/textAppearanceTitleMedium" />
-</LinearLayout>
+            <!-- Showa 近くの端末 / Manga 近くにいるよ -->
+            <TextView
+                android:id="@+id/headerDecor"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:importantForAccessibility="no"
+                android:paddingHorizontal="6dp"
+                android:paddingVertical="2dp"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/nearbyHeader"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:accessibilityHeading="true"
+                android:text="@string/nearby"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/peers"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingHorizontal="12dp"
+                app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+
+            <TextView
+                android:id="@+id/empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginHorizontal="32dp"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:text="@string/no_peers"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="14sp" />
+        </FrameLayout>
+
+        <!-- Primary action + theme stickers over it. -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:paddingHorizontal="20dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="18dp">
+
+            <app.hoppy.ui.theme.HoppyButton
+                android:id="@+id/sendButton"
+                android:layout_width="match_parent"
+                android:layout_height="72dp"
+                android:text="@string/send_files" />
+
+            <!-- Purikura sticker -->
+            <TextView
+                android:id="@+id/sticker"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="-16dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/decor_sticker"
+                android:elevation="2dp"
+                android:importantForAccessibility="no"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="5dp"
+                android:rotation="8"
+                android:text="@string/decor_pyon"
+                android:textColor="?attr/hoppyInk"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <!-- Manga "ピョン!" -->
+            <TextView
+                android:id="@+id/pyonLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:layout_marginStart="10dp"
+                android:layout_marginTop="-20dp"
+                android:elevation="2dp"
+                android:importantForAccessibility="no"
+                android:rotation="-8"
+                android:text="@string/decor_pyon_loud"
+                android:textColor="?attr/colorSecondary"
+                android:textSize="22sp"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Showa card: cream paper, 3dp ink border, hard 5dp ink offset shadow (no blur). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:left="5dp" android:top="5dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/showa_ink" />
+        </shape>
+    </item>
+    <item android:right="5dp" android:bottom="5dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/showa_card" />
+            <stroke android:width="3dp" android:color="@color/showa_ink" />
+        </shape>
+    </item>
+</layer-list>

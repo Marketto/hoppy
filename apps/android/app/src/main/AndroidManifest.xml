@@ -17,7 +17,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Hoppy.Kawaii">
+        android:theme="@style/Theme.Hoppy.Purikura">
 
         <activity
             android:name=".ui.MainActivity"
@@ -28,6 +28,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- First-run theme choice ("installation-time"), also opened from the menu. -->
+        <activity
+            android:name=".ui.ThemePickerActivity"
+            android:exported="false" />
 
         <!-- "Share → Hoppy" from any app. -->
         <activity

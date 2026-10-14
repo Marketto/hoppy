@@ -1,5 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Mascot drawable of the active theme (see docs/design/themes.md). -->
+    <!-- Static mascot drawable of the active theme (see docs/design/themes.md). -->
     <attr name="hoppyMascot" format="reference" />
+
+    <!-- Which HoppyTheme a (possibly wrapped) context is styled with; read by the
+         animated views (ThemeBackgroundView, MascotStageView, MascotView, HoppyButton).
+         Values must match HoppyTheme.ordinal. -->
+    <attr name="hoppyThemeKind" format="enum">
+        <enum name="purikura" value="0" />
+        <enum name="showa" value="1" />
+        <enum name="manga" value="2" />
+        <enum name="yume" value="3" />
+        <enum name="night" value="4" />
+    </attr>
+
+    <!-- Fonts: display (logo, buttons, headers) and heavy body. Body font is android:fontFamily. -->
+    <attr name="hoppyDisplayFont" format="reference" />
+    <attr name="hoppyBodyBoldFont" format="reference" />
+
+    <!-- Strong ink color (borders, hard shadows, strongest text). -->
+    <attr name="hoppyInk" format="color" />
+    <!-- Corner radius and outer stroke of framed surfaces (theme picker cards). -->
+    <attr name="hoppyCorner" format="dimension" />
+    <attr name="hoppyFrameStroke" format="dimension" />
+    <attr name="hoppyFrameStrokeColor" format="color" />
+    <!-- Hard offset shadow drawn by card backgrounds (0dp when the theme has none). -->
+    <attr name="hoppyCardShadow" format="dimension" />
+
+    <!-- Card backgrounds that differ per theme. -->
+    <attr name="hoppyCardBackground" format="reference" />
+    <attr name="hoppyReceiveCardBackground" format="reference" />
 </resources>

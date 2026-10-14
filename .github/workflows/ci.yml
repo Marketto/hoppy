@@ -71,7 +71,7 @@ jobs:
           gradle-version: 8.14.3
       - name: Build
         working-directory: apps/android
-        run: gradle :core:test :app:assembleDebug --stacktrace
+        run: gradle :core:test :app:testDebugUnitTest :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: hoppy-android
