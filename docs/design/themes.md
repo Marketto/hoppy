@@ -18,10 +18,10 @@ preview: `assets/brand/mascots-preview.png`.
 
 | Theme | Mood | Display / body font | Key colors | Motion |
 | --- | --- | --- | --- | --- |
-| **Purikura** (default) | photo-sticker booth, cutest | Mochiy Pop One / Zen Maru Gothic; name tag in Yusei Magic | bg `#FFE9F0`, pink `#F0859A`/`#D9466F`, text `#5B3A44`, yellow `#FFE066`, lavender `#B994E8` | checkerboard + dots scrolling diagonally like a 90s game title screen; mascot hops with squash & stretch; sticker ring pulses; jelly button with shine; "ぴょん！" sticker pops |
-| **Showa** | 1960s Japanese print ad | Dela Gothic One / Zen Old Mincho | cream `#F4E9D0`, ink `#2B2320`, vermilion `#D9472B`, teal `#1F7A78`, mustard `#E9B93A` | rotating sunburst; **shiny buttons** (light band sweep); hard offset shadows; "受信中" stamp with radar rings while receiving |
+| **Purikura** (default) | photo-sticker booth, cutest | Mochiy Pop One / Zen Maru Gothic; name tag in Yusei Magic | bg `#FFE9F0`, text `#5B3A44`, muted `#7A4C5A`, accent text/ink `#A82B52`, button `#C2385F → #A82B52`, decor pink `#F0859A`, yellow `#FFE066`, lavender `#B994E8` | checkerboard + dots scrolling diagonally like a 90s game title screen; mascot hops with squash & stretch; sticker ring pulses; jelly button with shine; "ぴょん！" sticker pops |
+| **Showa** | 1960s Japanese print ad | Dela Gothic One / Zen Old Mincho | cream `#F4E9D0`, ink `#2B2320`, vermilion `#B5351C`, teal `#1F7A78`, mustard `#E9B93A` | rotating sunburst; **shiny buttons** (light band sweep); hard offset shadows; "受信中" stamp with radar rings while receiving |
 | **Manga** (high contrast) | black & white comic + one pink | Dela Gothic One / Zen Kaku Gothic New | white, ink `#111111`, pink `#F0859A`, screentone `#C9C9C9` | rotating speed lines; big hops; "ピョン!" shake; buttons press into their shadow |
-| **Yume** | dreamy pastel | Hachi Maru Pop / Kiwi Maru | gradient `#DCCBFF → #F6D8F2 → #FFE6EF → #D6F5EC`, text `#4E3F86`, violet `#8B6FE0`, mint `#8CD6BE` | shifting sky, parallax clouds, twinkling stars, rising bubbles; mascot sways in a glossy bubble; glowing button |
+| **Yume** | dreamy pastel | Hachi Maru Pop / Kiwi Maru | gradient `#DCCBFF → #F6D8F2 → #FFE6EF → #D6F5EC`, text `#4E3F86`, muted `#5A4B91`, button `#7356D1 → #8E53B5 → #B04A82`, decor violet `#8B6FE0` / pink `#EE97BE`, mint `#8CD6BE` | shifting sky, parallax clouds, twinkling stars, rising bubbles; mascot sways in a glossy bubble; glowing button |
 | **Night** (dark) | serious but friendly | Zen Kaku Gothic New (black / medium) | bg `#14151B`, surface `#1E2027`, text `#ECECF1`, teal `#4FD1C5`, lavender `#B8A6FF` | calm starfield, breathing teal halo, glint sweeping across the sunglasses, slight nod |
 
 Japanese decor copy (`res/values/decor.xml`, not translated, part of the look):
@@ -58,4 +58,7 @@ mascot + migration), `ThemeSuggestion` (pure rules + `SystemThemeSignals` reader
 - Motion: every animation stops in `onStop`, on detach and when hidden, and is off when
   the system "remove animations" setting is on. Custom animated views implement `HostAware`.
 - Any new Japanese text needs `python3 tools/fonts.py` (fonts are subsetted).
-- Text contrast ≥ 4.5:1; Manga must stay the highest-contrast theme.
+- **Accessibility (WCAG 2.2 AA)**: text ≥ 4.5:1, large text and state-bearing UI ≥ 3:1, in
+  every theme. Pastel colors are for decoration only; anything carrying text uses the deeper
+  shades above. `python3 tools/contrast.py` (part of `dev.py check`) checks every theme
+  text/background pair — add new pairs there. Manga must stay the highest-contrast theme.

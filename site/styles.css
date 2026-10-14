@@ -13,13 +13,14 @@
   --text: #5B3A44;
   --muted: #7E4F5E;
   --pink: #F0859A;
-  --pink-deep: #C2385F;
+  --pink-deep: #A82B52;      /* text & outlines: ≥ 5.1:1 on every light tile */
+  --accent: #B8325A;         /* fills that carry white text: 5.8:1 */
   --yellow: #FFE066;
   --lavender: #B994E8;
   --card: rgba(255, 255, 255, 0.86);
   --card-ring: #F7B6CA;
-  --btn-top: #F79AAE;
-  --btn-bottom: #E86A86;
+  --btn-top: #C2385F;
+  --btn-bottom: #A82B52;
   --btn-text: #FFFFFF;
   --soon: #EEDDE3;
   --soon-text: #7E4F5E;
@@ -36,6 +37,7 @@
     --muted: #A5A5B3;
     --pink: #4FD1C5;
     --pink-deep: #4FD1C5;
+    --accent: #4FD1C5;
     --yellow: #B8A6FF;
     --lavender: #B8A6FF;
     --card: rgba(30, 32, 39, 0.9);
@@ -90,7 +92,7 @@ a:hover { color: var(--text); }
   min-width: 48px; height: 44px; border-radius: 22px; border: 3px solid #FFFFFF;
   background: var(--card); color: var(--text); font: 900 14px "Zen Maru Gothic", sans-serif; cursor: pointer;
 }
-@media (prefers-color-scheme: dark) { .lang { border-color: var(--card-ring); } .logo-word { color: var(--bg); } .pyon { color: #14151B; border-color: #1E2027; } }
+@media (prefers-color-scheme: dark) { .lang { border-color: var(--card-ring); } .logo-word { color: var(--bg); } }
 
 main { max-width: 1120px; margin: 0 auto; padding: 0 16px 40px; }
 
@@ -132,7 +134,7 @@ main { max-width: 1120px; margin: 0 auto; padding: 0 16px 40px; }
 @keyframes blush { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .pyon {
   position: absolute; right: -18px; top: 6px; padding: 6px 14px; border-radius: 18px;
-  background: var(--yellow); color: var(--pink-deep); border: 3px solid #FFFFFF;
+  background: var(--yellow); color: #9E2149; border: 3px solid #FFFFFF;
   font-family: "Mochiy Pop One", sans-serif; font-size: 18px;
   animation: pop 1.6s ease-in-out infinite;
 }
@@ -198,7 +200,7 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
 .card-req { margin: 0; font-size: 13.5px; color: var(--muted); flex: 1; }
 .card-btn {
   display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px;
-  border-radius: 22px; background: var(--pink); color: var(--btn-text); text-decoration: none; font-weight: 900;
+  border-radius: 22px; background: var(--accent); color: var(--btn-text); text-decoration: none; font-weight: 900;
 }
 .card-btn:hover { color: var(--btn-text); filter: brightness(1.05); }
 .badge {
@@ -216,7 +218,7 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
 .steps p { margin: 0; }
 .n {
   flex: none; width: 36px; height: 36px; border-radius: 18px; display: inline-flex; align-items: center; justify-content: center;
-  background: var(--pink); color: var(--btn-text); font-family: "Mochiy Pop One", sans-serif;
+  background: var(--accent); color: var(--btn-text); font-family: "Mochiy Pop One", sans-serif;
 }
 .warn { margin: 18px 0 0; padding: 12px 16px; border-radius: 16px; background: var(--card); border: 2px dashed var(--card-ring); font-size: 14px; color: var(--muted); }
 
@@ -228,6 +230,12 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
   .cta { align-items: center; }
   .lead { margin-left: auto; margin-right: auto; }
   .qr { justify-self: center; }
+}
+
+/* Dark-mode overrides that must win over the base rules above: keep this block last
+   (before reduced motion). Checked by tools/site_audit.py. */
+@media (prefers-color-scheme: dark) {
+  .pyon { color: #14151B; border-color: #1E2027; }   /* 8.6:1 on lavender */
 }
 
 @media (prefers-reduced-motion: reduce) {

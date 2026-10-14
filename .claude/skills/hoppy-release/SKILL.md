@@ -27,5 +27,7 @@ Full reference: `docs/release.md`. Platform targets: `docs/platforms/macos-ios.m
 
 ## Verify
 
-- Portal: `python3 tools/site.py serve`, check desktop (QR visible) and phone width (QR hidden).
+- Portal: `python3 tools/site.py serve`, check desktop (QR visible) and phone width (QR hidden);
+  `python3 tools/dev.py a11y` must report 0 problems (it also gates the Pages deploy).
+- In `site/styles.css`, dark-mode overrides of base rules go in the last block of the file.
 - Pipeline: Actions → Release → Run workflow with *publish* unticked; download the artifacts.
