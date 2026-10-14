@@ -270,11 +270,16 @@ pub fn download_fresh(
 }
 
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     // Windows: %TEMP% is per-user and the new folder inherits its owner-only ACL.
-    builder.create(dir) // fails if it already exists
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(dir) // fails if it already exists
+    }
+    #[cfg(not(unix))]
+    {
+        fs::DirBuilder::new().create(dir) // fails if it already exists
+    }
 }
 
 /// Removes `Hoppy-update-*` folders in `temp` last modified more than `max_age` ago.
