@@ -1,5 +1,6 @@
 package app.hoppy.ui
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -21,6 +22,10 @@ import kotlin.concurrent.thread
 
 /**
  * "Share → Hoppy" and in-app sending: pick a nearby device, watch progress.
+ * Entry points: the share sheet (app grid or a sharing shortcut, which carries
+ * `Intent.EXTRA_SHORTCUT_ID`), and the home screen's "Send files" picker.
+ * A device shortcut / tapped device is sent to as soon as discovery finds it; after
+ * [PRESELECT_TIMEOUT_MS] without it the normal list is left to the user.
  * PoC limitation: the transfer runs in this screen (see docs/roadmap.md).
  */
 class SendActivity : ThemedActivity() {
@@ -28,6 +33,7 @@ class SendActivity : ThemedActivity() {
     private val adapter = PeerAdapter { send(it) }
     private var sources: List<UriSource>? = null
     private var preselected: String? = null
+    private val givingUp = Runnable { givePreselectUp() }
     @Volatile private var sending = false
 
     private val peersListener: (List<Peer>) -> Unit = { peers -> runOnUiThread { showPeers(peers) } }
@@ -38,8 +44,8 @@ class SendActivity : ThemedActivity() {
         setContentView(b.root)
         b.peers.adapter = adapter
         b.close.setOnClickListener { finish() }
-        preselected = intent.getStringExtra(EXTRA_PEER)
         b.summary.setText(R.string.preparing)
+        if (savedInstanceState == null) preselect(intent)
         ThemeFonts.applyDisplay(b.delivered, b.sendToHeader)
         ThemeFonts.applyBodyBold(b.summary)
 
@@ -55,6 +61,37 @@ class SendActivity : ThemedActivity() {
             }.getOrElse { emptyList() }
             runOnUiThread { onResolved(resolved) }
         }
+    }
+
+    /** Device chosen before this screen opened: a sharing shortcut or a tapped device. */
+    private fun preselect(intent: Intent) {
+        val shortcutId = intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID)
+        if (shortcutId != null) thread(name = "hoppy-shortcut") { ShareShortcuts.reportUsed(this, shortcutId) }
+        val peerId = intent.getStringExtra(EXTRA_PEER)?.takeIf(ShareTargets::isValidPeerId)
+            ?: ShareTargets.peerIdOf(shortcutId)
+            ?: return
+        preselected = peerId
+        val name = Node.peers().firstOrNull { it.device.id == peerId }?.device?.name
+            ?: ShareShortcuts.recentName(this, peerId)
+        if (name != null) {
+            b.status.text = getString(R.string.looking_for, name)
+            b.status.isVisible = true
+        }
+        b.root.postDelayed(givingUp, PRESELECT_TIMEOUT_MS)
+    }
+
+    /** Not found in time: forget it, so a late discovery never starts an unexpected send. */
+    private fun givePreselectUp() {
+        val id = preselected ?: return
+        // Already seen but files still being prepared: keep it, onResolved() sends.
+        if (Node.peers().any { it.device.id == id }) return
+        preselected = null
+        if (!sending) b.status.isVisible = false
+    }
+
+    override fun onDestroy() {
+        if (::b.isInitialized) b.root.removeCallbacks(givingUp)
+        super.onDestroy()
     }
 
     override fun onStart() {
@@ -130,6 +167,8 @@ class SendActivity : ThemedActivity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val outcome = result.getOrNull()
         if (outcome == SendOutcome.Delivered) {
+            val app = applicationContext
+            thread(name = "hoppy-shortcuts") { ShareShortcuts.onDelivered(app, peer.device.id, peer.device.name) }
             b.progress.setProgressCompat(100, true)
             b.status.text = getString(R.string.delivered, peer.device.name)
             b.mascot.celebrate()
@@ -149,17 +188,36 @@ class SendActivity : ThemedActivity() {
 
     companion object {
         private const val EXTRA_PEER = "app.hoppy.PEER_ID"
-        private const val EXTRA_URIS = "app.hoppy.URIS"
+        private const val PRESELECT_TIMEOUT_MS = 6_000L
 
-        fun intent(ctx: Context, uris: List<Uri>, peerId: String?) = Intent(ctx, SendActivity::class.java)
-            .putParcelableArrayListExtra(EXTRA_URIS, ArrayList(uris))
-            .putExtra(EXTRA_PEER, peerId)
+        /**
+         * In-app sending (home "Send files" picker): the same ACTION_SEND(_MULTIPLE)
+         * shape the share sheet uses, with the read grant carried by ClipData.
+         * [uris] must not be empty.
+         */
+        fun intent(ctx: Context, uris: List<Uri>, peerId: String?): Intent {
+            val i = Intent(ctx, SendActivity::class.java).setType("*/*")
+            if (uris.size == 1) {
+                i.action = Intent.ACTION_SEND
+                i.putExtra(Intent.EXTRA_STREAM, uris[0])
+            } else {
+                i.action = Intent.ACTION_SEND_MULTIPLE
+                i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+            // newRawUri: no ContentResolver query on the main thread.
+            val clip = ClipData.newRawUri(null, uris[0])
+            uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+            i.clipData = clip
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if (peerId != null) i.putExtra(EXTRA_PEER, peerId)
+            return i
+        }
 
         private fun incomingUris(intent: Intent): List<Uri> = when (intent.action) {
             Intent.ACTION_SEND -> listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
             Intent.ACTION_SEND_MULTIPLE ->
                 IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
-            else -> IntentCompat.getParcelableArrayListExtra(intent, EXTRA_URIS, Uri::class.java).orEmpty()
+            else -> emptyList()
         }
     }
 }

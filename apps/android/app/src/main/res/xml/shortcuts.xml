@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sharing shortcuts ("Direct Share"). Dynamic shortcuts published by ShareShortcuts.kt with
+  this category appear in the share sheet's top row and open SendActivity with
+  Intent.EXTRA_SHORTCUT_ID. The category must match ShareTargets.CATEGORY.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="app.hoppy.ui.SendActivity">
+        <data android:mimeType="*/*" />
+        <category android:name="app.hoppy.category.SHARE_TARGET" />
+    </share-target>
+</shortcuts>

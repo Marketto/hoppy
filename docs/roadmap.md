@@ -2,7 +2,8 @@
 
 ## Done — PoC (v0)
 - Protocol v0 spec + shared test vectors; Rust, Kotlin and Python implementations, interop-tested.
-- Windows: `hoppy` CLI, "Send to → Hoppy", startup receiver, native accept dialog.
+- Windows: `hoppy` CLI; `hoppyw` tray receiver at login (no console) and "Send to → Hoppy"
+  with a native device menu, progress in the tray, notifications; native accept dialog.
 - Android: share target, device picker, receive service with Accept/Decline notification,
   saving to Download/Hoppy.
 - Five animated themes (Purikura, Showa, Manga, Yume, Night) with a first-run picker (ADR 0005).
@@ -11,8 +12,8 @@
 
 ## Next — usable beta
 1. Run the CI build, fix anything only a real build reveals; first device test Windows ↔ Android.
-2. Windows: small native window for the device picker (instead of the console) using the
-   theme palette; top-level Windows 11 context-menu entry (`IExplorerCommand`, MSIX).
+2. Windows: themed picker/accept window using the theme palette; MSIX package for a
+   top-level Windows 11 context-menu entry (`IExplorerCommand`) and the Share sheet target.
 3. Android: transfer in a foreground service (survives leaving the screen); quick-settings tile.
 4. Folders (relative paths in the offer, sanitized per segment).
 

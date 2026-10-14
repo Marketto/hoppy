@@ -30,7 +30,7 @@ jobs:
       - run: python3 tools/dev.py all
 
   windows:
-    name: Windows · tests + hoppy.exe
+    name: Windows · tests + hoppy.exe + hoppyw.exe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -38,15 +38,30 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Only place where the #[cfg(windows)] code is compiled and linted.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo build --release -p hoppy
+      # Only place where the #[cfg(windows)] code is compiled and linted. CI logs are not
+      # readable by agents, so failures are re-emitted as annotations (tools/ci-annotate.sh).
+      # GitHub's bash runs with -e -o pipefail; `cmd | tee log || …` keeps the exit status.
+      - name: Clippy
+        shell: bash
+        run: |
+          cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log ||
+            { bash tools/ci-annotate.sh "clippy (Windows)" clippy.log; exit 1; }
+      - name: Test
+        shell: bash
+        run: |
+          cargo test --workspace --message-format=short 2>&1 | tee test.log ||
+            { bash tools/ci-annotate.sh "cargo test (Windows)" test.log; exit 1; }
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release -p hoppy --message-format=short 2>&1 | tee build.log ||
+            { bash tools/ci-annotate.sh "cargo build (Windows)" build.log; exit 1; }
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/hoppy.exe dist/
+          Copy-Item target/release/hoppyw.exe dist/
           Copy-Item apps/windows/install.ps1 dist/
       - uses: actions/upload-artifact@v4
         with:

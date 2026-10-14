@@ -15,7 +15,7 @@ veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto
 
 | | Invio | Ricezione |
 | --- | --- | --- |
-| **Windows** | *Invia a → Hoppy* da Esplora file | in background, con conferma Sì/No |
+| **Windows** | *Invia a → Hoppy* da Esplora file, o clic sull'icona → *Invia file…* | icona vicino all'orologio, con conferma Sì/No |
 | **Android** | *Condividi → Hoppy* o pulsante *Invia file* | interruttore *Pronto a ricevere*, conferma da notifica |
 | **Linux / macOS** | `hoppy send` | `hoppy receive` |
 
@@ -24,12 +24,17 @@ Cinque temi animati da scegliere al primo avvio: **Purikura** (predefinito), **S
 
 ## Provarlo
 
-**Windows** — scarica `hoppy.exe` dagli artifact della CI (o `cargo build --release`), mettilo
-accanto a `apps/windows/install.ps1` ed esegui:
+**Windows** — installa `Hoppy-Setup-x64.exe` dalla pagina Release, oppure scarica `hoppy.exe` e
+`hoppyw.exe` dagli artifact della CI (o `cargo build --release`), mettili accanto a
+`apps/windows/install.ps1` ed esegui:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
+Hoppy resta come icona nell'area di notifica, vicino all'orologio: riceve in background e,
+con un clic, *Invia file…*. Da Esplora file: tasto destro → *Mostra altre opzioni* →
+*Invia a* → *Hoppy* (oppure Maiusc+tasto destro), poi scegli il dispositivo dal menu.
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.
 

@@ -10,6 +10,8 @@ import android.provider.Settings
 import app.hoppy.core.DeviceInfo
 import app.hoppy.core.DiscoveryNode
 import app.hoppy.core.Peer
+import app.hoppy.ui.RecentTarget
+import app.hoppy.ui.ShareTargets
 import app.hoppy.ui.theme.HoppyTheme
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArraySet
@@ -79,6 +81,14 @@ object Prefs {
 
     fun setAutoAccept(ctx: Context, value: Boolean) {
         sp(ctx).edit().putBoolean("auto_accept", value).apply()
+    }
+
+    /** Devices recently sent to, most recent first (share-sheet shortcuts, `ShareShortcuts`). */
+    fun recentTargets(ctx: Context): List<RecentTarget> =
+        ShareTargets.decode(sp(ctx).getString("recent_targets", null))
+
+    fun setRecentTargets(ctx: Context, list: List<RecentTarget>) {
+        sp(ctx).edit().putString("recent_targets", ShareTargets.encode(list)).apply()
     }
 }
 

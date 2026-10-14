@@ -32,7 +32,7 @@ touches bytes on the wire or files written to disk.
 
 ```
 crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, sanitize.rs
-crates/hoppy-cli/      `hoppy` binary: send / receive / peers / install (Windows Send To)
+crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` Windows tray/Send To GUI
 apps/android/core/     Pure-JVM Kotlin: same protocol for Android (unit + interop tested)
 apps/android/app/      Android UI shell: share target, receive service, themes
 apps/windows/          Windows installer (Inno Setup) and install script

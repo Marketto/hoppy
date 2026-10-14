@@ -18,6 +18,11 @@ Two modules in `apps/android/`:
   - `service/MediaStoreSink.kt` — saves to `Download/Hoppy`, `IS_PENDING` until hash OK.
   - `ui/MainActivity.kt` (home), `ui/SendActivity.kt` (share target + picker), `ui/Common.kt`
     (`ThemedActivity`, `PeerAdapter`, `UriSource`, `Format`).
+  - `ui/ShareShortcuts.kt` + `res/xml/shortcuts.xml` — sharing shortcuts (Direct Share):
+    generic "Hoppy · nearby" at app start, one per recent device after a delivered send
+    (max 4); `SendActivity` reads `Intent.EXTRA_SHORTCUT_ID` and auto-sends to that device
+    when found (6 s, then the list). Pure ids/ranking in `ui/ShareTargets.kt` (+ test).
+    Home "Send files" forwards picked URIs as `ACTION_SEND(_MULTIPLE)` + ClipData + grant.
   - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
     all animated views (see `hoppy-themes`).
 
@@ -30,6 +35,8 @@ Two modules in `apps/android/`:
 - Strings in `values/strings.xml` **and** `values-it/strings.xml` with identical placeholders.
 - Network/disk work off the main thread (`thread {}` or the service pool).
 - Content URIs with unknown size are copied to cache first (protocol needs sizes).
+- Shortcut ids/labels come from peers: validate ids (`ShareTargets.isValidPeerId`) and
+  clean names before publishing; keep the share-target category in sync with `ShareTargets.CATEGORY`.
 
 ## Build & verify
 

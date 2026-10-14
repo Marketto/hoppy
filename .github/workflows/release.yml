@@ -66,8 +66,9 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp `
             "/DAppVersion=${{ needs.meta.outputs.version }}" `
-            "/DSourceExe=$PWD\target\release\hoppy.exe" apps\windows\hoppy.iss
-          Compress-Archive -Path target\release\hoppy.exe, apps\windows\install.ps1, LICENSE `
+            "/DSourceExe=$PWD\target\release\hoppy.exe" `
+            "/DSourceGuiExe=$PWD\target\release\hoppyw.exe" apps\windows\hoppy.iss
+          Compress-Archive -Path target\release\hoppy.exe, target\release\hoppyw.exe, apps\windows\install.ps1, LICENSE `
             -DestinationPath dist\Hoppy-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
