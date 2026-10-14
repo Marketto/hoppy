@@ -7,14 +7,14 @@
     <color name="purikura_check_a">#FFD8E5</color>
     <color name="purikura_check_b">#FFEDF3</color>
     <color name="purikura_primary">#F0859A</color>
-    <color name="purikura_primary_dark">#D9466F</color>
+    <color name="purikura_primary_dark">#A82B52</color>
     <color name="purikura_text">#5B3A44</color>
-    <color name="purikura_muted">#8A5B69</color>
+    <color name="purikura_muted">#7A4C5A</color>
     <color name="purikura_yellow">#FFE066</color>
     <color name="purikura_lavender">#B994E8</color>
     <color name="purikura_ring">#F7B6CA</color>
-    <color name="purikura_btn_top">#F79AAE</color>
-    <color name="purikura_btn_bottom">#EC7690</color>
+    <color name="purikura_btn_top">#C2385F</color>
+    <color name="purikura_btn_bottom">#A82B52</color>
     <color name="purikura_drop">#E4C7F7</color>
     <color name="purikura_card">#E0FFFFFF</color>
     <color name="purikura_container">#FFDDE6</color>
@@ -23,7 +23,7 @@
     <color name="showa_bg">#F4E9D0</color>
     <color name="showa_card">#FBF4E3</color>
     <color name="showa_ink">#2B2320</color>
-    <color name="showa_vermilion">#D9472B</color>
+    <color name="showa_vermilion">#B5351C</color>
     <color name="showa_teal">#1F7A78</color>
     <color name="showa_mustard">#E9B93A</color>
     <color name="showa_muted">#5E5047</color>
@@ -44,10 +44,14 @@
     <color name="yume_3">#FFE6EF</color>
     <color name="yume_4">#D6F5EC</color>
     <color name="yume_text">#4E3F86</color>
-    <color name="yume_muted">#6E5FA6</color>
+    <color name="yume_muted">#5A4B91</color>
     <color name="yume_primary">#8B6FE0</color>
     <color name="yume_mid">#B486E6</color>
     <color name="yume_pink">#EE97BE</color>
+    <!-- Button gradient: white label stays ≥ 5:1 on every stop (tools/contrast.py). -->
+    <color name="yume_btn_1">#7356D1</color>
+    <color name="yume_btn_2">#8E53B5</color>
+    <color name="yume_btn_3">#B04A82</color>
     <color name="yume_mint">#8CD6BE</color>
     <color name="yume_glass">#9EFFFFFF</color>
     <color name="yume_container">#EDE4FF</color>

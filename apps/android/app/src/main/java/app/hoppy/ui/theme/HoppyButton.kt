@@ -204,7 +204,7 @@ class HoppyButton @JvmOverloads constructor(
             )
             HoppyTheme.YUME -> LinearGradient(
                 margin, 0f, w - margin, 0f,
-                intArrayOf(color(R.color.yume_primary), color(R.color.yume_mid), color(R.color.yume_pink)),
+                intArrayOf(color(R.color.yume_btn_1), color(R.color.yume_btn_2), color(R.color.yume_btn_3)),
                 null, Shader.TileMode.CLAMP,
             )
             else -> null

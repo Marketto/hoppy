@@ -57,6 +57,8 @@ publishing (they appear as workflow artifacts).
 - Preview locally: `python3 tools/site.py serve` → http://localhost:8000
 - Deployed by `.github/workflows/pages.yml` on pushes to `main` that touch the site and on
   every published release. One-time setup: `Settings → Pages → Source: GitHub Actions`.
+- Accessibility: `tools/site_audit.py` (axe-core, WCAG 2.2 AA, light/dark × desktop/phone, plus
+  text over the checkerboard against both tiles) runs before every deploy and blocks it on failure.
 - Behaviour: detects the OS (user-agent client hints + UA), shows one big download button
   for it, lists all platforms with requirements or "Coming soon", shows a QR code that
   opens the page on a phone (hidden on phones/tablets), Italian or English from the

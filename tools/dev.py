@@ -13,6 +13,8 @@ Commands (each prints what it runs and exits non-zero on failure):
   mascots        regenerate mascot SVG + Android vectors from tools/gen_mascots.py
   docs           lint AI docs: links in AGENTS.md/skills exist, skill frontmatter valid
   secrets        scan tracked + new files for credentials and personal e-mails
+  contrast       WCAG AA contrast of every Android theme text/background pair
+  a11y           axe-core audit of the download portal (needs Playwright + npm)
   all            check + interop + android-test (what CI runs on Linux)
 """
 from __future__ import annotations
@@ -72,6 +74,7 @@ def cmd_check() -> None:
     cmd_rust()
     run([sys.executable, "tools/hoppy_ref.py", "selftest"])
     cmd_docs()
+    cmd_contrast()
     cmd_secrets()
 
 
@@ -181,6 +184,14 @@ def cmd_secrets() -> None:
     print("✓ secrets scan: clean")
 
 
+def cmd_contrast() -> None:
+    run([sys.executable, "tools/contrast.py"])
+
+
+def cmd_a11y() -> None:
+    run([sys.executable, "tools/site_audit.py"])
+
+
 def cmd_all() -> None:
     cmd_check()
     cmd_interop()
@@ -191,7 +202,7 @@ def cmd_all() -> None:
 COMMANDS = {
     "doctor": cmd_doctor, "check": cmd_check, "rust": cmd_rust, "interop": cmd_interop,
     "android-test": cmd_android_test, "android-build": cmd_android_build,
-    "mascots": cmd_mascots, "docs": cmd_docs, "secrets": cmd_secrets, "all": cmd_all,
+    "mascots": cmd_mascots, "docs": cmd_docs, "secrets": cmd_secrets, "contrast": cmd_contrast, "a11y": cmd_a11y, "all": cmd_all,
 }
 
 if __name__ == "__main__":
