@@ -75,10 +75,11 @@ pub fn set_music(on: bool) -> Result<Identity> {
 
 /// Remembers that the tray showed the firewall hint for `version` (re-reads the file first,
 /// like `set_music`).
-pub fn set_firewall_hint(version: &str) -> Result<()> {
+pub fn set_firewall_hint(version: &str) -> Result<Identity> {
     let mut identity = load_or_create()?;
     identity.firewall_hint = version.to_owned();
-    save(&identity)
+    save(&identity)?;
+    Ok(identity)
 }
 
 pub fn device_info(identity: &Identity) -> DeviceInfo {

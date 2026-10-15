@@ -17,8 +17,23 @@
   Files: `res/xml/shortcuts.xml` (share-target category `app.hoppy.category.SHARE_TARGET`
   → `SendActivity`), `ui/ShareShortcuts.kt` (publishing), `ui/ShareTargets.kt` (pure ids,
   ranking and storage, unit-tested).
-- Send errors: if the connection cannot be opened (connect timeout / refused / no route,
-  `PeerUnreachableException` from `:core`), the send screen says it cannot reach the device
+- Callback (reverse connect, protocol §6, ADR 0006): `SendActivity` sends with
+  `TransferClient.sendToPeer(peer, me, sources, Node.node())` — direct TCP for 3 s, then it
+  asks the receiver over UDP to connect back (up to ~20 s more). The send holds a `Node`
+  reference so the discovery socket (bound to UDP 47470, where the PC's announces arrive)
+  stays open even if the screen stops. When the direct attempt fails and callback mode
+  starts, `:core` calls `onFallback` (Rust `Progress::Fallback`) and the status reads
+  "<name> isn't answering right away, trying another way…"; a direct send never shows it.
+  Receiving: `ReceiveService` sets `Node.callbackHandler` (re-applied after a `Node`
+  restart) to `CallbackReceiver.answer` with the same sink and per-connection handler as
+  the TCP accept loop, so the accept prompt, `receiving` flag (music silence) and
+  end-of-receive notification apply to connected-back transfers too. The node only
+  answers while `receivePort != 0`. Callback transfers run on `DiscoveryNode` threads, not
+  on the service pool, so the service tracks every transfer socket (direct and callback,
+  via `answer(..., onSocket)`) and closes them in `onDestroy`; an open Accept prompt is
+  declined, partial files are aborted.
+- Send errors: if neither the direct connection nor the callback works (connect timeout /
+  refused / no route, `PeerUnreachableException` from `:core`), the send screen says it cannot reach the device
   and suggests allowing Hoppy in the Windows firewall (*Private networks*) and checking both
   are on the same Wi-Fi; the raw exception goes to logcat only (tag `HoppySend`). A refusal
   shows "<name> said no"; other failures show "Could not send: <reason>".
@@ -34,7 +49,8 @@
   stripped of control and Unicode format characters (bidi overrides); offered file names
   are shown as the §4 sanitizer would save them.
 - Receive: switch **Ready to receive** → foreground notification; each transfer asks with
-  Accept/Decline (60 s timeout = decline). Files land in `Download/Hoppy`.
+  Accept/Decline (60 s timeout = decline). One prompt at a time, as on Windows: an offer
+  arriving while another awaits an answer is declined (auto-accept skips the prompt). Files land in `Download/Hoppy`.
 - End of every accepted receive: a system notification on the *Received files* channel
   (id `done`, default importance/sound), one per transfer: "Received N files from X" (or
   "Transfer from X failed"); tap opens the file (single file with a known type, `ACTION_VIEW`

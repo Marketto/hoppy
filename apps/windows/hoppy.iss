@@ -49,11 +49,25 @@ it.Music=Musica
 en.Music=Music
 it.Firewall=Consenti Hoppy nel firewall di Windows (reti private e aziendali, richiede la conferma di un amministratore)
 en.Firewall=Allow Hoppy through Windows Firewall (private and work networks, needs administrator approval)
+it.ClassicMenu=Mostra «Invia con Hoppy» direttamente nel menu del tasto destro (menu classico di Windows)
+en.ClassicMenu=Show "Send with Hoppy" directly in the right-click menu (classic Windows menu)
+it.DesktopIcon=Icona «Hoppy» sul desktop (trascinaci sopra i file da inviare)
+en.DesktopIcon="Hoppy" icon on the desktop (drop files on it to send them)
+it.DesktopComment=Trascina qui i file da inviare con Hoppy
+en.DesktopComment=Drop files here to send them with Hoppy
+it.RestartExplorer=Il menu del tasto destro classico compare dopo il riavvio di Esplora risorse (o al prossimo accesso a Windows).%n%nRiavviare Esplora risorse ora? Le finestre di Esplora file aperte verranno chiuse.
+en.RestartExplorer=The classic right-click menu appears after File Explorer restarts (or at your next Windows sign-in).%n%nRestart File Explorer now? Open File Explorer windows will close.
 
 [Tasks]
-; Checked by default. Not offered to tray updates (/UPDATE=1): the rules from the first
-; install still match, the program paths never change. See "Firewall rules" in [Code].
+; All checked by default and not offered to tray updates (/UPDATE=1), which keep what the
+; first install set up (the program paths never change).
+; Firewall: see "Firewall rules" in [Code].
 Name: "firewall"; Description: "{cm:Firewall}"; Check: not IsUpdate
+; Windows 11 only (Windows 10 has the classic menu anyway): see "Classic context menu" in
+; [Code]. Without it "Send with Hoppy" sits under "Show more options".
+Name: "classicmenu"; Description: "{cm:ClassicMenu}"; Check: (not IsUpdate) and IsWindows11
+; Desktop shortcut to `hoppyw send`: drop files on it, or double-click to pick them.
+Name: "desktopicon"; Description: "{cm:DesktopIcon}"; Check: not IsUpdate
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -65,10 +79,12 @@ Source: "..\..\assets\music\desktop_done.wav"; Flags: dontcopy
 
 [Icons]
 Name: "{userprograms}\Hoppy"; Filename: "{app}\hoppyw.exe"; Comment: "Hoppy"
+Name: "{userdesktop}\Hoppy"; Filename: "{app}\hoppyw.exe"; Parameters: "send"; Comment: "{cm:DesktopComment}"; Tasks: desktopicon
 
 [Run]
-; Adds "Send to → Hoppy" (hoppyw send) and the tray receiver at login (hoppyw), see
-; crates/hoppy-cli/src/platform.rs.
+; Adds "Send to → Hoppy" and the right-click verb "Send with Hoppy" (both hoppyw send, the
+; verb in HKCU\Software\Classes\*\shell\Hoppy) and the tray receiver at login (hoppyw), see
+; crates/hoppy-cli/src/platform.rs. Runs on updates too, so the verb reaches old installs.
 Filename: "{app}\hoppy.exe"; Parameters: "install"; Flags: runhidden waituntilterminated
 Filename: "{app}\hoppyw.exe"; Description: "{cm:StartNow}"; Flags: postinstall nowait skipifsilent
 ; Update started by the tray (hoppyw runs Setup with /VERYSILENT ... /UPDATE=1 and exits, see
@@ -77,12 +93,13 @@ Filename: "{app}\hoppyw.exe"; Description: "{cm:StartNow}"; Flags: postinstall n
 Filename: "{app}\hoppyw.exe"; Flags: nowait runasoriginaluser; Check: IsUpdate
 
 [UninstallRun]
-; Running copies are stopped first by CurUninstallStepChanged (see [Code]).
+; Running copies are stopped first by CurUninstallStepChanged (see [Code]). Also removes the
+; right-click verb, and the classic-menu override only if Hoppy created it.
 Filename: "{app}\hoppy.exe"; Parameters: "uninstall"; Flags: runhidden; RunOnceId: "RemoveShortcuts"
 
 [Messages]
-it.FinishedLabel=Hoppy è installato e riceve file in background: trovi la sua icona nell'area di notifica, vicino all'orologio (clic per inviare file). Per inviare da Esplora file: tasto destro su un file → Mostra altre opzioni → Invia a → Hoppy (oppure Maiusc+tasto destro).
-en.FinishedLabel=Hoppy is installed and receives files in the background: look for its icon in the notification area, near the clock (click it to send files). To send from File Explorer: right-click a file → Show more options → Send to → Hoppy (or Shift+right-click).
+it.FinishedLabel=Hoppy è installato e riceve file in background: trovi la sua icona nell'area di notifica, vicino all'orologio. Per inviare: seleziona uno o più file in Esplora file, tasto destro → «Invia con Hoppy» (se non lo vedi: Mostra altre opzioni, oppure Maiusc+tasto destro). Puoi anche trascinare i file sull'icona Hoppy del desktop.
+en.FinishedLabel=Hoppy is installed and receives files in the background: look for its icon in the notification area, near the clock. To send: select one or more files in File Explorer, right-click → "Send with Hoppy" (if you don't see it: Show more options, or Shift+right-click). You can also drop files on the Hoppy icon on the desktop.
 
 [Code]
 // True when the tray started this install as an update (/UPDATE=1, see [Run]).
@@ -123,6 +140,40 @@ begin
     Log('Firewall rules not changed (UAC declined or failed): ' + IntToStr(ErrorCode));
 end;
 
+// ---- Classic context menu (Windows 11). `hoppy classic-menu on` writes an empty per-user
+// HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32 and
+// remembers in HKCU\Software\Hoppy that Hoppy created it (uninstall removes it only then).
+// Explorer reads it at start: offer to restart Explorer, only if the menu really changes.
+const
+  ClassicMenuKey = 'Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32';
+
+function IsWindows11(): Boolean;
+var
+  Version: TWindowsVersion;
+begin
+  GetWindowsVersionEx(Version);
+  Result := Version.Build >= 22000;
+end;
+
+procedure EnableClassicMenu();
+var
+  WasOn: Boolean;
+  ResultCode: Integer;
+begin
+  WasOn := RegKeyExists(HKCU, ClassicMenuKey);
+  if not Exec(ExpandConstant('{app}\hoppy.exe'), 'classic-menu on', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+  begin
+    Log('Classic context menu not set: ' + IntToStr(ResultCode));
+    Exit;
+  end;
+  // Silent installs default to No: never close Explorer windows unasked.
+  if not WasOn and (SuppressibleMsgBox(CustomMessage('RestartExplorer'), mbConfirmation,
+    MB_YESNO, IDNO) = IDYES) then
+    Exec(ExpandConstant('{app}\hoppy.exe'), 'classic-menu --restart-explorer', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
@@ -130,6 +181,8 @@ begin
     InstallFinished := True;
     if WizardIsTaskSelected('firewall') and (FirewallCheck() <> 0) then
       RunFirewallElevated('firewall --apply');
+    if WizardIsTaskSelected('classicmenu') then
+      EnableClassicMenu();
   end;
 end;
 

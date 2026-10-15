@@ -17,6 +17,7 @@ import app.hoppy.HoppyApp
 import app.hoppy.Node
 import app.hoppy.Prefs
 import app.hoppy.R
+import app.hoppy.core.CallbackReceiver
 import app.hoppy.core.Offer
 import app.hoppy.core.Protocol
 import app.hoppy.core.ReceiveHandler
@@ -26,12 +27,14 @@ import app.hoppy.ui.Format
 import app.hoppy.ui.SafeText
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -43,7 +46,15 @@ class ReceiveService : Service() {
     private var server: ServerSocket? = null
     private val pool: ExecutorService = Executors.newCachedThreadPool()
     @Volatile private var lastProgressUpdate = 0L
+    /** An Accept/Decline prompt is showing (direct or callback offer). */
+    private val deciding = AtomicBoolean(false)
     private val sink by lazy { MediaStoreSink(this) }
+    /**
+     * Sockets of transfers in progress. Callback transfers run on DiscoveryNode threads,
+     * not on [pool], so [onDestroy] closes these to stop every transfer with the service.
+     */
+    private val sockets: MutableSet<Socket> = ConcurrentHashMap.newKeySet()
+    @Volatile private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -53,6 +64,17 @@ class ReceiveService : Service() {
             this, NOTIF_RECEIVER, receiverNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
         Node.acquire(this)
+        // Senders that cannot reach our TCP port ask us to connect back (spec §6); the
+        // node only honours this while receivePort != 0. Same sink and decision path.
+        val me = Prefs.device(this)
+        Node.callbackHandler = { request ->
+            var socket: Socket? = null
+            try {
+                serve { CallbackReceiver.answer(request, me, sink, it) { s -> socket = s; track(s) } }
+            } finally {
+                socket?.let { sockets -= it }
+            }
+        }
         running = true
         notifyState()
         thread(name = "hoppy-receive-accept", isDaemon = true) { acceptLoop() }
@@ -72,7 +94,14 @@ class ReceiveService : Service() {
 
     override fun onDestroy() {
         running = false
+        destroyed = true
         runCatching { server?.close() }
+        Node.callbackHandler = null
+        // Unblocks transfer threads (pool and callback threads alike): their I/O fails and
+        // TransferServer.handle aborts any partial file.
+        sockets.forEach { runCatching { it.close() } }
+        sockets.clear()
+        pending.values.forEach { it.complete(false) } // an open Accept prompt declines
         Node.receivePort = 0
         Node.release()
         pool.shutdownNow()
@@ -88,14 +117,38 @@ class ReceiveService : Service() {
         Node.receivePort = socket.localPort
         while (running) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
-            pool.execute {
-                val connection = Connection()
-                try {
-                    TransferServer.handle(client, sink, connection)
-                } finally {
-                    if (connection.accepted) receiveEnded()
+            track(client)
+            runCatching {
+                pool.execute {
+                    try {
+                        serve { TransferServer.handle(client, sink, it) }
+                    } finally {
+                        sockets -= client
+                    }
                 }
-            }
+            }.onFailure { sockets -= client; runCatching { client.close() } } // pool shut down
+        }
+    }
+
+    /** Registers a transfer socket; one opened after [onDestroy] began is closed at once. */
+    private fun track(s: Socket) {
+        sockets += s
+        if (destroyed) {
+            sockets -= s
+            runCatching { s.close() }
+        }
+    }
+
+    /**
+     * One incoming transfer, direct or connected back (callback): same accept prompt,
+     * progress, end-of-receive notification and [receiving] flag. Blocks until it ends.
+     */
+    private fun serve(transfer: (Connection) -> Unit) {
+        val connection = Connection()
+        try {
+            transfer(connection)
+        } finally {
+            if (connection.accepted) receiveEnded()
         }
     }
 
@@ -104,7 +157,7 @@ class ReceiveService : Service() {
         @Volatile var accepted = false
 
         override fun decide(offer: Offer, from: InetAddress): Boolean {
-            val ok = Prefs.autoAccept(this@ReceiveService) || askUser(offer)
+            val ok = Prefs.autoAccept(this@ReceiveService) || askOneAtATime(offer)
             if (ok) {
                 accepted = true
                 receiveStarted()
@@ -174,6 +227,16 @@ class ReceiveService : Service() {
                 .setAutoCancel(true)
                 .build(),
         )
+    }
+
+    /** One prompt at a time: an offer arriving while another awaits a decision is declined. */
+    private fun askOneAtATime(offer: Offer): Boolean {
+        if (!deciding.compareAndSet(false, true)) return false
+        try {
+            return askUser(offer)
+        } finally {
+            deciding.set(false)
+        }
     }
 
     /** Shows Accept/Decline actions and blocks this connection's thread for up to 60 s. */

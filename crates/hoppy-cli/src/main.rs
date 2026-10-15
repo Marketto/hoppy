@@ -1,6 +1,7 @@
-//! `hoppy` desktop CLI (PoC). On Windows, `hoppy install` adds "Send to → Hoppy" and a
-//! login item, both pointing at the `hoppyw` tray/GUI binary when it sits next to this one
-//! (fallback: `hoppy send --pause` / `hoppy receive`). Shared code: `src/lib.rs`.
+//! `hoppy` desktop CLI (PoC). On Windows, `hoppy install` adds "Send to → Hoppy", the
+//! "Send with Hoppy" right-click verb and a login item, pointing at the `hoppyw` tray/GUI
+//! binary when it sits next to this one (fallback: `hoppy send --pause` / `hoppy receive`,
+//! no verb). Shared code: `src/lib.rs`.
 
 use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
@@ -12,13 +13,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use hoppy::{
-    DialogGuard, bind_receiver, config, default_receive_dir, display_file_name, display_name,
-    display_platform, firewall, human, parse_direct, parse_seeds, platform, start_discovery,
+    DialogGuard, bind_receiver, config, default_receive_dir, diag, display_file_name, display_name,
+    display_platform, firewall, human, parse_direct, parse_seeds, platform, receive_forever,
+    start_discovery, start_discovery_on,
 };
-use hoppy_core::protocol::TRANSFER_PORT;
-use hoppy_core::transfer::serve;
+use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::{
-    DeviceInfo, Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, send_files,
+    DeviceInfo, Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, send_to_peer,
+    send_via_callback,
 };
 
 #[derive(Parser)]
@@ -51,6 +53,10 @@ enum Command {
         /// Wait for Enter before exiting (used by the "Send to" shortcut).
         #[arg(long)]
         pause: bool,
+        /// Debug: skip the direct connection and ask the receiver to connect back
+        /// (callback, as used when its firewall blocks incoming connections).
+        #[arg(long)]
+        no_direct: bool,
     },
     /// Receive files and stay visible to nearby devices.
     Receive {
@@ -62,6 +68,9 @@ enum Command {
         yes: bool,
         #[arg(long, default_value_t = TRANSFER_PORT)]
         port: u16,
+        /// Discovery UDP port (tests only; other devices look on 47470).
+        #[arg(long, default_value_t = DISCOVERY_PORT, hide = true)]
+        udp_port: u16,
     },
     /// List nearby devices.
     Peers {
@@ -73,10 +82,24 @@ enum Command {
     /// Show or change whether the Windows "Send to → Hoppy" window plays music.
     /// (`hoppy send` is always silent.)
     Music { state: Option<OnOff> },
-    /// Windows: add "Send to → Hoppy" and start the receiver at login.
+    /// Windows: add "Send to → Hoppy", the "Send with Hoppy" right-click entry and start
+    /// the receiver at login.
     Install,
-    /// Windows: remove the shortcuts created by `install`.
+    /// Windows: remove what `install` added (and the classic menu, if Hoppy turned it on).
     Uninstall,
+    /// Windows 11: show or change whether right-click opens the classic menu, where
+    /// "Send with Hoppy" is visible at once (per user; applies after Explorer restarts).
+    ClassicMenu {
+        state: Option<OnOff>,
+        /// Restart Explorer now so the change is visible (closes File Explorer windows).
+        #[arg(long)]
+        restart_explorer: bool,
+    },
+    /// Print where the `hoppyw` diagnostic log is, and its last lines.
+    Log {
+        #[arg(long, default_value_t = 40)]
+        lines: usize,
+    },
     /// Windows: can other devices reach this PC through the firewall? `--fix` adds the
     /// Hoppy rules (asks for administrator permission).
     Firewall {
@@ -113,14 +136,32 @@ fn run(cli: Cli) -> Result<()> {
     if let Command::Firewall { fix, apply, remove } = cli.command {
         return cmd_firewall(fix, apply, remove);
     }
+    // No device.json needed for these.
+    match cli.command {
+        Command::Log { lines } => return cmd_log(lines),
+        Command::ClassicMenu {
+            state,
+            restart_explorer,
+        } => return cmd_classic_menu(state, restart_explorer),
+        _ => {}
+    }
     let identity = config::load_or_create()?;
     let me = config::device_info(&identity);
     let seeds = parse_seeds(&cli.seed)?;
     match cli.command {
         Command::Send {
-            files, to, wait, ..
-        } => cmd_send(&me, &seeds, files, to, wait),
-        Command::Receive { dir, yes, port } => cmd_receive(&me, &seeds, dir, yes, port),
+            files,
+            to,
+            wait,
+            no_direct,
+            ..
+        } => cmd_send(&me, &seeds, files, to, wait, no_direct),
+        Command::Receive {
+            dir,
+            yes,
+            port,
+            udp_port,
+        } => cmd_receive(&me, &seeds, dir, yes, port, udp_port),
         Command::Peers { wait } => {
             let discovery = start_discovery(&me, 0, &seeds)?;
             let peers = discovery.wait_for_peers(usize::MAX, Duration::from_secs(wait));
@@ -154,8 +195,40 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Install => platform::install(),
         Command::Uninstall => platform::uninstall(),
-        Command::Firewall { .. } => unreachable!("handled above"),
+        Command::Firewall { .. } | Command::Log { .. } | Command::ClassicMenu { .. } => {
+            unreachable!("handled above")
+        }
     }
+}
+
+fn cmd_log(lines: usize) -> Result<()> {
+    let path = diag::log_path().context("no local data folder on this system")?;
+    println!("{}", path.display());
+    match diag::tail(&path, lines) {
+        Ok(text) => println!("{text}"),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            println!("(empty: hoppyw has not written anything yet)");
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+    Ok(())
+}
+
+fn cmd_classic_menu(state: Option<OnOff>, restart_explorer: bool) -> Result<()> {
+    if let Some(state) = state {
+        let changed = platform::set_classic_menu(matches!(state, OnOff::On))?;
+        if changed && !restart_explorer {
+            println!("Takes effect after File Explorer restarts (or at the next sign-in).");
+        }
+    }
+    match platform::classic_menu() {
+        Some(on) => println!("{}", if on { "on" } else { "off" }),
+        None => println!("not applicable (Windows 11 only)"),
+    }
+    if restart_explorer {
+        platform::restart_explorer()?;
+    }
+    Ok(())
 }
 
 fn cmd_firewall(fix: bool, apply: bool, remove: bool) -> Result<()> {
@@ -257,6 +330,7 @@ fn cmd_send(
     files: Vec<PathBuf>,
     to: Option<String>,
     wait: u64,
+    no_direct: bool,
 ) -> Result<()> {
     if files.is_empty() {
         bail!("nothing to send: pass one or more files");
@@ -276,32 +350,53 @@ fn cmd_send(
         .sum();
     println!("🐰 Hoppy — {} file(s), {}", files.len(), human(total));
 
+    // Kept alive for the whole send: the callback fallback (spec §6) needs it.
+    let mut discovery = None;
     let target = match to.as_deref().map(parse_direct) {
-        Some(Some(addr)) => Peer {
-            device: DeviceInfo {
-                id: String::new(),
-                name: addr.to_string(),
-                platform: "?".into(),
-            },
-            addr,
-        },
+        Some(Some(addr)) => ip_peer(addr),
         other => {
-            let discovery = start_discovery(me, 0, seeds)?;
+            let d = discovery.insert(start_discovery(me, 0, seeds)?);
             let wanted = match other {
                 Some(None) => to.clone(),
                 _ => None,
             };
-            pick_peer(&discovery, wanted.as_deref(), Duration::from_secs(wait))?
+            pick_peer(d, wanted.as_deref(), Duration::from_secs(wait))?
         }
     };
+    // A bare IP has no device id, which a callback needs (`to`): direct only.
+    let discovery = discovery.as_ref().filter(|_| !target.device.id.is_empty());
+    if no_direct && discovery.is_none() {
+        bail!("--no-direct needs a discovered device (name or list), not an IP address");
+    }
 
     println!(
         "→ {} ({})  waiting for them to accept…",
         target.device.name, target.addr
     );
     let mut bar = ProgressLine::default();
-    let outcome = send_files(target.addr, me, &files, &mut |p| bar.update(&p))?;
+    let mut progress = |p: Progress| {
+        if p == Progress::Fallback {
+            println!(
+                "  {} does not answer directly; asking it to connect back (up to 20 s)…",
+                target.device.name
+            );
+        }
+        bar.update(&p);
+    };
+    let result = match discovery {
+        Some(d) if no_direct => send_via_callback(&target, me, d, &files, &mut progress),
+        d => send_to_peer(&target, me, d, &files, &mut progress),
+    };
     bar.finish();
+    let outcome = match result {
+        Err(Error::Unreachable(detail)) => bail!(
+            "cannot reach {} ({detail}).\n  Check that Hoppy is open there, on the same \
+             network. On a Windows PC, run `hoppy firewall --fix` there (or allow Hoppy in \
+             its firewall); on a company PC ask IT to allow Hoppy.",
+            target.device.name
+        ),
+        other => other?,
+    };
     match outcome {
         SendOutcome::Delivered => println!("✓ Delivered to {}", target.device.name),
         SendOutcome::Declined(reason) => {
@@ -313,6 +408,18 @@ fn cmd_send(
         }
     }
     Ok(())
+}
+
+/// A target typed as an IP address: no device id, so no callback fallback.
+fn ip_peer(addr: SocketAddr) -> Peer {
+    Peer {
+        device: DeviceInfo {
+            id: String::new(),
+            name: addr.to_string(),
+            platform: "?".into(),
+        },
+        addr,
+    }
 }
 
 fn pick_peer(discovery: &Discovery, wanted: Option<&str>, wait: Duration) -> Result<Peer> {
@@ -352,14 +459,7 @@ fn pick_peer(discovery: &Discovery, wanted: Option<&str>, wait: Duration) -> Res
             return Ok(p.clone());
         }
         if let Some(addr) = parse_direct(line) {
-            return Ok(Peer {
-                device: DeviceInfo {
-                    id: String::new(),
-                    name: addr.to_string(),
-                    platform: "?".into(),
-                },
-                addr,
-            });
+            return Ok(ip_peer(addr));
         }
         discovery.refresh();
         peers = discovery.wait_for_peers(usize::MAX, Duration::from_millis(1500));
@@ -372,6 +472,7 @@ fn cmd_receive(
     dir: Option<PathBuf>,
     yes: bool,
     port: u16,
+    udp_port: u16,
 ) -> Result<()> {
     let dir = match dir {
         Some(d) => d,
@@ -379,7 +480,7 @@ fn cmd_receive(
     };
     let listener = bind_receiver(port)?;
     let port = listener.local_addr()?.port();
-    let _discovery = start_discovery(me, port, seeds)?;
+    let discovery = start_discovery_on(me, port, seeds, udp_port)?;
     println!("🐰 Hoppy is receiving as \"{}\" on port {port}", me.name);
     println!("   Files go to {}", dir.display());
     if yes {
@@ -389,7 +490,7 @@ fn cmd_receive(
         auto_accept: yes,
         asking: AtomicBool::new(false),
     };
-    serve(listener, dir, Arc::new(handler))
+    receive_forever(listener, &discovery, dir, Arc::new(handler))
 }
 
 struct CliReceiver {

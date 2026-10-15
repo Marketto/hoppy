@@ -5,6 +5,7 @@
 //! Win32 FFI lives only in `platform.rs`; `gui.rs` is safe Rust on top of it.
 
 pub mod config;
+pub mod diag;
 pub mod firewall;
 pub mod gui;
 pub mod platform;
@@ -12,11 +13,13 @@ pub mod update;
 
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
-use hoppy_core::{DeviceInfo, Discovery, DiscoveryConfig};
+use hoppy_core::transfer::serve;
+use hoppy_core::{DeviceInfo, Discovery, DiscoveryConfig, ReceiveHandler, accept_callbacks};
 
 /// `--seed` values: `IP` or `IP:PORT` (discovery port by default).
 pub fn parse_seeds(raw: &[String]) -> Result<Vec<SocketAddr>> {
@@ -42,17 +45,43 @@ pub fn parse_direct(s: &str) -> Option<SocketAddr> {
 }
 
 /// `transfer_port == 0` → send-only node on an ephemeral UDP port (spec §2 rule 6).
+///
+/// Senders stay on an ephemeral port even though the callback fallback (spec §6) wants to
+/// hear the receiver's multicast announces: sharing 47470 with a receiver on the same PC
+/// (the tray) would split unicast between the two processes. While a callback is pending,
+/// hoppy-core listens to the group on a second, reuse-bound socket instead.
 pub fn start_discovery(
     me: &DeviceInfo,
     transfer_port: u16,
     seeds: &[SocketAddr],
 ) -> Result<Discovery> {
+    start_discovery_on(me, transfer_port, seeds, DISCOVERY_PORT)
+}
+
+/// Like [`start_discovery`], with the UDP port of a receiving node chosen (tests/interop).
+pub fn start_discovery_on(
+    me: &DeviceInfo,
+    transfer_port: u16,
+    seeds: &[SocketAddr],
+    udp_port: u16,
+) -> Result<Discovery> {
     let mut cfg = DiscoveryConfig::new(me.clone(), transfer_port);
     cfg.seeds = seeds.to_vec();
-    if transfer_port == 0 {
-        cfg.bind_port = 0;
-    }
+    cfg.bind_port = if transfer_port == 0 { 0 } else { udp_port };
     Discovery::start(cfg).context("starting discovery (is the UDP port blocked?)")
+}
+
+/// Receives forever: direct connections on `listener` and callbacks (spec §6) through
+/// `discovery`, with the same folder and handler, so the handler's one-offer-at-a-time
+/// guard covers both paths.
+pub fn receive_forever(
+    listener: TcpListener,
+    discovery: &Discovery,
+    dir: PathBuf,
+    handler: Arc<dyn ReceiveHandler>,
+) -> ! {
+    accept_callbacks(discovery, dir.clone(), Arc::clone(&handler));
+    serve(listener, dir, handler)
 }
 
 /// Where received files go unless `--dir` says otherwise: `Downloads/Hoppy`.

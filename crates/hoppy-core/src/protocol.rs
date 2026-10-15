@@ -10,13 +10,19 @@ use serde::{Deserialize, Serialize};
 use crate::Error;
 
 pub const MAGIC: [u8; 4] = *b"HOPY";
+/// Magic of the callback hello sent by a receiver that connects back (spec §6).
+pub const CALLBACK_MAGIC: [u8; 4] = *b"HOPC";
 pub const VERSION: u8 = 0;
 pub const DISCOVERY_PORT: u16 = 47470;
 pub const TRANSFER_PORT: u16 = 47471;
 pub const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 72, 80);
 pub const MAX_JSON_FRAME: u32 = 1 << 20;
+/// Max JSON frame of the callback hello (spec §6); the real one is under 200 bytes.
+pub const MAX_CALLBACK_HELLO_FRAME: u32 = 1024;
 pub const MAX_FILES: usize = 10_000;
 pub const HASH_LEN: usize = 32;
+/// Callback token: 128 random bits as 32 lowercase hex characters (spec §6).
+pub const TOKEN_HEX_LEN: usize = 32;
 
 /// Identity of a device as shown to other devices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +103,8 @@ pub enum MessageKind {
     Announce,
     Query,
     Bye,
+    /// "Please connect back to me" (spec §6). `port` is the sender's callback listener.
+    Callback,
 }
 
 /// One discovery datagram.
@@ -109,6 +117,12 @@ pub struct DiscoveryMessage {
     pub name: String,
     pub platform: String,
     pub port: u16,
+    /// `callback` only: one-time token the receiver echoes in the callback hello.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// `callback` only: id of the receiver that should connect back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 impl DiscoveryMessage {
@@ -120,6 +134,17 @@ impl DiscoveryMessage {
             name: me.name.clone(),
             platform: me.platform.clone(),
             port,
+            token: None,
+            to: None,
+        }
+    }
+
+    /// A `callback` datagram asking peer `to` to connect to our `port` (spec §6).
+    pub fn callback(me: &DeviceInfo, port: u16, token: &str, to: &str) -> Self {
+        Self {
+            token: Some(token.to_string()),
+            to: Some(to.to_string()),
+            ..Self::new(MessageKind::Callback, me, port)
         }
     }
 
@@ -130,7 +155,17 @@ impl DiscoveryMessage {
     /// Returns `None` for anything that is not a valid v0 message (spec §2 rule 5).
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let msg: Self = serde_json::from_slice(bytes).ok()?;
-        (msg.hoppy == VERSION && !msg.id.is_empty()).then_some(msg)
+        if msg.hoppy != VERSION || msg.id.is_empty() {
+            return None;
+        }
+        if msg.kind == MessageKind::Callback {
+            let token_ok = msg.token.as_deref().is_some_and(is_valid_token);
+            let to_ok = msg.to.as_deref().is_some_and(|t| !t.is_empty());
+            if !token_ok || !to_ok || msg.port == 0 {
+                return None;
+            }
+        }
+        Some(msg)
     }
 
     pub fn device(&self) -> DeviceInfo {
@@ -140,6 +175,59 @@ impl DiscoveryMessage {
             platform: self.platform.clone(),
         }
     }
+}
+
+/// Spec §6: exactly 32 lowercase hex characters.
+pub fn is_valid_token(token: &str) -> bool {
+    token.len() == TOKEN_HEX_LEN
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A fresh callback token from the OS CSPRNG.
+pub fn new_token() -> String {
+    let mut bytes = [0u8; TOKEN_HEX_LEN / 2];
+    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Compares tokens without an early exit, so timing does not leak a prefix match.
+pub fn tokens_equal(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// JSON frame that follows `HOPC 0x00` (spec §6). Field order is part of the vectors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallbackHello {
+    /// Id of the receiver that is connecting back.
+    pub id: String,
+    pub token: String,
+}
+
+/// Written by the receiver right after it connects back to a callback listener.
+pub fn write_callback_hello<W: Write>(w: &mut W, hello: &CallbackHello) -> Result<(), Error> {
+    w.write_all(&CALLBACK_MAGIC)?;
+    w.write_all(&[VERSION])?;
+    write_json(w, hello)
+}
+
+/// Read by the sender on its callback listener. Does not check the token. The frame is
+/// capped at [`MAX_CALLBACK_HELLO_FRAME`]; the caller bounds the time (spec §6 step 3).
+pub fn read_callback_hello<R: Read>(r: &mut R) -> Result<CallbackHello, Error> {
+    let mut buf = [0u8; 5];
+    r.read_exact(&mut buf)?;
+    if buf[..4] != CALLBACK_MAGIC {
+        return Err(Error::Protocol("bad callback magic".into()));
+    }
+    if buf[4] != VERSION {
+        return Err(Error::Protocol(format!("unsupported version {}", buf[4])));
+    }
+    read_json_limited(r, MAX_CALLBACK_HELLO_FRAME)
 }
 
 pub fn write_hello<W: Write>(w: &mut W) -> Result<(), Error> {
@@ -172,10 +260,15 @@ pub fn write_json<W: Write, T: Serialize>(w: &mut W, value: &T) -> Result<(), Er
 }
 
 pub fn read_json<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<T, Error> {
+    read_json_limited(r, MAX_JSON_FRAME)
+}
+
+/// [`read_json`] with a smaller frame cap (checked before allocating).
+pub fn read_json_limited<R: Read, T: DeserializeOwned>(r: &mut R, max: u32) -> Result<T, Error> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
     let len = u32::from_be_bytes(len);
-    if len > MAX_JSON_FRAME {
+    if len > max.min(MAX_JSON_FRAME) {
         return Err(Error::Protocol(format!(
             "frame of {len} bytes exceeds limit"
         )));
@@ -252,6 +345,71 @@ mod tests {
             .is_none()
         );
         assert!(DiscoveryMessage::decode(b"garbage").is_none());
+    }
+
+    fn vectors() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../../docs/test-vectors.json")).unwrap()
+    }
+
+    #[test]
+    fn callback_datagram_matches_vectors() {
+        let v = &vectors()["callback_example"];
+        let raw = v["datagram_json"].as_str().unwrap();
+        let msg = DiscoveryMessage::decode(raw.as_bytes()).expect("valid callback");
+        assert_eq!(msg.kind, MessageKind::Callback);
+        assert_eq!(msg.port, 50123);
+        let me = msg.device();
+        let ours = DiscoveryMessage::callback(
+            &me,
+            msg.port,
+            msg.token.as_deref().unwrap(),
+            msg.to.as_deref().unwrap(),
+        );
+        assert_eq!(ours, msg);
+        assert_eq!(String::from_utf8(ours.encode()).unwrap(), raw);
+        for bad in v["invalid_datagrams"].as_array().unwrap() {
+            let bad = bad.as_str().unwrap();
+            assert!(DiscoveryMessage::decode(bad.as_bytes()).is_none(), "{bad}");
+        }
+        // Announces are unchanged: no token/to fields on the wire.
+        let a = DiscoveryMessage::new(MessageKind::Announce, &me, 1).encode();
+        assert!(!String::from_utf8(a).unwrap().contains("token"));
+    }
+
+    #[test]
+    fn callback_hello_matches_vector_bytes() {
+        let v = &vectors()["callback_example"];
+        let hello: CallbackHello = serde_json::from_str(v["hello_json"].as_str().unwrap()).unwrap();
+        let mut buf = Vec::new();
+        write_callback_hello(&mut buf, &hello).unwrap();
+        let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, v["hello_hex"].as_str().unwrap());
+        assert_eq!(read_callback_hello(&mut buf.as_slice()).unwrap(), hello);
+        assert!(read_callback_hello(&mut &b"HOPY\0\0\0\0\x02{}"[..]).is_err());
+        // Over 1 KiB (checked before reading the body) and non-object JSON are rejected.
+        let mut big = b"HOPC\0".to_vec();
+        big.extend_from_slice(&(MAX_CALLBACK_HELLO_FRAME + 1).to_be_bytes());
+        assert!(read_callback_hello(&mut big.as_slice()).is_err());
+        for body in [&b"[1,2]"[..], b"\"x\"", b"{\"id\":1,\"token\":\"t\"}"] {
+            let mut frame = b"HOPC\0".to_vec();
+            frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            frame.extend_from_slice(body);
+            assert!(read_callback_hello(&mut frame.as_slice()).is_err());
+        }
+    }
+
+    #[test]
+    fn tokens() {
+        let t = new_token();
+        assert!(is_valid_token(&t));
+        assert_ne!(t, new_token());
+        assert!(!is_valid_token(
+            &t.to_uppercase().replace(char::is_numeric, "A")
+        ));
+        assert!(!is_valid_token(&t[1..]));
+        assert!(tokens_equal(&t, &t.clone()));
+        assert!(!tokens_equal(&t, &new_token()));
+        assert!(!tokens_equal(&t, &t[1..]));
     }
 
     #[test]

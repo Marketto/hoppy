@@ -8,6 +8,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
 import app.hoppy.audio.Music
+import app.hoppy.core.CallbackRequest
 import app.hoppy.core.DeviceInfo
 import app.hoppy.core.DiscoveryNode
 import app.hoppy.core.Peer
@@ -151,7 +152,7 @@ object Prefs {
  * Screens subscribe here, not on the DiscoveryNode, so a restart keeps listeners.
  */
 object Node {
-    private var discovery: DiscoveryNode? = null
+    @Volatile private var discovery: DiscoveryNode? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var users = 0
     private val listeners = CopyOnWriteArraySet<(List<Peer>) -> Unit>()
@@ -164,10 +165,26 @@ object Node {
             discovery?.transferPort = value
         }
 
+    /**
+     * Answers callback requests (spec §6) while the receiver runs; null otherwise. Kept
+     * here so it survives [restart]. Only consulted while [receivePort] != 0.
+     */
+    @Volatile var callbackHandler: ((CallbackRequest) -> Unit)? = null
+        set(value) {
+            field = value
+            discovery?.callbackHandler = value
+        }
+
     fun addListener(l: (List<Peer>) -> Unit) { listeners += l }
     fun removeListener(l: (List<Peer>) -> Unit) { listeners -= l }
     fun peers(): List<Peer> = discovery?.peers().orEmpty()
     fun refresh() { discovery?.refresh() }
+
+    /**
+     * The running node (bound to UDP 47470), for sending with a callback fallback; null
+     * when nobody holds it. Callers that block on it must [acquire] it first.
+     */
+    fun node(): DiscoveryNode? = discovery
 
     @Synchronized
     fun acquire(ctx: Context) {
@@ -204,6 +221,7 @@ object Node {
     private fun newNode(app: Context): DiscoveryNode =
         DiscoveryNode(Prefs.device(app)).also {
             it.transferPort = receivePort
+            it.callbackHandler = callbackHandler
             it.addListener(forward)
             it.start()
         }

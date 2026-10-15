@@ -19,6 +19,9 @@ Design notes: `docs/architecture.md`. Wire rules: `docs/protocol.md`.
 - `discovery.rs` — `Discovery::start(DiscoveryConfig)`; joins multicast on every IPv4
   interface and sends per interface (multi-adapter Windows PCs). `bind_port: 0` +
   `transfer_port: 0` = send-only node (spec §2 rule 6). Tests use `seeds` + `use_multicast: false`.
+  `request_callback` on a multicast node not bound to 47470 starts a listen-only announce
+  socket (47470, reuse; bound to the group address except on Windows) until the last
+  `CallbackTicket` drops; replies always leave from the main socket.
 
 ## Conventions
 

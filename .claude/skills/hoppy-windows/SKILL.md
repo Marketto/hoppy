@@ -1,6 +1,6 @@
 ---
 name: hoppy-windows
-description: Use for the Windows experience - the hoppyw tray receiver and "Send to → Hoppy" GUI, the hoppy CLI commands, installer script, firewall, startup receiver, and the future native Windows UI/shell extension.
+description: Use for the Windows experience - the hoppyw tray receiver, the "Send with Hoppy" right-click verb / "Send to → Hoppy" GUI, the hoppy CLI commands, installer script, firewall, startup receiver, diagnostics log, and the future native Windows UI/shell extension.
 ---
 
 # Windows
@@ -9,8 +9,11 @@ PoC UX (no console windows):
 - **Receive**: `hoppyw.exe` starts at login as an icon in the notification area (near the
   clock). Each incoming offer asks with a native Yes/No dialog (`MessageBoxW`); files go to
   `Downloads\Hoppy`; a balloon/toast says "Ricevuti N file da …", clicking it opens the folder.
-- **Send**: Explorer → right click → (Win11: *Show more options*, or Shift+right-click) →
-  **Send to → Hoppy** runs `hoppyw send FILES`: tray icon "Looking for devices…", then a
+- **Send**: Explorer → select files → right click → **Send with Hoppy** (HKCU verb; on Win11
+  top-level only with the opt-in classic menu, else *Show more options*), or **Send to →
+  Hoppy**, or drop on the desktop shortcut, runs `hoppyw send FILES` (no files = Open
+  dialog first; one process per file from the verb, merged by the first one): tray icon
+  "Looking for devices…", then a
   popup menu at the mouse cursor lists nearby devices → click one → progress in the tray
   tooltip → final balloon → the process exits a few seconds later. Music (sender only,
   unless `music: false` in device.json): idle loop → transfer loop once accepted → done
@@ -20,8 +23,9 @@ PoC UX (no console windows):
 ## Pieces
 
 - `crates/hoppy-cli/src/main.rs` — `hoppy` CLI (console): `send`, `receive`, `peers`,
-  `name`, `music [on|off]`, `install`, `uninstall`, `firewall [--fix|--remove]` (runs before
-  `config::load_or_create`: the elevated copy may be another user). The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
+  `name`, `music [on|off]`, `install`, `uninstall`, `classic-menu [on|off]
+  [--restart-explorer]`, `log [--lines N]`, `firewall [--fix|--remove]` (these three run
+  before `config::load_or_create`; for `firewall` the elevated copy may be another user). The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
   fallback (`send --pause` when `hoppyw.exe` is missing).
 - `crates/hoppy-cli/src/bin/hoppyw.rs` — GUI-subsystem binary; calls `hoppy::gui::run`.
   Off Windows it prints that it is Windows-only and exits 1.
@@ -30,6 +34,18 @@ PoC UX (no console windows):
 - `crates/hoppy-cli/src/gui.rs` — tray receiver + send flow, IT/EN string table
   (`GetUserDefaultUILanguage`), safe Rust only. Worker threads update `Mutex` state and call
   `Waker::wake` (→ `WM_APP` → `TrayEvent::Wake`); only the UI thread touches the tray.
+  **The UI thread does no file/registry/network I/O and never waits on a lock held across
+  I/O**: device.json is cached in `Prefs` (refreshed by a worker on each menu open; writes
+  via `Ctx::config_job`, serialised by `CONFIG_IO`, which the UI never takes); folders/URLs,
+  process spawns, UAC (`run_elevated` takes a `Waker` as owner) and the classic-menu toggle
+  run on workers; worker errors become `Notice`s (balloon) + log lines. Handlers run inside
+  `diag::UiWatch::handler`; wrap modal calls (menus, dialogs) in `h.modal(...)`.
+- `crates/hoppy-cli/src/diag.rs` — `%LOCALAPPDATA%\Hoppy\hoppy.log` (channel → writer
+  thread, rotation at 256 KB, UTC timestamps; no file names/paths: `format_line` runs
+  `redact_paths`, core errors are logged via `error_kind`/`error_chain`, never `{e}`; IPs
+  and device names allowed), `UiWatch` (handler > 200 ms
+  logged, watchdog line > 2 s). Init only in `hoppyw` tray/send (not `firewall`: elevated
+  copy may be another user). Tray menu *About & diagnostics…* opens it in Notepad.
 - `crates/hoppy-cli/src/update.rs` — tray update check, pure and Linux-tested: semver
   compare with `CARGO_PKG_VERSION`, `releases/latest` JSON, `SHA256SUMS.txt`, install
   location (`%LOCALAPPDATA%\Programs\Hoppy` = setup, else portable → portal link), and
@@ -49,7 +65,14 @@ PoC UX (no console windows):
   device.json), menu item while needed, fix = UAC `hoppyw firewall --apply`.
 - `crates/hoppy-cli/src/platform.rs` — **all Win32 FFI** (`windows-sys` 0.61) in
   `#[cfg(windows)] mod win`: hidden window + `Shell_NotifyIconW` (NOTIFYICON_VERSION_4,
-  re-added on `TaskbarCreated`), popup menus, `GetOpenFileNameW`, `ShellExecuteW`, named
+  re-added on `TaskbarCreated`), popup menus (at the click's anchor from `wParam`,
+  `TrayEvent::Click(Some((x, y)))`; cursor otherwise), `GetOpenFileNameW` (also unowned
+  for `hoppyw send` without files), `ShellExecuteW` (COM-initialised, worker-safe), the
+  `hoppyw send` collector (`gather_send_files`: mutex + window `HoppySendCollector`,
+  `WM_COPYDATA` from our own exe only (`wParam` = sender window → image path), capped
+  by `Collected` at `COLLECT_MAX_FILES`/`COLLECT_MAX_BYTES`, timing in `collect_wait`), HKCU registry helpers (verb
+  `Software\Classes\*\shell\Hoppy`, classic menu CLSID override + `Software\Hoppy`
+  marker, `restart_explorer`), named
   mutex `Local\HoppyTray` (single instance; a 2nd launch makes the 1st show a balloon),
   `http_get` (WinHTTP, `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`, https only via
   `split_https_url`; bold menu items = `SetMenuDefaultItem`), and
@@ -63,7 +86,10 @@ PoC UX (no console windows):
   and `...\Startup\Hoppy receiver.lnk` → `hoppyw.exe`.
 - `crates/hoppy-cli/build.rs` — embeds `assets/brand/hoppy.ico` as icon resource **id 1** in
   both exes (the tray loads it with `LoadImageW`).
-- `apps/windows/hoppy.iss` — Inno Setup: installs both exes, stops copies running from
+- `apps/windows/hoppy.iss` — Inno Setup: tasks `firewall`, `classicmenu` (Win11:
+  `hoppy classic-menu on`, then asks before `--restart-explorer`), `desktopicon`
+  (`{userdesktop}\Hoppy` → `hoppyw.exe send`), all checked and skipped on `IsUpdate`;
+  installs both exes, stops copies running from
   `{app}` (PowerShell, path-filtered) in `PrepareToInstall` (upgrade from the 0.1.0 console
   receiver) and on uninstall (`usUninstall`), Start menu "Hoppy" → `hoppyw.exe`. Wizard
   music: WAVs as `dontcopy` files → `ExtractTemporaryFile` in `InitializeWizard`, winmm
@@ -79,8 +105,17 @@ PoC UX (no console windows):
 
 ## Gotchas
 
-- Windows 11 shows "Send to" under "Show more options" (or Shift+right-click). A top-level
-  context-menu entry needs an `IExplorerCommand` handler in a signed MSIX package; appearing
+- **Sent vs posted messages**: Explorer delivers tray callbacks (and `TaskbarCreated`) with
+  `SendNotifyMessage`. `GetMessageW` runs `wndproc` for sent messages internally and does
+  not return, so anything `wndproc` only queues waits for the next *posted* message (the
+  0.2.1 "menu appears minutes later at a random spot" bug). `wndproc` posts `WM_KICK` to
+  itself after queuing; keep that for any new queued event. Same reason the send collector
+  pumps with `MsgWaitForMultipleObjects` + `PeekMessageW` (WM_COPYDATA is sent).
+- Values for PowerShell go through env vars; registry values are written with the API
+  (`RegSetValueExW`), never via `reg.exe` command lines.
+- Windows 11 shows classic verbs and "Send to" under "Show more options" (or
+  Shift+right-click) unless the per-user classic menu is on. A top-level entry in the new
+  menu needs an `IExplorerCommand` handler in a signed MSIX package; appearing
   in the Win11 **Share** sheet ("Condividi") also needs a packaged (MSIX) app declaring a
   share target. Both are on the roadmap.
 - Tray menus: `SetForegroundWindow(hwnd)` before `TrackPopupMenu`, `PostMessage(WM_NULL)`
@@ -95,6 +130,14 @@ PoC UX (no console windows):
   `apply` deletes all inbound rules for our paths first. Values never go into a UAC command
   line or script: the elevated process derives paths from its own `current_exe`.
   Environment variables do not survive UAC elevation.
+- **Callback (spec §6)**: receivers (`hoppy receive`, tray) call `accept_callbacks` with
+  the same dir/handler as `serve` (`lib::receive_forever` for the CLI), so the
+  one-dialog guard covers both paths. Senders use `send_to_peer` (keep the `Discovery`
+  alive during the send); `Progress::Fallback` drives the "trying another way" tip/line,
+  `Error::Unreachable` the "Can't reach" balloon. Senders stay on an ephemeral UDP port: two
+  processes sharing 47470 with SO_REUSEADDR all get multicast but unicast reaches only
+  one, which would starve the tray. hoppy-core opens a listen-only 47470 socket just while
+  a callback is pending. Bare-IP targets have no device id: direct only.
 - `PlaySoundW` is one sound per process: a new call replaces the current one, a null name
   stops it. `SND_MEMORY` + `SND_ASYNC` needs the buffer alive during playback ('static).
 - `device.json` fields added later need `#[serde(default)]`; `config::set_music` re-reads
@@ -111,7 +154,14 @@ PoC UX (no console windows):
 Linux can't build the Windows target here. Run `python3 tools/dev.py check`, then rely on
 the `windows-latest` CI job (clippy + `cargo test` + artifacts `hoppy.exe`, `hoppyw.exe`);
 its failures appear as annotations (`tools/ci-annotate.sh`), not only in the log.
-Manual test on a real PC: tray icon at login, accept dialog, balloon click, Send to menu,
+Windows-only code can be type-checked on Linux with a harness that flips `cfg(windows)` and
+runs clippy against `windows-sys` (extern declarations compile anywhere); it does not link
+or run anything. Manual test on a real PC: tray left/right click opens the menu at once at
+the icon (check `hoppy log`: `delivery=notify`, no "waited" lines), right-click → Send with
+Hoppy on 1 and 20 files (one menu), classic-menu task/toggle + Explorer restart, desktop
+shortcut drop/double-click, accept dialog, balloon click, Send to menu,
 send music (idle → transfer → done, mute toggle), installer music + checkbox, update flow
 (balloon → download % → silent install → tray back; portable → portal), firewall task
-(UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`.
+(UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`,
+callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while the tray
+runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon.

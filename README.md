@@ -3,7 +3,7 @@
 # Hoppy
 
 Trasferisci file tra i tuoi dispositivi nel modo più semplice possibile:
-**tasto destro → Invia a → Hoppy → tocchi il dispositivo**. Fine.
+**tasto destro → Invia con Hoppy → tocchi il dispositivo**. Fine.
 
 Obiettivo: Windows, macOS, Linux, Android e iPhone, scegliendo da solo il canale più
 veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto.
@@ -15,7 +15,7 @@ veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto
 
 | | Invio | Ricezione |
 | --- | --- | --- |
-| **Windows** | *Invia a → Hoppy* da Esplora file, o clic sull'icona → *Invia file…* | icona vicino all'orologio, con conferma Sì/No |
+| **Windows** | tasto destro su uno o più file → *Invia con Hoppy*, file trascinati sull'icona Hoppy del desktop, *Invia a → Hoppy*, o clic sull'icona → *Invia file…* | icona vicino all'orologio, con conferma Sì/No |
 | **Android** | *Condividi → Hoppy* o pulsante *Invia file* | interruttore *Pronto a ricevere*, conferma da notifica |
 | **Linux / macOS** | `hoppy send` | `hoppy receive` |
 
@@ -33,8 +33,15 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Hoppy resta come icona nell'area di notifica, vicino all'orologio: riceve in background e,
-con un clic, *Invia file…*. Da Esplora file: tasto destro → *Mostra altre opzioni* →
-*Invia a* → *Hoppy* (oppure Maiusc+tasto destro), poi scegli il dispositivo dal menu.
+con un clic, *Invia file…*. Per inviare da Esplora file: seleziona uno o più file, tasto
+destro → **Invia con Hoppy**, poi scegli il dispositivo dal menu. Su Windows 11 la voce è
+subito visibile se all'installazione lasci attiva l'opzione «menu classico» (si cambia anche
+dal menu dell'icona); altrimenti è sotto *Mostra altre opzioni* (o Maiusc+tasto destro).
+In alternativa trascina i file sull'icona **Hoppy** del desktop (doppio clic: scegli i file),
+oppure usa *Invia a → Hoppy*. Nessun permesso di amministratore, niente Microsoft Store.
+
+Se qualcosa non va, *Informazioni e diagnostica…* nel menu dell'icona apre il registro
+(`%LOCALAPPDATA%\Hoppy\hoppy.log`; da terminale: `hoppy log`).
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.
 

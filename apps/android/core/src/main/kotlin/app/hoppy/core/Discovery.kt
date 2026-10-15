@@ -2,6 +2,7 @@ package app.hoppy.core
 
 import java.net.DatagramPacket
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.MulticastSocket
@@ -13,8 +14,32 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 data class Peer(val device: DeviceInfo, val address: InetAddress, val port: Int)
+
+/**
+ * A validated, rate-limited request from a sender to connect back to it (spec §6).
+ * [address] is the UDP source of the datagram, never an address from its JSON.
+ * Call [markConnected] once the TCP connect succeeded and the hello was written: only then
+ * is the token recorded as used, so a re-send after a failed connect can retry.
+ */
+class CallbackRequest(
+    val sender: DeviceInfo,
+    val address: InetAddress,
+    val port: Int,
+    val token: String,
+    private val onConnected: () -> Unit = {},
+) {
+    fun markConnected() = onConnected()
+}
+
+/** Sender-side outstanding callback request. Close it to stop the re-sends. */
+interface CallbackTicket : AutoCloseable {
+    /** Sends the callback datagram again to the peer's last known discovery address. */
+    fun resend()
+    override fun close()
+}
 
 /**
  * LAN discovery (spec §2), pure java.net. On Android the caller must hold a
@@ -25,7 +50,7 @@ data class Peer(val device: DeviceInfo, val address: InetAddress, val port: Int)
  * call from the Android main thread.
  */
 class DiscoveryNode(
-    private val me: DeviceInfo,
+    val me: DeviceInfo,
     private val bindPort: Int = Protocol.DISCOVERY_PORT,
     private val seeds: List<InetSocketAddress> = emptyList(),
     private val useMulticast: Boolean = true,
@@ -37,6 +62,20 @@ class DiscoveryNode(
         }
 
     private val peers = ConcurrentHashMap<String, Pair<Peer, Long>>()
+    /** UDP source of each peer's last datagram: where callback datagrams go. */
+    private val udpSources = ConcurrentHashMap<String, InetSocketAddress>()
+    /** [peerIp]: where the peer was discovered; only it may speak for [peerId] (spec §6). */
+    private class Pending(val peerId: String, val peerIp: InetAddress, val data: ByteArray)
+    private val pending = ConcurrentHashMap<Long, Pending>()
+    private val nextTicket = AtomicLong(1)
+    private val limiter = CallbackLimiter()
+
+    /**
+     * Receiver side (spec §6): called on a fresh background thread for each valid callback
+     * datagram addressed to this node while [transferPort] != 0. Usually set through
+     * [CallbackReceiver.install]. May block for the whole transfer.
+     */
+    @Volatile var callbackHandler: ((CallbackRequest) -> Unit)? = null
     private val listeners = CopyOnWriteArraySet<(List<Peer>) -> Unit>()
     @Volatile private var running = false
     @Volatile private var socket: MulticastSocket? = null
@@ -108,9 +147,31 @@ class DiscoveryNode(
     /** Ask everyone to announce now. */
     fun refresh() = send(DiscoveryMessage.QUERY)
 
+    /**
+     * Sender side (spec §6): asks [peer] to connect back to our TCP [port] with [token].
+     * Sends one datagram now and one each time [peer] announces or queries until closed.
+     */
+    fun requestCallback(peer: Peer, port: Int, token: String): CallbackTicket {
+        val key = nextTicket.getAndIncrement()
+        val data = DiscoveryMessage(DiscoveryMessage.CALLBACK, me, port, token, peer.device.id).encode()
+        pending[key] = Pending(peer.device.id, peer.address, data)
+        val fallback = InetSocketAddress(peer.address, Protocol.DISCOVERY_PORT)
+        val ticket = object : CallbackTicket {
+            override fun resend() {
+                val s = socket ?: return
+                val target = udpSources[peer.device.id]?.takeIf { it.address == peer.address } ?: fallback
+                runCatching { io?.execute { runCatching { s.send(DatagramPacket(data, data.size, target)) } } }
+            }
+            override fun close() { pending.remove(key) }
+        }
+        ticket.resend()
+        return ticket
+    }
+
     fun peers(): List<Peer> {
         val now = System.currentTimeMillis()
         peers.entries.removeIf { now - it.value.second > PEER_TTL_MS }
+        udpSources.keys.retainAll(peers.keys)
         return peers.values.map { it.first }.sortedBy { it.device.name.lowercase() }
     }
 
@@ -139,8 +200,24 @@ class DiscoveryNode(
             val msg = DiscoveryMessage.decode(packet.data, packet.length) ?: continue
             if (msg.device.id == me.id) continue
             when (msg.type) {
-                DiscoveryMessage.BYE -> if (peers.remove(msg.device.id) != null) notifyListeners()
+                DiscoveryMessage.BYE -> {
+                    udpSources.remove(msg.device.id)
+                    if (peers.remove(msg.device.id) != null) notifyListeners()
+                }
+                DiscoveryMessage.CALLBACK -> handleCallback(msg, packet.address)
                 else -> {
+                    val source = packet.socketAddress as InetSocketAddress
+                    // While we wait for this id to connect back, only its known IP may speak
+                    // for it: a claim from elsewhere would collect the token (spec §6 step 2).
+                    if (pending.values.any { it.peerId == msg.device.id && !trustedSource(it.peerIp, packet.address) }) continue
+                    if (msg.port != 0) udpSources[msg.device.id] = source
+                    // A firewalled receiver accepts unicast replies to its announces for a few
+                    // seconds only: answer pending callback requests right now (spec §6).
+                    for (p in pending.values) {
+                        if (p.peerId == msg.device.id) {
+                            runCatching { io?.execute { runCatching { s.send(DatagramPacket(p.data, p.data.size, source)) } } }
+                        }
+                    }
                     if (msg.port != 0) {
                         val isNew = !peers.containsKey(msg.device.id)
                         val peer = Peer(msg.device, packet.address, msg.port)
@@ -154,6 +231,24 @@ class DiscoveryNode(
                     }
                 }
             }
+        }
+    }
+
+    private fun handleCallback(msg: DiscoveryMessage, from: InetAddress) {
+        val handler = callbackHandler ?: return
+        if (transferPort == 0 || msg.to != me.id || !isLocalAddress(from)) return
+        val token = msg.token ?: return
+        val ip = from.hostAddress ?: return
+        if (!limiter.admit(ip, token, System.currentTimeMillis())) return
+        val request = CallbackRequest(msg.device, from, msg.port, token) {
+            limiter.markUsed(token, System.currentTimeMillis())
+        }
+        try {
+            Thread({
+                try { handler(request) } catch (e: Exception) { /* handler reports its own errors */ } finally { limiter.release(ip) }
+            }, "hoppy-callback").apply { isDaemon = true; start() }
+        } catch (e: Throwable) {
+            limiter.release(ip)
         }
     }
 
@@ -180,11 +275,70 @@ class DiscoveryNode(
     companion object {
         const val ANNOUNCE_INTERVAL_MS = 5_000L
         const val PEER_TTL_MS = 15_000L
+        /** Spec §6 timings; same values in Rust and Python. */
+        const val CALLBACK_WINDOW_MS = 20_000L
+        const val CALLBACK_RESEND_MS = 2_000L
+        const val CALLBACK_CONNECT_TIMEOUT_MS = 3_000
+        /** Receiver-side cap on callback attempts per rolling minute, per source IP. */
+        const val MAX_CALLBACKS_PER_MINUTE = 10
+        /** Receiver-side cap on callback attempts per rolling minute, all sources together. */
+        const val MAX_CALLBACKS_PER_MINUTE_TOTAL = 30
+
+        /** [from] may speak for a peer discovered at [known] (spec §6 sender step 2). */
+        fun trustedSource(known: InetAddress, from: InetAddress): Boolean = known == from && isLocalAddress(from)
+
+        /** Loopback, RFC 1918, 100.64/10, link-local, IPv6 ULA (fc00::/7) / link-local. */
+        fun isLocalAddress(a: InetAddress): Boolean {
+            val b = a.address
+            if (a.isLoopbackAddress || a.isLinkLocalAddress) return true
+            if (a is Inet6Address) return (b[0].toInt() and 0xfe) == 0xfc // IPv4-mapped become Inet4Address
+            val x = b[0].toInt() and 0xff
+            val y = b[1].toInt() and 0xff
+            return a.isSiteLocalAddress || (x == 100 && y in 64..127)
+        }
 
         fun ipv4Interfaces(): List<NetworkInterface> =
             NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().filter { nif ->
                 runCatching { nif.isUp && !nif.isLoopback && nif.supportsMulticast() }.getOrDefault(false) &&
                     nif.inetAddresses.toList().any { it is Inet4Address }
             }
+    }
+}
+
+/**
+ * Receiver-side callback limits (spec §6): 1 outstanding per IP, 10/min per IP, 30/min in
+ * total; a token is remembered for 2 min only once it connected back ([markUsed]).
+ */
+class CallbackLimiter {
+    private val used = LinkedHashMap<String, Long>()
+    private val outstanding = HashSet<String>()
+    private val started = ArrayDeque<Pair<String, Long>>()
+
+    /** If true, call [release] when the attempt ends and [markUsed] if it connected. */
+    @Synchronized
+    fun admit(ip: String, token: String, nowMs: Long): Boolean {
+        used.entries.removeIf { nowMs - it.value > TOKEN_MEMORY_MS }
+        while (started.isNotEmpty() && nowMs - started.first().second >= 60_000L) started.removeFirst()
+        val fromIp = started.count { it.first == ip }
+        if (token in used || ip in outstanding || fromIp >= DiscoveryNode.MAX_CALLBACKS_PER_MINUTE ||
+            started.size >= DiscoveryNode.MAX_CALLBACKS_PER_MINUTE_TOTAL
+        ) return false
+        outstanding += ip
+        started.addLast(ip to nowMs)
+        return true
+    }
+
+    @Synchronized
+    fun markUsed(token: String, nowMs: Long) {
+        if (used.size >= MAX_TOKENS) used.remove(used.keys.first())
+        used[token] = nowMs
+    }
+
+    @Synchronized
+    fun release(ip: String) { outstanding -= ip }
+
+    private companion object {
+        const val TOKEN_MEMORY_MS = 120_000L
+        const val MAX_TOKENS = 256
     }
 }
