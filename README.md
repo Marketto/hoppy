@@ -9,7 +9,8 @@ Obiettivo: Windows, macOS, Linux, Android e iPhone, scegliendo da solo il canale
 veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto.
 
 > **Stato: proof of concept.** Funziona tra Windows/Linux/Mac, Android e iPhone/iPad sulla stessa rete Wi-Fi.
-> Il protocollo v0 **non è cifrato**: usalo solo su reti fidate (vedi `docs/decisions/0003-v0-unencrypted.md`).
+> Dal protocollo v1 i trasferimenti tra dispositivi aggiornati sono **cifrati** (vedi `docs/decisions/0010-v1-encryption.md`);
+> con le app vecchie (v0, oggi anche Android) restano **non cifrati**: usali solo su reti fidate.
 
 ## Cosa c'è oggi
 

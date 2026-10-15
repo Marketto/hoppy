@@ -85,6 +85,24 @@ pub struct Peer {
     pub device: DeviceInfo,
     /// Address for the TCP transfer connection.
     pub addr: SocketAddr,
+    /// `crypto` of its last datagram: `Some(1)` = v1 (encrypted sessions), `Some(0)` = a v0
+    /// node (old app), `None` = not discovered (an address typed by the user).
+    pub crypto: Option<u8>,
+}
+
+impl Peer {
+    /// A peer known only by its address (no id: no callback, no trust lookup).
+    pub fn at(addr: SocketAddr) -> Self {
+        Self {
+            device: DeviceInfo {
+                id: String::new(),
+                name: addr.to_string(),
+                platform: "?".into(),
+            },
+            addr,
+            crypto: None,
+        }
+    }
 }
 
 struct Seen {
@@ -678,6 +696,7 @@ fn receive_loop(inner: &Arc<Inner>, rx: &UdpSocket, stop: &AtomicBool) {
                     let peer = Peer {
                         device: msg.device(),
                         addr: SocketAddr::new(from.ip(), msg.port),
+                        crypto: Some(msg.crypto.unwrap_or(0)),
                     };
                     map.insert(
                         msg.id.clone(),

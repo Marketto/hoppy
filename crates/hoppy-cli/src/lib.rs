@@ -32,7 +32,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result};
 use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::transfer::serve;
-use hoppy_core::{DeviceInfo, Discovery, DiscoveryConfig, ReceiveHandler, Sweep, accept_callbacks};
+use hoppy_core::{
+    DeviceInfo, Discovery, DiscoveryConfig, Local, ReceiveHandler, Sweep, accept_callbacks,
+};
 
 /// `--seed` values: `IP` or `IP:PORT` (discovery port by default).
 pub fn parse_seeds(raw: &[String]) -> Result<Vec<SocketAddr>> {
@@ -121,10 +123,11 @@ pub fn receive_forever(
     listener: TcpListener,
     discovery: &Discovery,
     dir: PathBuf,
+    local: Local,
     handler: Arc<dyn ReceiveHandler>,
 ) -> ! {
-    accept_callbacks(discovery, dir.clone(), Arc::clone(&handler));
-    serve(listener, dir, handler)
+    accept_callbacks(discovery, dir.clone(), local.clone(), Arc::clone(&handler));
+    serve(listener, dir, local, handler)
 }
 
 /// Where received files go unless `--dir` says otherwise: `Downloads/Hoppy`.

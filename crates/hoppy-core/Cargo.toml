@@ -6,11 +6,13 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+curve25519-dalek = { version = "4.1", default-features = false }
 getrandom = "0.4.3"
 if-addrs = "0.15.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+snow = { version = "0.10", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-sha2", "use-curve25519", "use-getrandom"] }
 socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2.0.21"
 uuid = { version = "1.28.0", features = ["v4"] }

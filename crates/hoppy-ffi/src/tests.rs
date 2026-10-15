@@ -351,7 +351,7 @@ fn header_matches_exports() {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>()
     );
-    assert_eq!(exported.len(), 10, "{exported:?}");
+    assert_eq!(exported.len(), 16, "{exported:?}");
 }
 
 /// The Swift simulator test's flow (apps/ios/Tests/HoppyCoreTests.swift): the "iPad" sweeps
@@ -398,4 +398,108 @@ fn receiver_off_says_bye_to_sweeping_ipad() {
         hoppy_node_stop(tx);
         hoppy_node_stop(rx);
     }
+}
+
+fn c_string(s: *mut c_char) -> String {
+    assert!(!s.is_null());
+    // SAFETY: returned by the library.
+    let v = unsafe { CStr::from_ptr(s) }.to_str().unwrap().to_owned();
+    unsafe { hoppy_string_free(s) };
+    v
+}
+
+/// Protocol v1 through the C API: offer and send_session carry the same code, "They match"
+/// verifies, a QR scan verifies both sides, forget works, and the key persists in key_file.
+#[test]
+fn security_events_trust_and_qr() {
+    let data = tempfile::tempdir().unwrap();
+    let rx_dir = tempfile::tempdir().unwrap();
+    let (rx_events, tx_events) = (Events::default(), Events::default());
+    let rx_config = json!({"id": "rx-9", "name": "Desk", "platform": "linux",
+        "receive_dir": rx_dir.path(), "udp_port": 0, "tcp_port": 0, "receive": true,
+        "sweep": "off", "key_file": data.path().join("rx.key"),
+        "trust_file": data.path().join("rx-trust.json")});
+    let rx = start(rx_config.clone(), &rx_events);
+    let info = take(unsafe { hoppy_node_info(rx) });
+    let rx_fp = info["fingerprint"].as_str().unwrap().to_owned();
+    let tx = start(
+        json!({"id": "tx-9", "name": "Phone", "udp_port": 0,
+               "sweep": [format!("127.0.0.1:{}", info["udp_port"])],
+               "key_file": data.path().join("tx.key"),
+               "trust_file": data.path().join("tx-trust.json")}),
+        &tx_events,
+    );
+    let peers = tx_events.wait("peer", |v| {
+        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| !p.is_empty())
+    });
+    assert_eq!(peers["peers"][0]["encrypted"], true);
+    assert_eq!(peers["peers"][0]["trust"], "new");
+
+    let src = tempfile::tempdir().unwrap();
+    let file = src.path().join("a.txt");
+    fs::write(&file, b"hi").unwrap();
+    let id = send(tx, "rx-9", std::slice::from_ref(&file));
+    let offer = rx_events.wait("offer", |v| v["type"] == "offer");
+    let sec = &offer["security"];
+    assert_eq!(sec["encrypted"], true);
+    assert_eq!(sec["trust"], "new");
+    assert_eq!(sec["peer"]["id"], "tx-9");
+    assert_eq!(sec["sas"]["emoji"].as_array().unwrap().len(), 4);
+    let session = tx_events.wait("send_session", |v| {
+        v["type"] == "send_session" && v["transfer"] == id
+    });
+    assert_eq!(
+        session["security"]["sas"], sec["sas"],
+        "same code on both screens"
+    );
+    assert_eq!(session["security"]["peer"]["fingerprint"], rx_fp.as_str());
+    assert!(unsafe { hoppy_node_decide(rx, offer["offer"].as_u64().unwrap(), true) });
+    tx_events.wait("delivered", |v| {
+        v["type"] == "send_done" && v["outcome"] == "delivered"
+    });
+
+    // "They match" on the receiver.
+    let peer = CString::new(sec["peer"].to_string()).unwrap();
+    assert!(unsafe { hoppy_node_trust_verify(rx, peer.as_ptr()) });
+    let bad = CString::new(r#"{"id":"tx-9"}"#).unwrap();
+    assert!(!unsafe { hoppy_node_trust_verify(rx, bad.as_ptr()) });
+    let list = take(unsafe { hoppy_node_trust_list(rx) });
+    assert_eq!(list["peers"][0]["id"], "tx-9");
+    assert_eq!(list["peers"][0]["verified"], true);
+    assert_eq!(list["me"]["fingerprint"], rx_fp.as_str());
+
+    // The phone scans the desk's QR code: both sides verified.
+    let payload = c_string(unsafe { hoppy_node_qr_begin(rx) });
+    assert!(payload.starts_with("hoppy:verify:1:rx-9:"));
+    let p = CString::new(payload).unwrap();
+    let scan = unsafe { hoppy_node_qr_scan(tx, p.as_ptr(), ptr::null()) };
+    assert_ne!(scan, 0);
+    let done = tx_events.wait("qr_done", |v| v["type"] == "qr_done" && v["scan"] == scan);
+    assert_eq!(done["ok"], true, "{done}");
+    let verified = rx_events.wait("verified", |v| v["type"] == "verified");
+    assert_eq!(verified["peer"]["id"], "tx-9");
+    let list = take(unsafe { hoppy_node_trust_list(tx) });
+    assert_eq!(list["peers"][0]["verified"], true);
+    let junk = CString::new("not a code").unwrap();
+    assert_eq!(
+        unsafe { hoppy_node_qr_scan(tx, junk.as_ptr(), ptr::null()) },
+        0
+    );
+    unsafe { hoppy_node_qr_end(rx) };
+
+    // Forget, then the key file survives a restart.
+    let id_c = CString::new("rx-9").unwrap();
+    assert!(unsafe { hoppy_node_trust_forget(tx, id_c.as_ptr()) });
+    assert!(!unsafe { hoppy_node_trust_forget(tx, id_c.as_ptr()) });
+    unsafe {
+        hoppy_node_stop(tx);
+        hoppy_node_stop(rx);
+    }
+    let again = Events::default();
+    let rx = start(rx_config, &again);
+    assert_eq!(
+        take(unsafe { hoppy_node_info(rx) })["fingerprint"],
+        rx_fp.as_str()
+    );
+    unsafe { hoppy_node_stop(rx) };
 }

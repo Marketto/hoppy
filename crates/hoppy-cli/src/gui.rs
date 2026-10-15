@@ -53,8 +53,8 @@ use anyhow::{Result, bail};
 use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
 use hoppy_core::{
-    Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, accept_callbacks,
-    send_to_peer,
+    Discovery, Error, Local, Offer, Peer, PeerKey, Progress, ReceiveHandler, SendOutcome,
+    SessionInfo, TrustState, accept_callbacks, send_to_peer,
 };
 
 use crate::firewall::{self, Verdict};
@@ -141,6 +141,18 @@ pub struct Strings {
     pub accept: &'static str,
     pub decline: &'static str,
     pub no_dialog_tool: &'static str,
+    // Protocol v1 security (interim texts; phase 2 adds proper verify dialogs and QR).
+    pub sec_code: &'static str,
+    pub sec_verified: &'static str,
+    pub sec_plain: &'static str,
+    pub sec_new: &'static str,
+    pub sec_known: &'static str,
+    pub waiting_code: &'static str,
+    pub waiting_plain: &'static str,
+    pub key_changed_title: &'static str,
+    pub key_changed_text: &'static str,
+    pub plain_refused_title: &'static str,
+    pub verified_title: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -204,6 +216,17 @@ pub const IT: Strings = Strings {
     accept: "Accetta",
     decline: "Rifiuta",
     no_dialog_tool: "Per scegliere file e dispositivi Hoppy usa zenity: installalo con «sudo apt install zenity».",
+    sec_code: "🔒 Cifrato · {state} · codice {emoji} ({digits}): controlla che sia uguale sull'altro dispositivo",
+    sec_verified: "🔒 Cifrato · ✓ dispositivo verificato",
+    sec_plain: "⚠ Non cifrato: {name} usa una versione vecchia di Hoppy",
+    sec_new: "nuovo dispositivo",
+    sec_known: "dispositivo già visto",
+    waiting_code: "In attesa che {name} accetti… codice {digits}",
+    waiting_plain: "In attesa che {name} accetti… (non cifrato)",
+    key_changed_title: "Attenzione: la chiave di sicurezza di «{name}» è cambiata",
+    key_changed_text: "Il trasferimento è stato bloccato. Se {name} è stato reinstallato, dimenticalo (hoppy trust forget) e riprova; altrimenti qualcuno potrebbe fingersi {name}.",
+    plain_refused_title: "{name} ha provato a inviare senza cifratura: rifiutato",
+    verified_title: "{name} è ora verificato ✓",
 };
 
 pub const EN: Strings = Strings {
@@ -267,6 +290,17 @@ pub const EN: Strings = Strings {
     accept: "Accept",
     decline: "Decline",
     no_dialog_tool: "Hoppy needs zenity to pick files and devices: install it with \"sudo apt install zenity\".",
+    sec_code: "🔒 Encrypted · {state} · code {emoji} ({digits}): check it is the same on the other device",
+    sec_verified: "🔒 Encrypted · ✓ verified device",
+    sec_plain: "⚠ Not encrypted: {name} runs an old Hoppy version",
+    sec_new: "new device",
+    sec_known: "known device",
+    waiting_code: "Waiting for {name} to accept… code {digits}",
+    waiting_plain: "Waiting for {name} to accept… (not encrypted)",
+    key_changed_title: "Warning: the security key of \"{name}\" has changed",
+    key_changed_text: "The transfer was blocked. If {name} was reinstalled, forget it (hoppy trust forget) and try again; otherwise someone may be pretending to be {name}.",
+    plain_refused_title: "{name} tried to send without encryption: refused",
+    verified_title: "{name} is now verified ✓",
 };
 
 pub fn strings() -> &'static Strings {
@@ -383,6 +417,32 @@ pub fn offer_body(s: &Strings, offer: &Offer, from: SocketAddr) -> String {
     body
 }
 
+/// One line about the session's protection for the accept dialog (interim UI).
+// TODO(phase 2): real dialog: "Verify now" / "Later" for New/Known peers, the 4 emoji
+// with a "show as numbers" switch and "They match", a QR code when the sender is a phone,
+// and ✓ next to verified devices in the device menu.
+pub fn security_line(s: &Strings, session: &SessionInfo, sender_name: &str) -> String {
+    match (session.trust, &session.sas) {
+        (Some(TrustState::Verified), _) => s.sec_verified.to_owned(),
+        (Some(trust), Some(sas)) => {
+            let state = if trust == TrustState::New {
+                s.sec_new
+            } else {
+                s.sec_known
+            };
+            fill(
+                s.sec_code,
+                &[
+                    ("state", state),
+                    ("emoji", &sas.text),
+                    ("digits", &sas.digits),
+                ],
+            )
+        }
+        _ => fill(s.sec_plain, &[("name", sender_name)]),
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -468,12 +528,17 @@ struct GuiReceiver {
 }
 
 impl ReceiveHandler for GuiReceiver {
-    fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
+    fn decide(&self, offer: &Offer, from: SocketAddr, session: &SessionInfo) -> bool {
         let Some(_asking) = DialogGuard::try_take(&self.asking) else {
             diag::log(format!("receive: offer from {} declined (busy)", from.ip()));
             return false; // another offer is waiting for an answer
         };
-        let body = offer_body(self.s, offer, from);
+        let name = display_name(&offer.sender.name);
+        let body = format!(
+            "{}\n\n{}",
+            offer_body(self.s, offer, from),
+            security_line(self.s, session, &name)
+        );
         let accepted = ui::message_box_yes_no(self.s.incoming_title, &body);
         diag::log(format!(
             "receive: offer of {} file(s) from {}: accepted={accepted}",
@@ -515,6 +580,45 @@ impl ReceiveHandler for GuiReceiver {
             }
         };
         lock(&self.notices).push_back(notice);
+        self.waker.wake();
+    }
+
+    fn blocked(&self, from: SocketAddr, offer: &Offer, _session: &SessionInfo, reason: &str) {
+        let name = display_name(&offer.sender.name);
+        diag::log(format!(
+            "receive: offer from {} refused: {reason}",
+            from.ip()
+        ));
+        let (title, text) = if reason == "key_changed" {
+            (
+                fill(self.s.key_changed_title, &[("name", &name)]),
+                fill(self.s.key_changed_text, &[("name", &name)]),
+            )
+        } else {
+            (
+                fill(self.s.plain_refused_title, &[("name", &name)]),
+                String::new(),
+            )
+        };
+        lock(&self.notices).push_back(Notice {
+            title,
+            text,
+            error: true,
+            action: BalloonAction::Nothing,
+        });
+        self.waker.wake();
+    }
+
+    fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
+        lock(&self.notices).push_back(Notice {
+            title: fill(
+                self.s.verified_title,
+                &[("name", &display_name(&peer.name))],
+            ),
+            text: String::new(),
+            error: false,
+            action: BalloonAction::Nothing,
+        });
         self.waker.wake();
     }
 }
@@ -820,7 +924,8 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     };
     // Before the icon exists, so nothing is waiting on the UI thread yet.
     let identity = config::load_or_create()?;
-    let me = config::device_info(&identity);
+    let local = config::local(&identity)?;
+    let me = local.device.clone();
     let dir = default_receive_dir()?;
     let listener = bind_receiver(TRANSFER_PORT)?;
     let discovery = start_discovery(&me, listener.local_addr()?.port(), &[])?;
@@ -848,9 +953,9 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
         asking: AtomicBool::new(false),
     });
     // Same folder and handler for both paths, so `GuiReceiver::asking` covers callbacks too.
-    accept_callbacks(&discovery, dir.clone(), handler.clone());
+    accept_callbacks(&discovery, dir.clone(), local.clone(), handler.clone());
     let serve_dir = dir.clone();
-    thread::spawn(move || serve(listener, serve_dir, handler));
+    thread::spawn(move || serve(listener, serve_dir, local, handler));
 
     let updates = Arc::new(Mutex::new(Updates::default()));
     let mode = update_mode();
@@ -1421,12 +1526,16 @@ struct SendState {
     pct: Option<u64>,
     /// The direct connection failed; waiting for a callback (spec §6).
     fallback: bool,
+    /// The session is set up (spec §7): what to show while waiting for "Accept".
+    session: Option<SessionInfo>,
     outcome: Option<Result<SendOutcome, SendError>>,
 }
 
 enum SendError {
     /// Neither direct nor callback reached the peer: show the firewall hint.
     Unreachable,
+    /// The peer's key is not the remembered one: nothing was sent (spec §7.5).
+    KeyChanged,
     Other(String),
 }
 
@@ -1471,8 +1580,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
         .map(|m| m.len())
         .sum();
     let identity = config::load_or_create()?;
-    let me = config::device_info(&identity);
-    let discovery = Arc::new(start_discovery(&me, 0, &[])?);
+    let local = config::local(&identity)?;
+    let discovery = Arc::new(start_discovery(&local.device, 0, &[])?);
 
     let tray = Tray::new(SEND_WINDOW, s.searching)?;
     // Linux: a Cancel button on the "Looking for devices…" notification.
@@ -1522,16 +1631,17 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         tray.set_menu(&[MenuItem::Action(ID_CANCEL, s.cancel_send)]);
                         tray.set_tip(&fill(s.waiting, &[("name", &name)]));
                         let files = files.take().unwrap_or_default();
-                        spawn_send(&discovery, peer, files, &state, tray.waker());
+                        spawn_send(&discovery, &local, peer, files, &state, tray.waker());
                         phase = Phase::Sending(name);
                     }
                     _ => break, // "Cancel" or menu dismissed
                 }
             }
             (TrayEvent::Wake, Phase::Sending(name)) => {
-                let (accepted, pct, fallback, outcome) = {
+                let (accepted, pct, fallback, session, outcome) = {
                     let mut st = lock(&state);
-                    (st.accepted, st.pct, st.fallback, st.outcome.take())
+                    let session = st.session.clone();
+                    (st.accepted, st.pct, st.fallback, session, st.outcome.take())
                 };
                 if let Some(outcome) = outcome {
                     let delivered = matches!(outcome, Ok(SendOutcome::Delivered));
@@ -1551,6 +1661,11 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         Err(SendError::Unreachable) => {
                             (s.unreachable_title, s.unreachable_text.to_owned(), true)
                         }
+                        Err(SendError::KeyChanged) => (
+                            s.key_changed_title,
+                            fill(s.key_changed_text, &[("name", name)]),
+                            true,
+                        ),
                         Err(SendError::Other(e)) => {
                             (s.send_failed, display_text(&e, SHOW_TEXT_MAX), true)
                         }
@@ -1563,6 +1678,15 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                 } else if let Some(pct) = pct {
                     let pct = pct.to_string();
                     tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
+                } else if let (Some(session), false) = (&session, accepted) {
+                    // TODO(phase 2): show the emoji (and a QR code for phones) in a window.
+                    let tip = match &session.sas {
+                        Some(sas) => {
+                            fill(s.waiting_code, &[("name", name), ("digits", &sas.digits)])
+                        }
+                        None => fill(s.waiting_plain, &[("name", name)]),
+                    };
+                    tray.set_tip(&tip);
                 } else if fallback && !accepted {
                     tray.set_tip(&fill(s.fallback, &[("name", name)]));
                 }
@@ -1601,16 +1725,21 @@ fn spawn_search(discovery: &Arc<Discovery>, state: &Arc<Mutex<SendState>>, waker
 
 fn spawn_send(
     discovery: &Arc<Discovery>,
+    local: &Local,
     peer: Peer,
     files: Vec<PathBuf>,
     state: &Arc<Mutex<SendState>>,
     waker: Waker,
 ) {
-    let (discovery, state) = (Arc::clone(discovery), Arc::clone(state));
+    let (discovery, state, local) = (Arc::clone(discovery), Arc::clone(state), local.clone());
     thread::spawn(move || {
         let mut last = None;
-        let me = discovery.me().clone();
-        let result = send_to_peer(&peer, &me, Some(&discovery), &files, &mut |p| match p {
+        let result = send_to_peer(&peer, &local, Some(&discovery), &files, &mut |p| match p {
+            Progress::Session(session) => {
+                diag::log(format!("send: encrypted={}", session.encrypted));
+                lock(&state).session = Some(session);
+                waker.wake();
+            }
             // Direct connect failed (firewalled receiver?): asking it to connect back.
             Progress::Fallback => {
                 diag::log("send: direct connection failed, trying a callback");
@@ -1637,6 +1766,7 @@ fn spawn_send(
         }
         lock(&state).outcome = Some(result.map_err(|e| match e {
             Error::Unreachable(_) => SendError::Unreachable,
+            Error::KeyChanged(_) => SendError::KeyChanged,
             e => SendError::Other(e.to_string()),
         }));
         waker.wake();
@@ -1684,6 +1814,14 @@ mod tests {
                 s.menu_update,
                 s.menu_download,
                 s.update_progress,
+                s.sec_code,
+                s.sec_plain,
+                s.waiting_code,
+                s.waiting_plain,
+                s.key_changed_title,
+                s.key_changed_text,
+                s.plain_refused_title,
+                s.verified_title,
             ]
         };
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
@@ -1742,6 +1880,7 @@ mod tests {
                 platform: "android".into(),
             },
             addr: "10.0.0.2:47471".parse().unwrap(),
+            crypto: Some(1),
         };
         assert_eq!(peer_label(&peer), "Pixel & co · Android");
         let spoof = Peer {
@@ -1774,6 +1913,29 @@ mod tests {
             body,
             "Pixel (android, 10.0.0.9) wants to send you 2 file(s), 2 B:\n• agpj.exe\n• (?)"
         );
+    }
+
+    #[test]
+    fn security_lines() {
+        let plain = SessionInfo::plaintext();
+        assert_eq!(
+            security_line(&EN, &plain, "Old phone"),
+            "⚠ Not encrypted: Old phone runs an old Hoppy version"
+        );
+        let sas = hoppy_core::Sas::from_value(0);
+        let mut session = SessionInfo {
+            encrypted: true,
+            peer: None,
+            trust: Some(TrustState::New),
+            sas: Some(sas),
+        };
+        assert_eq!(
+            security_line(&IT, &session, "x"),
+            "🔒 Cifrato · nuovo dispositivo · codice 🐘🐘🐘🐘 (0000 0000): controlla che sia \
+             uguale sull'altro dispositivo"
+        );
+        session.trust = Some(TrustState::Verified);
+        assert_eq!(security_line(&EN, &session, "x"), EN.sec_verified);
     }
 
     fn quiet_discovery(name: &str, transfer_port: u16, seed: Option<u16>) -> Discovery {

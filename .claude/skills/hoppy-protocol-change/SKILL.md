@@ -39,3 +39,11 @@ The protocol has **three implementations** that must agree byte for byte:
 - Partial data is never visible as a finished file; it is deleted on any error.
 - Timeouts on every blocking read; a silent peer cannot pin a thread forever.
 - Unknown/foreign-version discovery messages are ignored, never crash.
+
+## v1 encryption (§7, ADR 0010)
+
+- Session crypto, SAS (emoji + 8 digits), QR verification and the TOFU trust store live in
+  `crates/hoppy-core/src/{crypto,session,trust}.rs`, `tools/hoppy_ref.py` (pure-Python X25519/ChaCha20-Poly1305/Noise XX)
+  and the Kotlin core; all three must match the `v1` block of `docs/test-vectors.json` byte for byte.
+- Security checklist: keep the SAS commit/reveal, never fall back to plaintext for a peer that advertised
+  `crypto` or whose key is remembered, KeyChanged always blocks, the emoji table is fixed (64 entries).

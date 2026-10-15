@@ -39,7 +39,11 @@
    entitlement (sweep off), App Group (shared name for the Share extension).
 
 ## v1 — secure & resumable
-- Encryption + pairing (ADR to write), resume via per-chunk hashes.
+- Encryption + device verification (ADR 0010): phase 1 done — spec §7, Rust core, Python
+  reference, vectors, CLI (`hoppy trust`), FFI. Phase 2: Kotlin core v1 + Android UI (verify
+  dialog, QR scanner, ✓), desktop dialogs (emoji/number switch, "Coincide", QR display),
+  iOS UI (`key_file`/`trust_file`, scanner); then switch plaintext off.
+- Resume via per-chunk hashes.
 - Single engine: Rust core on Android via UniFFI (ADR 0002); iOS already uses it (ADR 0009).
 - iPhone/iPad: Wi-Fi Aware (iOS 26) when no shared network.
 

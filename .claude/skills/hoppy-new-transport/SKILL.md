@@ -16,7 +16,7 @@ Read first: `docs/architecture.md` (§ transport selection) and `docs/roadmap.md
    content+hash, result) runs over any reliable byte stream; new transports provide a
    stream, not a new protocol.
 3. **Encryption before internet.** No remote/relay transport ships before protocol v1
-   (Noise/TLS with pinned device keys, ADR 0003 follow-up).
+   (done: Noise XX with TOFU-pinned device keys, ADR 0010; a relay requires plaintext v0 to be switched off first).
 4. **Platform limits are product facts**: iOS has no Wi-Fi Direct/BT classic for apps but
    has Wi-Fi Aware (iOS 26, iPhone 12+); background receiving on iOS is limited; without a
    paid account there is no multicast (unicast sweep, ADR 0009). Record

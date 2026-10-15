@@ -1,4 +1,5 @@
-//! Persistent device identity and preferences: `<config dir>/hoppy/device.json`.
+//! Persistent device identity and preferences: `<config dir>/hoppy/device.json`, plus the
+//! protocol v1 device key (`identity.key`, owner-only) and trust store (`trust.json`).
 //! `HOPPY_CONFIG_DIR` overrides the location (tests, portable installs).
 //! New fields need `#[serde(default)]` so files written by older versions still load
 //! (older versions ignore unknown fields).
@@ -7,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use hoppy_core::DeviceInfo;
+use hoppy_core::{DeviceInfo, DeviceKey, Local, Trust};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +105,22 @@ pub fn device_info(identity: &Identity) -> DeviceInfo {
         name: identity.name.clone(),
         platform: DeviceInfo::current_platform().to_string(),
     }
+}
+
+/// Device key file (spec §7.5): created on first run, never leaves this machine.
+pub const KEY_FILE: &str = "identity.key";
+/// Trust store (spec §7.5): remembered and verified devices.
+pub const TRUST_FILE: &str = "trust.json";
+
+/// This device for protocol v1 sessions: `identity` + the key and trust store in the config
+/// folder (created on first use).
+pub fn local(identity: &Identity) -> Result<Local> {
+    let dir = config_dir()?;
+    let key = DeviceKey::load_or_create(&dir.join(KEY_FILE))
+        .with_context(|| format!("device key in {}", dir.display()))?;
+    let trust = Trust::open(&dir.join(TRUST_FILE))
+        .with_context(|| format!("trust store {}", dir.join(TRUST_FILE).display()))?;
+    Ok(Local::new(device_info(identity), key, trust))
 }
 
 fn default_name() -> String {

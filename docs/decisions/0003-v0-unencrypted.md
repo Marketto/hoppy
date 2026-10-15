@@ -1,5 +1,5 @@
 # 0003. Protocol v0 is unencrypted and LAN-only
-Status: Accepted (temporary)
+Status: Superseded by 0010 (v0 stays as the plaintext fallback for old apps during the transition)
 Date: 2026-10-14
 
 ## Context

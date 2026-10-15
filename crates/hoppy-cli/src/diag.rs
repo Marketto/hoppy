@@ -165,6 +165,10 @@ pub fn error_kind(e: &hoppy_core::Error) -> String {
         Error::Input(_) => "input error".into(),
         Error::Remote(_) => "remote error".into(),
         Error::Unreachable(_) => "peer unreachable".into(),
+        Error::Crypto(_) => "encryption error".into(),
+        Error::KeyChanged(_) => "peer key changed".into(),
+        Error::VerificationFailed(_) => "verification failed".into(),
+        Error::Unencrypted(_) => "not encrypted".into(),
     }
 }
 

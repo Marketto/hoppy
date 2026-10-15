@@ -12,16 +12,37 @@
 //! `hoppy_node_stop` returns, the callback is never called again, so `ctx` may be freed.
 //!
 //! Event JSON (`type` field):
-//! - `peers`: `{"peers":[{"id","name","platform","addr"}]}` whenever the list changes.
+//! - `peers`: `{"peers":[{"id","name","platform","addr","encrypted","trust"}]}` whenever the
+//!   list changes. `encrypted`: the device speaks protocol v1; `trust`: `"new"` (never
+//!   seen), `"known"` or `"verified"` from the trust store (by id; the key itself is checked
+//!   in each session).
 //! - `receiving`: `{"on":bool,"port":u16}` after `hoppy_node_set_receiving`.
-//! - `offer`: `{"offer":u64,"from":{"name","platform"},"files":[{"name","size"}],"count","total"}`
-//!   — answer with `hoppy_node_decide` within `decision_timeout_secs` (default 110 s, 1–115) or it
-//!   is declined (invariant 3: never auto-accept). Names are already display-safe.
+//! - `offer`: `{"offer":u64,"from":{"name","platform"},"files":[{"name","size"}],"count","total",
+//!   "security":SECURITY}` — answer with `hoppy_node_decide` within `decision_timeout_secs`
+//!   (default 110 s, 1–115) or it is declined (invariant 3: never auto-accept). Names are
+//!   already display-safe.
 //! - `offer_closed`: `{"offer":u64}` — timed out or the node stopped.
+//! - `blocked`: `{"from":{"id","name","platform"},"reason":"key_changed"|"encryption_required"}`
+//!   — an offer declined without asking: warn the user (spec §7.5).
+//! - `verified`: `{"peer":{"id","name","platform","fingerprint"}}` — a device scanned our QR
+//!   code (spec §7.7): show ✓, close the QR code.
 //! - `receive_progress`: `{"done","total"}` (throttled).
 //! - `received`: `{"ok":true,"from","files":[path…]}` or `{"ok":false,"from","error"}`.
+//! - `send_session`: `{"transfer","security":SECURITY}` — before the offer goes out: show the
+//!   code while waiting for the receiver.
 //! - `send_progress`: `{"transfer","done","total"}` (throttled); `send_fallback`: `{"transfer"}`.
-//! - `send_done`: `{"transfer","outcome":"delivered"|"declined"|"unreachable"|"error","message"?}`.
+//! - `send_done`: `{"transfer","outcome":"delivered"|"declined"|"unreachable"|"key_changed"|
+//!   "unencrypted"|"error","message"?}`.
+//! - `qr_done`: `{"scan","ok","local","remote","error"?}` after `hoppy_node_qr_scan`: `local`
+//!   = this device marked the other verified, `remote` = the other device confirmed too.
+//!
+//! SECURITY (spec §7): `{"encrypted":false}` for an old (v0) peer — show "non cifrato" —
+//! else `{"encrypted":true,"trust":"new"|"known"|"verified","peer":PEER,"sas":{"value",
+//! "emoji":[4 indices],"text","digits","it":[4 names],"en":[4 names]}}` with
+//! PEER = `{"id","name","platform","fingerprint"}` (pass it back to
+//! `hoppy_node_trust_verify` after "They match", or to `hoppy_node_qr_scan` as the live peer).
+//! Keys: `key_file` / `trust_file` in the config (the app's private container); without them
+//! the node uses a throw-away key and remembers nothing (tests only).
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -38,8 +59,9 @@ use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::sanitize::{display_text, sanitize_file_name};
 use hoppy_core::transfer::receive_one;
 use hoppy_core::{
-    DeviceInfo, Discovery, DiscoveryConfig, Error, Offer, Peer, Progress, ReceiveHandler,
-    SendOutcome, Sweep, accept_callbacks, send_to_peer,
+    DeviceInfo, DeviceKey, Discovery, DiscoveryConfig, Error, Local, Offer, Peer, PeerKey,
+    Progress, ReceiveHandler, SendOutcome, SessionInfo, Sweep, Trust, TrustState, TrustStore,
+    accept_callbacks, confirm_qr, send_to_peer,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -86,6 +108,12 @@ struct Config {
     seeds: Vec<String>,
     #[serde(default = "default_decision_timeout")]
     decision_timeout_secs: u64,
+    /// Device key file (spec §7.5), created on first use, owner-only. Absent: throw-away key.
+    #[serde(default)]
+    key_file: Option<PathBuf>,
+    /// Trust store JSON file. Absent: in memory only.
+    #[serde(default)]
+    trust_file: Option<PathBuf>,
 }
 
 fn default_platform() -> String {
@@ -189,7 +217,54 @@ fn show_name(raw: &str) -> String {
     if s.is_empty() { "?".into() } else { s }
 }
 
-fn offer_event(id: u64, offer: &Offer) -> Value {
+fn trust_name(t: TrustState) -> &'static str {
+    match t {
+        TrustState::New => "new",
+        TrustState::Known => "known",
+        TrustState::Verified => "verified",
+        TrustState::KeyChanged => "key_changed",
+    }
+}
+
+fn peer_key_json(p: &PeerKey) -> Value {
+    json!({
+        "id": p.id,
+        "name": show_name(&p.name),
+        "platform": show_name(&p.platform),
+        "fingerprint": p.fingerprint,
+    })
+}
+
+/// SECURITY object of the events (see the module docs).
+fn security_json(session: &SessionInfo) -> Value {
+    match (&session.peer, session.trust, &session.sas) {
+        (Some(peer), Some(trust), Some(sas)) if session.encrypted => json!({
+            "encrypted": true,
+            "trust": trust_name(trust),
+            "peer": peer_key_json(peer),
+            "sas": {
+                "value": sas.value, "emoji": sas.emoji, "text": sas.text, "digits": sas.digits,
+                "it": sas.words(true), "en": sas.words(false),
+            },
+        }),
+        _ => json!({ "encrypted": false }),
+    }
+}
+
+/// A PEER object coming back from the app (`hoppy_node_trust_verify`, `qr_scan`).
+fn parse_peer_key(text: &str) -> Option<PeerKey> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let key = PeerKey {
+        id: field("id")?,
+        name: field("name").unwrap_or_default(),
+        platform: field("platform").unwrap_or_default(),
+        fingerprint: field("fingerprint")?,
+    };
+    (!key.id.is_empty() && hoppy_core::crypto::is_fingerprint(&key.fingerprint)).then_some(key)
+}
+
+fn offer_event(id: u64, offer: &Offer, session: &SessionInfo) -> Value {
     let files: Vec<Value> = offer
         .files
         .iter()
@@ -213,13 +288,14 @@ fn offer_event(id: u64, offer: &Offer) -> Value {
         "files": files,
         "count": offer.files.len(),
         "total": offer.total_size(),
+        "security": security_json(session),
     })
 }
 
 struct Handler(Arc<Shared>);
 
 impl ReceiveHandler for Handler {
-    fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
+    fn decide(&self, offer: &Offer, from: SocketAddr, session: &SessionInfo) -> bool {
         let s = &self.0;
         let id = s.next_offer.fetch_add(1, Ordering::Relaxed);
         {
@@ -229,7 +305,7 @@ impl ReceiveHandler for Handler {
             }
             a.current = Some((id, None));
         }
-        s.events.emit(offer_event(id, offer));
+        s.events.emit(offer_event(id, offer, session));
         let deadline = Instant::now() + s.decision_timeout;
         let mut a = s.asking.lock().unwrap_or_else(|e| e.into_inner());
         let answer = loop {
@@ -260,6 +336,24 @@ impl ReceiveHandler for Handler {
                 .insert(from, show_name(&offer.sender.name));
         }
         accept
+    }
+
+    fn blocked(&self, _from: SocketAddr, offer: &Offer, _session: &SessionInfo, reason: &str) {
+        self.0.events.emit(json!({
+            "type": "blocked",
+            "from": {
+                "id": offer.sender.id,
+                "name": show_name(&offer.sender.name),
+                "platform": show_name(&offer.sender.platform),
+            },
+            "reason": reason,
+        }));
+    }
+
+    fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
+        self.0
+            .events
+            .emit(json!({ "type": "verified", "peer": peer_key_json(peer) }));
     }
 
     fn progress(&self, from: SocketAddr, event: Progress) {
@@ -317,7 +411,7 @@ struct Receiver {
 
 /// A running Hoppy node (opaque to C).
 pub struct Node {
-    me: DeviceInfo,
+    local: Local,
     shared: Arc<Shared>,
     discovery: Arc<Discovery>,
     receive_dir: Option<PathBuf>,
@@ -329,12 +423,19 @@ pub struct Node {
     send_progress: Arc<Mutex<HashMap<u64, Instant>>>,
 }
 
-fn peer_json(p: &Peer) -> Value {
+fn peer_json(p: &Peer, trust: &TrustStore) -> Value {
+    let state = match trust.peers.get(&p.device.id) {
+        None => "new",
+        Some(e) if e.verified => "verified",
+        Some(_) => "known",
+    };
     json!({
         "id": p.device.id,
         "name": show_name(&p.device.name),
         "platform": show_name(&p.device.platform),
         "addr": p.addr.ip().to_string(),
+        "encrypted": p.crypto.unwrap_or(0) >= 1,
+        "trust": state,
     })
 }
 
@@ -354,6 +455,15 @@ impl Node {
             name: cfg.name.chars().take(NAME_MAX).collect(),
             platform: cfg.platform.clone(),
         };
+        let key = match &cfg.key_file {
+            Some(path) => DeviceKey::load_or_create(path).map_err(|e| format!("key_file: {e}"))?,
+            None => DeviceKey::generate(),
+        };
+        let trust = match &cfg.trust_file {
+            Some(path) => Trust::open(path).map_err(|e| format!("trust_file: {e}"))?,
+            None => Trust::in_memory(TrustStore::new()),
+        };
+        let local = Local::new(me.clone(), key, trust);
         let mut dcfg = DiscoveryConfig::new(me.clone(), 0);
         dcfg.bind_port = cfg.udp_port;
         dcfg.use_multicast = cfg.multicast;
@@ -387,10 +497,15 @@ impl Node {
         let discovery = Arc::new(discovery);
         if let Some(dir) = &cfg.receive_dir {
             // Callbacks (spec §6) are answered only while receiving (transfer port != 0).
-            accept_callbacks(&discovery, dir.clone(), Arc::new(Handler(shared.clone())));
+            accept_callbacks(
+                &discovery,
+                dir.clone(),
+                local.clone(),
+                Arc::new(Handler(shared.clone())),
+            );
         }
         let node = Node {
-            me,
+            local,
             shared,
             discovery,
             receive_dir: cfg.receive_dir.clone(),
@@ -409,23 +524,28 @@ impl Node {
     }
 
     fn start_poller(&self) {
-        let (discovery, shared, stop) = (
+        let (discovery, shared, stop, trust) = (
             self.discovery.clone(),
             self.shared.clone(),
             self.stop.clone(),
+            self.local.trust.clone(),
         );
         let handle = thread::Builder::new()
             .name("hoppy-ffi-peers".into())
             .spawn(move || {
-                let mut last: Option<Vec<Peer>> = None;
+                let mut last: Option<Vec<Value>> = None;
                 while !stop.load(Ordering::Relaxed) {
-                    let peers = discovery.peers();
-                    if last.as_ref() != Some(&peers) {
-                        let list: Vec<Value> = peers.iter().map(peer_json).collect();
+                    let store = trust.snapshot();
+                    let list: Vec<Value> = discovery
+                        .peers()
+                        .iter()
+                        .map(|p| peer_json(p, &store))
+                        .collect();
+                    if last.as_ref() != Some(&list) {
                         shared
                             .events
-                            .emit(json!({ "type": "peers", "peers": list }));
-                        last = Some(peers);
+                            .emit(json!({ "type": "peers", "peers": list.clone() }));
+                        last = Some(list);
                     }
                     thread::sleep(PEER_POLL);
                 }
@@ -436,16 +556,74 @@ impl Node {
 
     fn info(&self) -> Value {
         json!({
-            "id": self.me.id,
-            "name": self.me.name,
-            "platform": self.me.platform,
+            "id": self.local.device.id,
+            "name": self.local.device.name,
+            "platform": self.local.device.platform,
             "udp_port": self.discovery.local_port(),
             "tcp_port": self.discovery.transfer_port(),
+            "fingerprint": self.local.fingerprint(),
         })
     }
 
     fn peers(&self) -> Value {
-        Value::Array(self.discovery.peers().iter().map(peer_json).collect())
+        let store = self.local.trust.snapshot();
+        Value::Array(
+            self.discovery
+                .peers()
+                .iter()
+                .map(|p| peer_json(p, &store))
+                .collect(),
+        )
+    }
+
+    fn trust_list(&self) -> Value {
+        let store = self.local.trust.snapshot();
+        let peers: Vec<Value> = store
+            .peers
+            .iter()
+            .map(|(id, e)| {
+                json!({
+                    "id": id, "name": show_name(&e.name), "fingerprint": e.fingerprint,
+                    "first_seen": e.first_seen, "verified": e.verified,
+                })
+            })
+            .collect();
+        json!({ "me": { "fingerprint": self.local.fingerprint() }, "peers": peers })
+    }
+
+    /// QR scan (spec §7.7), on a worker: local check, then tell the other device.
+    fn qr_scan(&self, payload: String, live: Option<PeerKey>) -> u64 {
+        let id = self.next_transfer.fetch_add(1, Ordering::Relaxed);
+        let (discovery, shared, local) = (
+            self.discovery.clone(),
+            self.shared.clone(),
+            self.local.clone(),
+        );
+        let spawned = thread::Builder::new()
+            .name("hoppy-ffi-qr".into())
+            .spawn(move || {
+                let done = |local_ok: bool, remote: bool, error: Option<String>| {
+                    shared.events.emit(json!({
+                        "type": "qr_done", "scan": id, "ok": local_ok && remote,
+                        "local": local_ok, "remote": remote, "error": error,
+                    }));
+                };
+                let (qr, _) = match local.trust.check_qr(&payload, live.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return done(false, false, Some(e.to_string())),
+                };
+                let Some(peer) = wait_for_peer(&discovery, &qr.id) else {
+                    return done(true, false, Some("device not found".into()));
+                };
+                match confirm_qr(&peer, &local, Some(&discovery), &qr) {
+                    Ok(()) => done(true, true, None),
+                    Err(e) => done(true, false, Some(e.to_string())),
+                }
+            });
+        if spawned.is_err() {
+            return 0;
+        }
+        id
     }
 
     /// Turns the TCP receiver on/off; returns the port (0 = off).
@@ -469,9 +647,10 @@ impl Node {
             let stop = Arc::new(AtomicBool::new(false));
             let handler = Arc::new(Handler(self.shared.clone()));
             let stop2 = stop.clone();
+            let local = self.local.clone();
             let thread = thread::Builder::new()
                 .name("hoppy-ffi-accept".into())
-                .spawn(move || accept_loop(listener, dir, handler, &stop2))
+                .spawn(move || accept_loop(listener, dir, local, handler, &stop2))
                 .map_err(|e| e.to_string())?;
             *slot = Some(Receiver { stop, thread, port });
             self.discovery.set_transfer_port(port);
@@ -496,10 +675,10 @@ impl Node {
 
     fn send(&self, peer_id: String, paths: Vec<PathBuf>) -> u64 {
         let id = self.next_transfer.fetch_add(1, Ordering::Relaxed);
-        let (discovery, shared, me, progress_map) = (
+        let (discovery, shared, local, progress_map) = (
             self.discovery.clone(),
             self.shared.clone(),
-            self.me.clone(),
+            self.local.clone(),
             self.send_progress.clone(),
         );
         let spawned = thread::Builder::new()
@@ -515,6 +694,12 @@ impl Node {
                     return done("unreachable", Some("device not found".into()));
                 };
                 let mut progress = |p: Progress| match p {
+                    Progress::Session(session) => {
+                        shared.events.emit(json!({
+                            "type": "send_session", "transfer": id,
+                            "security": security_json(&session),
+                        }));
+                    }
                     Progress::Fallback => {
                         shared
                             .events
@@ -529,7 +714,7 @@ impl Node {
                     }
                     _ => {}
                 };
-                let result = send_to_peer(&peer, &me, Some(&discovery), &paths, &mut progress);
+                let result = send_to_peer(&peer, &local, Some(&discovery), &paths, &mut progress);
                 progress_map
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -538,6 +723,8 @@ impl Node {
                     Ok(SendOutcome::Delivered) => done("delivered", None),
                     Ok(SendOutcome::Declined(reason)) => done("declined", reason),
                     Err(Error::Unreachable(m)) => done("unreachable", Some(m)),
+                    Err(e @ Error::KeyChanged(_)) => done("key_changed", Some(e.to_string())),
+                    Err(e @ Error::Unencrypted(_)) => done("unencrypted", Some(e.to_string())),
                     Err(e) => done("error", Some(e.to_string())),
                 }
             });
@@ -582,16 +769,24 @@ fn wait_for_peer(discovery: &Discovery, id: &str) -> Option<Peer> {
     }
 }
 
-fn accept_loop(listener: TcpListener, dir: PathBuf, handler: Arc<Handler>, stop: &AtomicBool) {
+fn accept_loop(
+    listener: TcpListener,
+    dir: PathBuf,
+    local: Local,
+    handler: Arc<Handler>,
+    stop: &AtomicBool,
+) {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, from)) => {
                 let _ = stream.set_nonblocking(false);
-                let (dir, handler) = (dir.clone(), handler.clone());
+                let (dir, handler, local) = (dir.clone(), handler.clone(), local.clone());
                 let _ = thread::Builder::new()
                     .name("hoppy-ffi-receive".into())
                     .spawn(move || {
-                        if let Some(result) = receive_one(stream, from, &dir, handler.as_ref()) {
+                        if let Some(result) =
+                            receive_one(stream, from, &dir, &local, handler.as_ref())
+                        {
                             handler.finished(from, &result);
                         }
                     });
@@ -769,6 +964,108 @@ pub unsafe extern "C" fn hoppy_node_decide(node: *const Node, offer: u64, accept
     let node = unsafe { node.as_ref() };
     guard(false, || {
         node.is_some_and(|n| n.shared.answer(offer, accept))
+    })
+}
+
+/// `{"me":{"fingerprint"},"peers":[{"id","name","fingerprint","first_seen","verified"}]}`.
+///
+/// # Safety
+/// `node` is a live node.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hoppy_node_trust_list(node: *const Node) -> *mut c_char {
+    // SAFETY: caller contract.
+    let node = unsafe { node.as_ref() };
+    guard(ptr::null_mut(), || {
+        node.map_or(ptr::null_mut(), |n| to_c(n.trust_list().to_string()))
+    })
+}
+
+/// "Forget this device": its next contact is new again (re-trust after a reinstall).
+/// Returns false if it was not remembered or the store could not be saved.
+///
+/// # Safety
+/// `node` is a live node; `peer_id` a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hoppy_node_trust_forget(
+    node: *const Node,
+    peer_id: *const c_char,
+) -> bool {
+    // SAFETY: caller contract.
+    let (Some(n), Some(id)) = (unsafe { node.as_ref() }, unsafe { read_str(peer_id) }) else {
+        return false;
+    };
+    guard(false, || n.local.trust.forget(&id).unwrap_or(false))
+}
+
+/// "They match": marks the PEER of an `offer` / `send_session` event verified (the users
+/// compared the code). False if that id is remembered with another key (forget it first),
+/// or the JSON is not a PEER.
+///
+/// # Safety
+/// `node` is a live node; `peer_json` a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hoppy_node_trust_verify(
+    node: *const Node,
+    peer_json: *const c_char,
+) -> bool {
+    // SAFETY: caller contract.
+    let (Some(n), Some(text)) = (unsafe { node.as_ref() }, unsafe { read_str(peer_json) }) else {
+        return false;
+    };
+    guard(false, || {
+        parse_peer_key(&text).is_some_and(|p| n.local.trust.mark_verified(&p).is_ok())
+    })
+}
+
+/// Starts showing this device's QR code: returns the payload to render (a plain string,
+/// free it with `hoppy_string_free`). Its one-time code is accepted for 10 minutes.
+///
+/// # Safety
+/// `node` is a live node.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hoppy_node_qr_begin(node: *const Node) -> *mut c_char {
+    // SAFETY: caller contract.
+    let node = unsafe { node.as_ref() };
+    guard(ptr::null_mut(), || {
+        node.map_or(ptr::null_mut(), |n| to_c(n.local.begin_qr()))
+    })
+}
+
+/// The QR code was closed: its code is no longer accepted.
+///
+/// # Safety
+/// `node` is a live node.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hoppy_node_qr_end(node: *const Node) {
+    // SAFETY: caller contract.
+    if let Some(n) = unsafe { node.as_ref() } {
+        guard((), || n.local.trust.end_qr());
+    }
+}
+
+/// A scanned QR payload: checks it against the key known for that device (`live_peer_json`
+/// = the PEER of the session on screen, or NULL to use the remembered key), marks it
+/// verified, then tells that device (event `qr_done`). Returns the scan id, 0 if invalid.
+///
+/// # Safety
+/// `node` is a live node; `payload` a valid string; `live_peer_json` NULL or a valid string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hoppy_node_qr_scan(
+    node: *const Node,
+    payload: *const c_char,
+    live_peer_json: *const c_char,
+) -> u64 {
+    // SAFETY: caller contract.
+    let (Some(n), Some(payload)) = (unsafe { node.as_ref() }, unsafe { read_str(payload) }) else {
+        return 0;
+    };
+    // SAFETY: caller contract (NULL allowed).
+    let live = unsafe { read_str(live_peer_json) }.and_then(|t| parse_peer_key(&t));
+    guard(0, || {
+        if hoppy_core::QrPayload::parse(&payload).is_none() {
+            return 0;
+        }
+        n.qr_scan(payload, live)
     })
 }
 

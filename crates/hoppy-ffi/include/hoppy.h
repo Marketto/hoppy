@@ -28,7 +28,9 @@ typedef void (*hoppy_event_cb)(void *ctx, const char *event_json);
 
 /* Starts a node from a JSON config (id ≤ 64 bytes, platform ≤ 16, decision_timeout_secs
  * 1..=115, default 110): {"id","name","platform"?,"receive_dir"?,"udp_port"?,
- * "tcp_port"?,"receive"?,"multicast"?,"sweep"?,"seeds"?,"decision_timeout_secs"?}.
+ * "tcp_port"?,"receive"?,"multicast"?,"sweep"?,"seeds"?,"decision_timeout_secs"?,
+ * "key_file"?,"trust_file"?} (key_file/trust_file: protocol v1 device key and trust store,
+ * in the app's private container; without them the key is throw-away).
  * NULL on failure; *error_out (if not NULL) then gets a message to free. */
 HoppyNode *hoppy_node_start(const char *config_json, hoppy_event_cb callback, void *ctx,
                             char **error_out);
@@ -50,6 +52,20 @@ uint64_t hoppy_node_send(const HoppyNode *node, const char *peer_id, const char 
 
 /* Answer an "offer" event. false if it is no longer pending. */
 bool hoppy_node_decide(const HoppyNode *node, uint64_t offer, bool accept);
+
+/* Protocol v1 trust (docs/protocol.md §7). PEER = {"id","name","platform","fingerprint"}
+ * from the "security" object of an "offer" / "send_session" event. */
+char *hoppy_node_trust_list(const HoppyNode *node);
+bool hoppy_node_trust_forget(const HoppyNode *node, const char *peer_id);
+/* "They match" after comparing the code: false if another key is remembered for that id. */
+bool hoppy_node_trust_verify(const HoppyNode *node, const char *peer_json);
+
+/* QR verification: begin returns the payload to render (free it); end stops accepting it.
+ * scan checks a scanned payload (live_peer_json: PEER on screen, or NULL) and reports with a
+ * "qr_done" event; returns the scan id, 0 if the payload is invalid. */
+char *hoppy_node_qr_begin(const HoppyNode *node);
+void hoppy_node_qr_end(const HoppyNode *node);
+uint64_t hoppy_node_qr_scan(const HoppyNode *node, const char *payload, const char *live_peer_json);
 
 void hoppy_string_free(char *s);
 
