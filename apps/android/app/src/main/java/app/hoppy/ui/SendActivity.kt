@@ -48,9 +48,9 @@ import kotlin.concurrent.thread
  * our own home screen ([intent] carries a per-process token). After
  * [PRESELECT_TIMEOUT_MS] without it the normal list is left to the user.
  * Every session to a v1 device is encrypted (docs/protocol.md §7): the line under the status
- * says so ("⚠ not encrypted" for old apps); for a New/Known device the code (4 emoji, "123"
- * for digits) shows over the list while waiting for the receiver, with "They match" /
- * "Verify with QR" / "Show my QR" / "Later". A changed key blocks the send with a dialog
+ * says so ("⚠ not encrypted" for old apps); for a New/Known device the code (4 large emoji,
+ * the only verification method) shows over the list while waiting for the receiver, with
+ * "They match" / "Later". A changed key blocks the send with a dialog
  * offering "Forget device".
  * PoC limitation: the transfer runs in this screen (see docs/roadmap.md).
  */
@@ -65,18 +65,8 @@ class SendActivity : ThemedActivity() {
     private val givingUp = Runnable { givePreselectUp() }
     @Volatile private var sending = false
     private lateinit var panel: VerifyPanel
-    /** The session on screen (its key is the "live" one for a QR scan, spec §7.7). */
-    private var liveSession: SessionInfo? = null
     /** Delivered while the code was still on screen: close once the user is done with it. */
     private var delivered = false
-
-    private val scanner = QrScanner(
-        this,
-        onResult = { payload ->
-            QrScanner.verify(this, payload, liveSession?.peer) { ok, message -> onVerifyResult(ok, message) }
-        },
-        onUnavailable = { Toast.makeText(this, R.string.verify_no_camera, Toast.LENGTH_LONG).show() },
-    )
 
     private val peersListener: (List<Peer>) -> Unit = { peers -> runOnUiThread { showPeers(peers) } }
 
@@ -97,8 +87,6 @@ class SendActivity : ThemedActivity() {
                 override fun onMatch(peer: PeerKey) {
                     VerifyPanel.markVerified(this@SendActivity, peer) { ok, message -> onVerifyResult(ok, message) }
                 }
-                override fun onScan() = scanner.start()
-                override fun onShowMine() = startActivity(QrActivity.showIntent(this@SendActivity))
                 override fun onLater() = hideVerify()
             },
         )
@@ -223,7 +211,6 @@ class SendActivity : ThemedActivity() {
         b.status.isVisible = true
         b.status.text = getString(R.string.waiting_accept, SafeText.label(peer.device.name))
         b.security.isVisible = false
-        liveSession = null
         val app = applicationContext
         // Keep the discovery node (UDP 47470) alive for the callback even if this screen stops.
         Node.acquire(app)
@@ -316,7 +303,6 @@ class SendActivity : ThemedActivity() {
 
     /** How the session is protected (before the offer goes out): line + code for unverified devices. */
     private fun showSession(peer: Peer, info: SessionInfo) {
-        liveSession = info
         b.security.isVisible = true
         when {
             !info.encrypted -> b.security.text = getString(R.string.send_not_encrypted, SafeText.label(peer.device.name))

@@ -1,5 +1,5 @@
 // The one screen: mascot on top, "Pronto a ricevere", nearby devices, "Invia file"; the
-// incoming-offer sheet with the verification code (spec §7), QR scan/show, KeyChanged alert.
+// incoming-offer sheet with the verification code (spec §7), KeyChanged alert.
 import PhotosUI
 import QuickLook
 import SwiftUI
@@ -85,12 +85,6 @@ struct ContentView: View {
         // never auto-accept.
         .sheet(item: Binding(get: { model.offer }, set: { if $0 == nil { model.decide(accept: false) } })) { offer in
             OfferSheet(offer: offer).environmentObject(model)
-        }
-        .sheet(isPresented: Binding(get: { model.scanningFor == .send }, set: { if !$0 { model.cancelScan() } })) {
-            QRScanSheet(onCode: { model.scanned($0) }, onCancel: { model.cancelScan() })
-        }
-        .sheet(isPresented: Binding(get: { model.myQR?.over == .send }, set: { if !$0 { model.closeMyQR() } })) {
-            MyQRSheet(payload: model.myQR?.payload ?? "", onClose: { model.closeMyQR() })
         }
         .alert(L("key_changed_title", model.keyChanged?.name ?? ""),
                isPresented: Binding(get: { model.keyChanged != nil && model.offer == nil }, set: { if !$0 { model.keyChanged = nil } }),
@@ -211,8 +205,6 @@ struct ContentView: View {
                               collapsed: model.sendCheckHidden,
                               note: model.noteFor == .send ? model.securityNote : nil,
                               onMatch: { model.confirmMatch(.send) },
-                              onScanQR: { model.startScan(.send) },
-                              onShowQR: { model.showMyQR(over: .send) },
                               onLater: { model.later(.send) })
             } else if model.noteFor == .send, let note = model.securityNote {
                 Text(note).font(.subheadline).foregroundColor(palette.text)
@@ -281,10 +273,6 @@ struct ContentView: View {
             Button { openReceivedFolder() } label: {
                 Label(L("open_received"), systemImage: "folder")
             }
-            // Phone ↔ phone verification: the other device scans this (spec §7.7).
-            Button { model.showMyQR(over: .send) } label: {
-                Label(L("sec_show_my_qr"), systemImage: "qrcode")
-            }
             Toggle(L("sound"), isOn: $model.soundOn)
         } label: {
             Image(systemName: "ellipsis.circle").imageScale(.large)
@@ -344,7 +332,7 @@ struct ContentView: View {
 
 // MARK: - incoming offer
 
-/// "File in arrivo": sender, files, security (code / QR / ✓ / non cifrato), Rifiuta first.
+/// "File in arrivo": sender, files, security (emoji code / ✓ / non cifrato), Rifiuta first.
 struct OfferSheet: View {
     let offer: HoppyOffer
     @EnvironmentObject var model: AppModel
@@ -364,8 +352,6 @@ struct OfferSheet: View {
                                   collapsed: model.offerCheckHidden,
                                   note: model.noteFor == .offer ? model.securityNote : nil,
                                   onMatch: { model.confirmMatch(.offer) },
-                                  onScanQR: { model.startScan(.offer) },
-                                  onShowQR: { model.showMyQR(over: .offer) },
                                   onLater: { model.later(.offer) })
                     // Decline first: the safe choice; no answer in 110 s also declines.
                     VStack(spacing: 10) {
@@ -391,12 +377,6 @@ struct OfferSheet: View {
         }
         .navigationViewStyle(.stack)
         .tint(palette.accent)
-        .sheet(isPresented: Binding(get: { model.scanningFor == .offer }, set: { if !$0 { model.cancelScan() } })) {
-            QRScanSheet(onCode: { model.scanned($0) }, onCancel: { model.cancelScan() })
-        }
-        .sheet(isPresented: Binding(get: { model.myQR?.over == .offer }, set: { if !$0 { model.closeMyQR() } })) {
-            MyQRSheet(payload: model.myQR?.payload ?? "", onClose: { model.closeMyQR() })
-        }
     }
 }
 

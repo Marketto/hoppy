@@ -34,7 +34,7 @@ class HoppyApp : Application() {
                 // "Updates": new version available, download progress (silent), errors.
                 NotificationChannel(CH_UPDATES, getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
                 // "Security warnings": refused senders (changed key, plaintext from a device that
-                // encrypts), possible code guessing, QR verifications (docs/protocol.md §7).
+                // encrypts), possible code guessing (docs/protocol.md §7).
                 NotificationChannel(CH_SECURITY, getString(R.string.channel_security), NotificationManager.IMPORTANCE_HIGH),
             ),
         )

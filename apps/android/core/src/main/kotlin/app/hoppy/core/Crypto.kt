@@ -18,7 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Protocol v1 primitives (spec §7, ADR 0010): X25519 (RFC 7748), ChaCha20-Poly1305
- * (RFC 8439), SHA-256, HMAC-SHA256, plus fingerprints, SAS, QR payloads and the device key.
+ * (RFC 8439), SHA-256, HMAC-SHA256, plus fingerprints, the SAS and the device key.
  * Pure JVM: X25519 and the AEAD come from the BouncyCastle lightweight API (constant time,
  * no JCA provider needed: Android 10 has no X25519 KeyAgreement), hashes from the JDK.
  * Keep in lockstep with crates/hoppy-core/src/crypto.rs and tools/hoppy_ref.py.
@@ -28,10 +28,7 @@ object Crypto {
     const val TAG_LEN = 16
     /** Unpadded RFC 4648 base32 of a SHA-256 (256 bits → 52 characters). */
     const val FINGERPRINT_LEN = 52
-    const val QR_PREFIX = "hoppy:verify:1:"
-    /** One-time QR code: 128 random bits as 32 lowercase hex characters. */
-    const val QR_CODE_HEX_LEN = 32
-    /** Longest device id accepted in a QR payload or a handshake (UTF-8 bytes). */
+    /** Longest device id accepted in a handshake (UTF-8 bytes). */
     const val MAX_ID_BYTES = 128
 
     private const val BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
@@ -183,8 +180,6 @@ object Crypto {
 
     /** Constant-time comparison (no early exit). */
     fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean = MessageDigest.isEqual(a, b)
-
-    fun newQrCode(): String = hex(randomBytes(QR_CODE_HEX_LEN / 2))
 }
 
 /** A handshake or transport message failed a cryptographic check. */
@@ -195,13 +190,12 @@ data class SasEmoji(val emoji: String, val it: String, val en: String)
 
 /**
  * The short authentication string of a session (spec §7.6): a 24-bit value shown as 4 emoji
- * (6 bits each, most significant first) or as 8 zero-padded digits "1234 5678".
+ * (6 bits each, most significant first); the only form shown to users.
  */
 data class Sas(val value: Int) {
     /** Indices into [TABLE]. */
     val emoji: List<Int> = listOf(18, 12, 6, 0).map { (value ushr it) and 63 }
     val text: String = emoji.joinToString("") { TABLE[it].emoji }
-    val digits: String = "%08d".format(value).let { "${it.substring(0, 4)} ${it.substring(4)}" }
 
     /** Emoji names for screen readers / reading aloud. */
     fun words(italian: Boolean): List<String> = emoji.map { if (italian) TABLE[it].it else TABLE[it].en }
@@ -236,34 +230,6 @@ data class Sas(val value: Int) {
             e("🌊", "onda", "wave"), e("🔥", "fuoco", "fire"), e("🌍", "mappamondo", "globe"),
             e("🌋", "vulcano", "volcano"),
         )
-    }
-}
-
-/** The QR verification payload (spec §7.7): `hoppy:verify:1:<id>:<fingerprint>:<code>`. */
-data class QrPayload(val id: String, val fingerprint: String, val code: String) {
-    fun encode(): String = "${Crypto.QR_PREFIX}$id:$fingerprint:$code"
-
-    companion object {
-        /** Null for anything that is not a well-formed v1 payload; the id may contain ':'. */
-        fun parse(text: String): QrPayload? {
-            val t = text.trim()
-            if (!t.startsWith(Crypto.QR_PREFIX)) return null
-            val rest = t.substring(Crypto.QR_PREFIX.length)
-            val c2 = rest.lastIndexOf(':')
-            if (c2 < 0) return null
-            val c1 = rest.lastIndexOf(':', c2 - 1)
-            if (c1 < 0) return null
-            val id = rest.substring(0, c1)
-            // ASCII-only upper case (like Rust's to_ascii_uppercase): "ı" or "ß" must not turn
-            // into valid base32 letters.
-            val fp = rest.substring(c1 + 1, c2).map { if (it in 'a'..'z') it - ('a' - 'A') else it }
-                .joinToString("")
-            val code = rest.substring(c2 + 1)
-            val codeOk = code.length == Crypto.QR_CODE_HEX_LEN && Crypto.unhex(code) != null
-            val idOk = id.isNotEmpty() && id.toByteArray(Charsets.UTF_8).size <= Crypto.MAX_ID_BYTES &&
-                id.none { Character.isISOControl(it) }
-            return if (codeOk && idOk && Crypto.isFingerprint(fp)) QrPayload(id, fp, code) else null
-        }
     }
 }
 

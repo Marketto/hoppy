@@ -208,7 +208,7 @@ pub fn ask_offer(view: &DialogView, live: &DialogLive) -> Option<u32> {
 
 enum Asked {
     Answer(Option<u32>),
-    /// Body or "Verify…" clicked: ask again with the dialog (whole text, code, QR).
+    /// Body or "Verify…" clicked: ask again with the dialog (whole text, large emoji).
     Details,
 }
 
@@ -266,42 +266,26 @@ fn ask_by_notification(
     Some(asked)
 }
 
-/// The verification dialog (zenity, else kdialog): see `dialog::dialog_args`. Re-opened to
-/// switch the code between emoji and digits, and to replace the QR code with ✓ once `live`
-/// says verified; closed when `live` says so or after `view.timeout`. `None` = closed
-/// without a choice (the caller uses the default). Blocking: workers only.
+/// The verification dialog (zenity, else kdialog): see `dialog::dialog_args`. Closed when
+/// `live` says so or after `view.timeout`. `None` = closed without a choice (the caller uses
+/// the default). Blocking: workers only.
 pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
     let Some(tool) = dialog::question_tool() else {
         diag::log("dialog: neither zenity nor kdialog is installed");
         return None;
     };
-    let deadline = view.timeout.map(|t| Instant::now() + t);
-    let mut state = dialog::DialogState::default();
-    loop {
-        if live.closed() {
-            return None;
-        }
-        state.verified = live.verified();
-        let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
-        if left.is_some_and(|l| l.is_zero()) {
-            return None;
-        }
-        let args = dialog::dialog_args(tool, view, state, left);
-        let shown_verified = state.verified;
-        let stop = || live.closed() || (view.qr.is_some() && !shown_verified && live.verified());
-        // zenity gets a little longer than its own --timeout; kdialog has none.
-        let limit = left.map(|l| l + Duration::from_secs(2));
-        match dialog::run_watch(tool, &args, limit, &stop) {
-            dialog::Ran::Exited(code, out) => {
-                match dialog::parse_answer(tool, view, state, code, &out) {
-                    dialog::Answer::Button(id) => return Some(id),
-                    dialog::Answer::Toggle => state.digits = !state.digits,
-                    dialog::Answer::Closed => return None,
-                }
-            }
-            dialog::Ran::Stopped => {} // closed, or re-shown with ✓
-            dialog::Ran::Failed => return None,
-        }
+    if live.closed() {
+        return None;
+    }
+    let args = dialog::dialog_args(tool, view, view.timeout);
+    // zenity gets a little longer than its own --timeout; kdialog has none.
+    let limit = view.timeout.map(|l| l + Duration::from_secs(2));
+    match dialog::run_watch(tool, &args, limit, &|| live.closed()) {
+        dialog::Ran::Exited(code, out) => match dialog::parse_answer(tool, view, code, &out) {
+            dialog::Answer::Button(id) => Some(id),
+            dialog::Answer::Closed => None,
+        },
+        dialog::Ran::Stopped | dialog::Ran::Failed => None,
     }
 }
 

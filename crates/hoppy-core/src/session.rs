@@ -560,7 +560,6 @@ mod tests {
             u64::from(seen_by_i.sas.value),
             sas["value"].as_u64().unwrap()
         );
-        assert_eq!(seen_by_i.sas.digits, sas["digits"].as_str().unwrap());
         assert_eq!(seen_by_i.sas.text, sas["text"].as_str().unwrap());
 
         let (ci, cr) = (i.finish().unwrap(), r.finish().unwrap());

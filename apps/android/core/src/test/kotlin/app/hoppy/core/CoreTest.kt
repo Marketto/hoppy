@@ -304,7 +304,6 @@ class CoreTest {
         @Volatile var session: SessionInfo? = null
         @Volatile var asked = 0
         val blocked = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val verified = java.util.concurrent.CopyOnWriteArrayList<PeerKey>()
         val warnings = java.util.concurrent.CopyOnWriteArrayList<Warning>()
         override fun decide(offer: Offer, from: InetAddress, session: SessionInfo): Boolean {
             asked++
@@ -317,7 +316,6 @@ class CoreTest {
             this.saved = saved
         }
         override fun onBlocked(from: InetAddress, offer: Offer, session: SessionInfo, reason: String) { blocked += reason }
-        override fun onVerified(from: InetAddress, peer: PeerKey) { verified += peer }
         override fun onWarning(from: InetAddress, warning: Warning) { warnings += warning }
     }
 

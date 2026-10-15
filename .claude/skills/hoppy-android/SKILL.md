@@ -51,8 +51,8 @@ Two modules in `apps/android/`:
   - v1 security (docs/platforms/android.md "Encryption and device verification"):
     `security/Security.kt` (key + trust store in `noBackupFilesDir`, excluded from backup/transfer; new key ⇒ new device id; `Security.local(ctx)` off the
     main thread, `PendingVerifications`), `ui/VerifyPanel.kt` + `layout/view_verify.xml`
-    (code panel, `QrScanner`), `ui/VerifyActivity.kt` (receiver code / changed key),
-    `ui/QrActivity.kt` (show my QR / scan). Badges in `PeerAdapter.trusted`.
+    (4 large emoji + names, *They match* / *Later*), `ui/VerifyActivity.kt` (receiver code /
+    changed key). Badges in `PeerAdapter.trusted`.
 
 ## Rules
 
@@ -78,8 +78,8 @@ Two modules in `apps/android/`:
 - v1: never fall back to plaintext for a peer that advertised `crypto`, whose key or address
   is remembered, or that answered "busy"; KeyChanged always blocks (dialog / notification
   with "Forget device"); pin keys only on a person's Accept; show every plaintext session as
-  "non cifrato"; the QR code goes only to a session presenting the scanned key
-  (`QrVerification.scan`). Never put session data in intents to exported components.
+  "non cifrato"; verification is the 4 emoji only (no digits, no QR, no camera permission:
+  do not reintroduce them). Never put session data in intents to exported components.
 
 ## Build & verify
 

@@ -107,8 +107,6 @@ def sidestore_source(base_url: str, repo: str, release: dict | None, sha256: str
             "privacy": {
                 "NSLocalNetworkUsageDescription":
                     "Hoppy looks for your devices on this Wi-Fi network to send and receive files.",
-                "NSCameraUsageDescription":
-                    "Hoppy uses the camera only to scan the QR code of another device and verify it.",
             },
         },
     }

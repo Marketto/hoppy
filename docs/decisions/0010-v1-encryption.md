@@ -1,6 +1,6 @@
 # 0010. Protocol v1: Noise XX encryption, trust on first use, optional verification
 Status: Accepted (phase 1: spec, Rust core, Python reference, CLI, FFI; phase 2: Android
-core + all UIs)
+core + all UIs); amended 2026-10-15: verification is 4 emoji only (QR and digits removed, below)
 Date: 2026-10-15
 Supersedes: 0003 (v0 unencrypted)
 
@@ -9,9 +9,8 @@ v0 sends everything in clear and authenticates nothing (ADR 0003). The product o
 encryption always on, automatic and invisible; verifying a device must be optional at first
 contact ("Verifica ora" / "Più tardi"), verified devices get a ✓, and a device seen before
 that shows up with a different key must be blocked with a warning, not just asked about.
-Verification: two desktops compare a short code by eye; with a phone, the phone scans a QR
-code shown by the other device; the code is 4 emoji with a switch to 8 digits of the same
-value. Old (v0) apps must keep working during the transition, visibly flagged.
+Verification (as amended): both users compare 4 emoji by eye and press «Coincide» or
+«Più tardi». Old (v0) apps must keep working during the transition, visibly flagged.
 
 ## Decision
 - **Handshake: `Noise_XX_25519_ChaChaPoly_SHA256`** via `snow` 0.10 (Rust; default
@@ -41,15 +40,11 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
   A plain SHA-256 with a label replaces HKDF (one primitive fewer for every implementation;
   same security as a random oracle on a 32-byte secret-dependent input).
 - **Code display**: 4 emoji (6 bits each) from a curated table of 64 (Unicode ≤ 9 single
-  code points, distinct silhouettes, names in Italian and English) or the same value as
-  8 zero-padded digits. The table lives in `docs/protocol.md` §7.6 and
+  code points, distinct silhouettes, names in Italian and English); the only form (the
+  8-digit alternative was removed, see the amendment). The table lives in `docs/protocol.md` §7.6 and
   `docs/test-vectors.json`; implementations copy it and test against the vectors.
-- **QR verification**: `hoppy:verify:1:<id>:<fingerprint>:<one-time code>`. The scanner
-  checks the fingerprint against the key it knows, marks it verified, then proves the scan to
-  the shower in a new v1 session that must present exactly that key (`{"verify":code}`);
-  the shower marks the scanner verified only for a live code, so a desktop shows ✓ after a
-  phone scanned it, and nobody can claim to be verified without seeing the screen. The code
-  is never sent over a session with another key.
+- ~~**QR verification**~~ (`hoppy:verify:1:…` payload, one-time codes, `{"verify":code}`
+  first frame): removed by the amendment below.
 - **Negotiation**: `"crypto":1` is added to every v1 datagram and callback hello (additive,
   `hoppy` stays 0, so v0 apps still see v1 devices). Senders use v1 when the peer
   advertised it, when its key is remembered (no downgrade), or when nothing is known (typed
@@ -59,16 +54,15 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
   (Rust `transfer.rs`) turns the transition off in a later release.
 - **Core API for UIs** (`Local` = device + key + trust store + policy): senders get
   `Progress::Session(SessionInfo)` (encrypted, trust state, peer key, SAS) before the
-  offer; `ReceiveHandler::decide` receives the same `SessionInfo`; `blocked` and `verified`
-  hooks; `Trust::{mark_verified, forget, retrust, begin_qr, end_qr, check_qr}`,
-  `transfer::confirm_qr`. The FFI exposes them as JSON (`crates/hoppy-ffi`).
+  offer; `ReceiveHandler::decide` receives the same `SessionInfo`; `blocked` hook;
+  `Trust::{mark_verified, forget, retrust}` (as amended). The FFI exposes them as JSON (`crates/hoppy-ffi`).
 
 ## Consequences
 - Every v1 ↔ v1 session is encrypted and authenticated; the 30-byte overhead per 64 KiB is
   negligible (ChaCha20-Poly1305 in Rust runs at GB/s); one extra round trip for the
   handshake (message 3 and the offer leave together).
 - First contacts remain TOFU: protection against an attacker present at the very first
-  contact needs the optional code/QR check. Discovery stays unauthenticated (spoofing only
+  contact needs the optional emoji check. Discovery stays unauthenticated (spoofing only
   redirects to an impostor that then shows as New or is blocked as KeyChanged).
 - Android implements v1 in its pure-JVM core (phase 2, below); the interop test checks Kotlin
   against Rust and Python encrypted, and its plaintext fallback against a v0 node.
@@ -119,7 +113,7 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
   (`bcprov-jdk18on`, pure Java, constant time): Android 10 has no X25519 in JCA, and
   hand-written field arithmetic is not worth the risk. SHA-256/HMAC come from the JDK. It
   passes every `v1` vector (positive and negative) and the RFC KATs, and the interop legs
-  K1–K10. Cost: the APK grows by the (unshrunk) BouncyCastle classes until R8 is enabled.
+  K1–K10 (K1–K9 after the amendment). Cost: the APK grows by the (unshrunk) BouncyCastle classes until R8 is enabled.
 - Key and trust store in app-private `noBackupFilesDir` (excluded from cloud backup and
   device-to-device transfer); a new key comes with a new device id (as on iOS).
 - UI: device rows 🔒 / ✓ / ⚠ non cifrato; while sending to a New/Known device the code shows
@@ -152,3 +146,32 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
 - KeyChanged on either side: blocking warning with «Dimentica dispositivo» (never the
   default); tray menu «Dispositivi fidati…» lists and forgets remembered devices;
   code-guessing warnings at most once a minute; a damaged trust store is announced.
+
+## Amendment: 4 emoji only, QR and digits removed (2026-10-15)
+- **Decision (product owner):** device verification is only the 4 emoji, compared by eye, with
+  «Coincide» (mark the other device verified on this device) or «Più tardi». Removed from the
+  product: the 8-digit form of the code («123»), and the whole QR verification (payload
+  `hoppy:verify:1:…`, one-time codes, the `{"verify":code}` first frame and its replies,
+  the remote `verified` notification, «Verifica con QR» / «Mostra il mio QR»).
+- **Why:** one way to verify is simpler to explain and to get right; less attack surface (no
+  second kind of first frame, no one-time-code state in the receiver, no QR parser, no camera
+  input); the camera permission and the QR dependencies (ZXing on Android, AVFoundation /
+  CoreImage on iOS, `qrcode` on desktop) are gone.
+- **Unchanged:** the 24-bit SAS value, its derivation with commit/reveal, the emoji table and
+  the aborted-handshake limits. «Coincide» is local: nothing is sent, so each user confirms on
+  their own device.
+- **Wire:** the first encrypted frame is always an Offer; anything else (including a
+  `{"verify":…}` from a development build) is answered `invalid_offer` like any malformed offer
+  (spec §7.4). Spec §7.7 (QR) is gone and the limits section is now §7.7. Vectors: `qr_example`
+  and every `digits` field removed.
+- **APIs removed:** Rust `QrPayload`, `crypto::{QR_PREFIX, QR_CODE_HEX_LEN, new_qr_code}`,
+  `Sas::digits`, `Trust::{begin_qr, end_qr, check_qr}`, `trust::QR_CODE_TTL`,
+  `Local::begin_qr`, `transfer::confirm_qr`, `ReceiveHandler::verified`,
+  `Error::VerificationFailed`; FFI `hoppy_node_qr_begin/qr_end/qr_scan`, events `qr_done` and
+  `verified`, `sas.digits`; Kotlin `QrPayload`, `QrVerification`, `QrResult`,
+  `Crypto.{QR_PREFIX, QR_CODE_HEX_LEN, newQrCode}`, `Sas.digits`,
+  `Trust.{beginQr, endQr, takeQrCode, checkQr}`, `Local.beginQr`, `TransferClient.confirmQr`,
+  `ReceiveHandler.onVerified`, `VerificationFailedException`, `UnknownDeviceException`;
+  Python `verify` command and `--show-qr`; CLI `hoppy receive --show-qr` and
+  `hoppy trust verify --qr/--to` (`hoppy trust verify DEVICE` stays: "They match" after
+  comparing the emoji). The QR and «123» parts of the phase-2 sections above are superseded.

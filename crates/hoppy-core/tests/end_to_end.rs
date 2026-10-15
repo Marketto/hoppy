@@ -1,5 +1,5 @@
 //! Loopback end-to-end tests: discovery + transfer between two in-process nodes, protocol
-//! v1 security (encryption, SAS, trust on first use, QR verification) and v0 fallback.
+//! v1 security (encryption, SAS, trust on first use, emoji verification) and v0 fallback.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -19,7 +19,7 @@ use hoppy_core::transfer::{receive_one, serve};
 use hoppy_core::{
     DeviceInfo, DeviceKey, Discovery, DiscoveryConfig, Error, Local, Offer, Peer, PeerKey,
     Progress, ReceiveHandler, SendOutcome, SessionInfo, Sweep, TrustState, Warning,
-    accept_callbacks, confirm_qr, send_files, send_to_peer,
+    accept_callbacks, send_files, send_to_peer,
 };
 
 fn device(id: &str, name: &str) -> DeviceInfo {
@@ -42,7 +42,6 @@ struct Recorder {
     /// The session of every offer that reached `decide`.
     sessions: Mutex<Vec<SessionInfo>>,
     blocked: Mutex<Vec<String>>,
-    verified: Mutex<Vec<PeerKey>>,
     warnings: Mutex<Vec<Warning>>,
 }
 
@@ -54,7 +53,6 @@ impl Recorder {
             finished: Mutex::new(Vec::new()),
             sessions: Mutex::new(Vec::new()),
             blocked: Mutex::new(Vec::new()),
-            verified: Mutex::new(Vec::new()),
             warnings: Mutex::new(Vec::new()),
         }
     }
@@ -71,9 +69,6 @@ impl ReceiveHandler for Recorder {
     }
     fn blocked(&self, _from: SocketAddr, _offer: &Offer, _session: &SessionInfo, reason: &str) {
         self.blocked.lock().unwrap().push(reason.into());
-    }
-    fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
-        self.verified.lock().unwrap().push(peer.clone());
     }
     fn warning(&self, _from: SocketAddr, warning: &Warning) {
         self.warnings.lock().unwrap().push(warning.clone());
@@ -798,7 +793,11 @@ fn encrypted_session_same_sas_and_tofu() {
     assert_eq!(r.peer.as_ref().unwrap().id, "tx");
     let (ss, rs) = (s.sas.clone().unwrap(), r.sas.clone().unwrap());
     assert_eq!(ss, rs, "same code on both screens");
-    assert_eq!(ss.digits.len(), 9);
+    assert_eq!(
+        ss.text.chars().count(),
+        4,
+        "4 emoji, the only form of the code"
+    );
     assert_eq!(fs::read(out.path().join("a.txt")).unwrap(), b"secret stuff");
 
     // TOFU on both sides after the accepted transfer.
@@ -1125,52 +1124,61 @@ fn tampered_ciphertext_is_rejected() {
     );
 }
 
-/// QR verification (spec §7.7): the phone scans the desktop's code; both end up Verified.
-/// A wrong or reused code, or a device with another key, is refused.
+/// Verification is local only (spec §7.6): "Coincide" marks the other device verified on
+/// this device and sends nothing. A first encrypted frame that is not an Offer (e.g. the
+/// `{"verify":…}` request of earlier builds) is an invalid offer (spec §7.4): it is
+/// refused, the user is not asked and nothing is marked verified.
 #[test]
-fn qr_verification_marks_both_sides() {
+fn verification_is_local_and_non_offer_first_frame_is_invalid() {
     let (addr, _out, rec, desktop) = start_receiver_as(true, local("pc", "Desktop"));
     let phone = local("phone", "Phone");
     let peer = peer_at(&desktop, addr);
-    let shown = desktop.begin_qr();
-
-    // Scanned before any contact: unknown device, nothing sent.
-    assert!(matches!(
-        phone.trust.check_qr(&shown, None),
-        Err(Error::VerificationFailed(_))
-    ));
-    // After one transfer the phone knows the desktop's key (TOFU) and can check the code.
     let (_src, path) = small_file("a.txt", b"x");
-    assert_eq!(
-        send_and_watch(&peer, &phone, &path).0.unwrap(),
-        SendOutcome::Delivered
-    );
+    let (outcome, s) = send_and_watch(&peer, &phone, &path);
+    assert_eq!(outcome.unwrap(), SendOutcome::Delivered);
     wait_finished(&rec).unwrap();
-    let (qr, who) = phone.trust.check_qr(&shown, None).unwrap();
-    assert_eq!(who.id, "pc");
+    // "Coincide" on the phone: verified there, nothing changes on the desktop.
+    phone
+        .trust
+        .mark_verified(s.unwrap().peer.as_ref().unwrap())
+        .unwrap();
     assert_eq!(
         phone.trust.state("pc", &desktop.fingerprint()),
         TrustState::Verified
     );
-    confirm_qr(&peer, &phone, None, &qr).unwrap();
-    thread::sleep(Duration::from_millis(100));
     assert_eq!(
         desktop.trust.state("phone", &phone.fingerprint()),
-        TrustState::Verified,
-        "the desktop shows ✓ after the phone scanned it"
-    );
-    assert_eq!(rec.verified.lock().unwrap()[0].id, "phone");
-    // One-time code.
-    assert!(
-        matches!(confirm_qr(&peer, &phone, None, &qr), Err(Error::Remote(e)) if e == "invalid_code")
+        TrustState::Known
     );
 
-    // Another device answering as "pc" with another key never gets the code.
-    let (fake_addr, _o, fake_rec, _fake) = start_receiver_as(true, local("pc", "Desktop"));
-    let qr2 = hoppy_core::QrPayload::parse(&desktop.begin_qr()).unwrap();
-    let err = confirm_qr(&peer_at(&desktop, fake_addr), &phone, None, &qr2);
-    assert!(matches!(err, Err(Error::VerificationFailed(_))), "{err:?}");
-    assert!(fake_rec.verified.lock().unwrap().is_empty());
+    // A raw v1 session whose first frame is the old verification request.
+    let stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut s = &stream;
+    let mut init = Initiator::new(&phone.key).unwrap();
+    protocol::write_hello_v1(&mut s).unwrap();
+    write_frame(&mut s, &init.write_msg1().unwrap()).unwrap();
+    init.read_msg2(&read_frame(&mut s, MAX_HANDSHAKE_MESSAGE).unwrap().unwrap())
+        .unwrap();
+    write_frame(&mut s, &init.write_msg3(&phone.device).unwrap()).unwrap();
+    let cipher = init.finish().unwrap();
+    let mut w = NoiseWriter::new(stream.try_clone().unwrap(), cipher.clone());
+    protocol::write_json(&mut w, &serde_json::json!({"verify": "0".repeat(32)})).unwrap();
+    w.flush().unwrap();
+    let mut r = NoiseReader::new(stream.try_clone().unwrap(), cipher);
+    let d: Decision = protocol::read_json(&mut r).unwrap();
+    assert_eq!(d, Decision::reject("invalid_offer"));
+    assert_eq!(
+        rec.sessions.lock().unwrap().len(),
+        1,
+        "the user was not asked"
+    );
+    assert_eq!(
+        desktop.trust.state("phone", &phone.fingerprint()),
+        TrustState::Known
+    );
 }
 
 // ------------------------------------------------------------------ v1 hardening

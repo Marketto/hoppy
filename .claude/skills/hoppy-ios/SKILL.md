@@ -17,10 +17,9 @@ UX, install (Sideloadly), limits, manual test plan: `docs/platforms/ios.md`. Dec
 | Unicast sweep (client behaviour, no wire change) | `crates/hoppy-core/src/discovery.rs` (`Sweep`, `sweep_targets`, `set_transfer_port`) |
 | Swift wrapper (`HoppyNode`, `HoppyEvent`, `HoppySecurity`/`HoppySas`/`HoppyPeerKey`) | `apps/ios/Shared/HoppyCore.swift` |
 | App: scene lifecycle, state, the one screen, offer sheet | `apps/ios/Hoppy/HoppyApp.swift`, `apps/ios/Hoppy/AppModel.swift`, `apps/ios/Hoppy/ContentView.swift` |
-| QR scanner (AVFoundation) and "Mostra il mio QR" (CoreImage), app only | `apps/ios/Hoppy/QRViews.swift` |
 | Update notice (`releases/latest`, daily) | `apps/ios/Hoppy/UpdateCheck.swift`; SideStore source `sidestore.json` from `tools/site.py` |
 | Share extension (self-contained sender, own identity) | `apps/ios/ShareExtension/ShareViewController.swift` |
-| Verification UI (code, «Coincide», banners) shared by app + extension | `apps/ios/Shared/Verification.swift` |
+| Verification UI (4-emoji code, «Coincide» / «Più tardi», banners) shared by app + extension | `apps/ios/Shared/Verification.swift` |
 | Palettes (checked by `tools/contrast.py`), identity (id bound to the v1 key, `Identity.startNode`)/seeds/outbox, strings | `apps/ios/Shared/Theme.swift`, `apps/ios/Shared/Identity.swift`, `apps/ios/Shared/en.lproj/`, `apps/ios/Shared/it.lproj/` |
 | Plists | `apps/ios/Hoppy/Info.plist`, `apps/ios/ShareExtension/Info.plist` |
 | XcodeGen project (no committed .xcodeproj) | `apps/ios/project.yml` |
@@ -38,16 +37,16 @@ UX, install (Sideloadly), limits, manual test plan: `docs/platforms/ios.md`. Dec
   entitlement, background modes. `tools/ios_check.py` fails on such entitlements.
 - The Share extension binds an **ephemeral** UDP port (`udp_port: 0`) and never receives; it
   must not use `UIApplication.shared` (extension-safe API only) and must stream (no `Data`
-  of whole files). It has **no camera** (extensions cannot use it): no AVFoundation capture in
-  `ShareExtension/` or `Shared/` (checked).
+  of whole files).
 - Protocol v1 identity (ADR 0010, ADR 0009 addendum): every node starts through
   `Identity.startNode` (persistent `key_file`/`trust_file` in Application Support, excluded
   from backups; a new key means a new device id, never KeyChanged on peers) — never
   `HoppyNode(config:)` in the app or extension (checked). The extension is a **separate
   device** «<model> (Condividi)» with its own key: there is no free way to share the app's key.
-- Verification follows the other platforms: code (4 emoji / «123» → digits), «Coincide»,
-  «Verifica con QR» (app only), «Mostra il mio QR» (app only, receiving on while shown),
-  «Più tardi»; KeyChanged → alert with «Dimentica dispositivo»; Decline stays the default.
+- Verification follows the other platforms: **only** the 4 emoji compared by eye, «Coincide» /
+  «Più tardi»; no digits, no QR, no camera, no `NSCameraUsageDescription` (all checked by
+  `tools/ios_check.py`); KeyChanged → alert with «Dimentica dispositivo»; Decline stays the
+  default.
 - Update notice only (never a download); the asset name `Hoppy-ios-unsigned.ipa` is shared by
   `UpdateCheck.swift`, `tools/site.py` (SideStore source) and `release.yml` (checked).
 - Never auto-accept: the alert's cancel action is Decline; the Rust side declines on

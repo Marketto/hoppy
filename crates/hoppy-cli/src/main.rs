@@ -21,8 +21,8 @@ use hoppy::{
 };
 use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::{
-    DeviceInfo, Discovery, Error, Local, Offer, Peer, PeerKey, Progress, QrPayload, ReceiveHandler,
-    SendOutcome, SessionInfo, TrustState, Warning, confirm_qr, send_to_peer, send_via_callback,
+    Discovery, Error, Local, Offer, Peer, PeerKey, Progress, ReceiveHandler, SendOutcome,
+    SessionInfo, TrustState, Warning, send_to_peer, send_via_callback,
 };
 
 #[derive(Parser)]
@@ -52,18 +52,13 @@ enum TrustAction {
     /// Forget a device (by name or id): the next contact asks again, as for a new device.
     /// Use it when a device was reinstalled and Hoppy warns that its key changed.
     Forget { device: String },
-    /// Mark a device as verified: either paste the payload of the QR code it shows
-    /// (`--qr`; the other device learns it too), or compare its fingerprint by eye.
+    /// Mark a remembered device as verified ("They match") after comparing the 4 emoji
+    /// shown on both screens during a transfer. Only this device changes: the other one
+    /// marks this device verified when its user confirms too.
     Verify {
-        /// Name or id of a remembered device (not needed with --qr).
-        device: Option<String>,
-        /// Payload of the other device's QR code: `hoppy:verify:1:…`.
-        #[arg(long)]
-        qr: Option<String>,
-        /// With --qr: the device's address (IP[:PORT]) instead of looking for it.
-        #[arg(long)]
-        to: Option<String>,
-        /// Do not ask for confirmation (fingerprint compared already).
+        /// Name or id of a remembered device.
+        device: String,
+        /// Do not ask for confirmation (the emoji were compared already).
         #[arg(long)]
         yes: bool,
     },
@@ -101,10 +96,6 @@ enum Command {
         /// Discovery UDP port (tests only; other devices look on 47470).
         #[arg(long, default_value_t = DISCOVERY_PORT, hide = true)]
         udp_port: u16,
-        /// Print this device's QR verification payload (spec §7.7) for a phone to scan;
-        /// its one-time code is accepted while this receiver runs (10 minutes).
-        #[arg(long)]
-        show_qr: bool,
     },
     /// Devices this one remembers (encryption keys): list, forget, verify.
     Trust {
@@ -212,17 +203,8 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             port,
             udp_port,
-            show_qr,
-        } => cmd_receive(
-            &loaded_local(&identity)?,
-            &seeds,
-            dir,
-            yes,
-            port,
-            udp_port,
-            show_qr,
-        ),
-        Command::Trust { action } => cmd_trust(&loaded_local(&identity)?, &seeds, action),
+        } => cmd_receive(&loaded_local(&identity)?, &seeds, dir, yes, port, udp_port),
+        Command::Trust { action } => cmd_trust(&loaded_local(&identity)?, action),
         Command::Peers { wait } => {
             let discovery = start_discovery(&me, 0, &seeds)?;
             let peers = discovery.wait_for_peers(usize::MAX, Duration::from_secs(wait));
@@ -513,9 +495,8 @@ fn security_line(session: &SessionInfo) -> String {
         TrustState::KeyChanged => "⚠ KEY CHANGED",
     };
     let mut line = format!(
-        "🔒 encrypted · {state} · code {} ({}) · {}",
+        "🔒 encrypted · {state} · code {} · {}",
         sas.text,
-        sas.digits,
         sas.words(false).join(" ")
     );
     if session.name_matches_known {
@@ -596,7 +577,6 @@ fn cmd_receive(
     yes: bool,
     port: u16,
     udp_port: u16,
-    show_qr: bool,
 ) -> Result<()> {
     let dir = match dir {
         Some(d) => d,
@@ -613,11 +593,6 @@ fn cmd_receive(
     println!("   This device's key: {}", local.fingerprint());
     if yes {
         println!("   ⚠ Auto-accept is ON: anyone on this network can send you files.");
-    }
-    if show_qr {
-        // TODO(phase 2): render it as a QR code (desktop GUI); the text works with
-        // `hoppy trust verify --qr` on another computer.
-        println!("   QR verification code: {}", local.begin_qr());
     }
     let handler = CliReceiver {
         auto_accept: yes,
@@ -657,7 +632,7 @@ fn grouped(fp: &str) -> String {
         .join(" ")
 }
 
-fn cmd_trust(local: &Local, seeds: &[SocketAddr], action: Option<TrustAction>) -> Result<()> {
+fn cmd_trust(local: &Local, action: Option<TrustAction>) -> Result<()> {
     match action.unwrap_or(TrustAction::List) {
         TrustAction::List => {
             println!("This device: {}", local.device.name);
@@ -688,44 +663,18 @@ fn cmd_trust(local: &Local, seeds: &[SocketAddr], action: Option<TrustAction>) -
             println!("Forgot {} ({}).", peer.name, peer.id);
             Ok(())
         }
-        TrustAction::Verify {
-            device,
-            qr: Some(payload),
-            to,
-            ..
-        } => {
-            let (qr, peer_key) = match local.trust.check_qr(&payload, None) {
-                Ok(v) => v,
-                Err(Error::VerificationFailed(why)) => bail!("✗ NOT verified: {why}"),
-                Err(e) => return Err(e.into()),
-            };
-            if let Some(d) = device
-                && d != qr.id
-                && !d.eq_ignore_ascii_case(&peer_key.name)
-            {
-                bail!("the code belongs to {}, not {d}", peer_key.name);
-            }
-            println!("✓ {} is verified on this device.", peer_key.name);
-            confirm_on_peer(local, seeds, &qr, &peer_key, to.as_deref())
-        }
-        TrustAction::Verify {
-            device,
-            qr: None,
-            yes,
-            ..
-        } => {
-            let device = device.context("name the device to verify, or pass --qr")?;
+        TrustAction::Verify { device, yes } => {
             let peer = find_trusted(local, &device)?;
             if peer.fingerprint.is_empty() {
                 bail!("no key remembered for {}", peer.name);
             }
             println!(
-                "Check that `hoppy trust list` on {} shows this key for itself:\n  {}",
-                peer.name,
-                grouped(&peer.fingerprint)
+                "Compare the 4 emoji that Hoppy showed on both screens during your last \
+                 transfer with {}.",
+                peer.name
             );
             if !yes {
-                print!("Is it exactly the same? [y/N] ");
+                print!("Did they match? [y/N] ");
                 let _ = io::stdout().flush();
                 let mut line = String::new();
                 io::stdin().lock().read_line(&mut line)?;
@@ -738,47 +687,6 @@ fn cmd_trust(local: &Local, seeds: &[SocketAddr], action: Option<TrustAction>) -
             Ok(())
         }
     }
-}
-
-/// Tells the device that showed the QR code that we scanned it (spec §7.7).
-fn confirm_on_peer(
-    local: &Local,
-    seeds: &[SocketAddr],
-    qr: &QrPayload,
-    who: &PeerKey,
-    to: Option<&str>,
-) -> Result<()> {
-    let mut discovery = None;
-    let peer = match to {
-        Some(addr) => {
-            let addr = parse_direct(addr).with_context(|| format!("invalid address {addr:?}"))?;
-            Peer {
-                device: DeviceInfo {
-                    id: qr.id.clone(),
-                    name: who.name.clone(),
-                    platform: String::new(),
-                },
-                addr,
-                crypto: Some(1),
-            }
-        }
-        None => {
-            let d = discovery.insert(start_discovery(&local.device, 0, seeds)?);
-            d.wait_for_peers(usize::MAX, Duration::from_secs(3))
-                .into_iter()
-                .find(|p| p.device.id == qr.id)
-                .with_context(|| {
-                    format!(
-                        "{} is not nearby right now, so it still shows it as not verified",
-                        who.name
-                    )
-                })?
-        }
-    };
-    confirm_qr(&peer, local, discovery.as_ref(), qr)
-        .with_context(|| format!("{} could not confirm", who.name))?;
-    println!("✓ {} now shows this device as verified too.", who.name);
-    Ok(())
 }
 
 struct CliReceiver {
@@ -844,13 +752,6 @@ impl ReceiveHandler for CliReceiver {
 
     fn auto_accepts(&self) -> bool {
         self.auto_accept // `--yes`: accepted without a person, so keys are not remembered
-    }
-
-    fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
-        println!(
-            "\n✓ {} scanned this device's code: verified.",
-            display_name(&peer.name)
-        );
     }
 
     fn finished(&self, from: SocketAddr, result: &Result<Vec<PathBuf>, Error>) {

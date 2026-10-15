@@ -58,15 +58,9 @@ bool hoppy_node_decide(const HoppyNode *node, uint64_t offer, bool accept);
  * from the "security" object of an "offer" / "send_session" event. */
 char *hoppy_node_trust_list(const HoppyNode *node);
 bool hoppy_node_trust_forget(const HoppyNode *node, const char *peer_id);
-/* "They match" after comparing the code: false if another key is remembered for that id. */
+/* "They match" after comparing the 4 emoji (the only verification; local, the other
+ * device is not told): false if another key is remembered for that id. */
 bool hoppy_node_trust_verify(const HoppyNode *node, const char *peer_json);
-
-/* QR verification: begin returns the payload to render (free it); end stops accepting it.
- * scan checks a scanned payload (live_peer_json: PEER on screen, or NULL) and reports with a
- * "qr_done" event; returns the scan id, 0 if the payload is invalid. */
-char *hoppy_node_qr_begin(const HoppyNode *node);
-void hoppy_node_qr_end(const HoppyNode *node);
-uint64_t hoppy_node_qr_scan(const HoppyNode *node, const char *payload, const char *live_peer_json);
 
 void hoppy_string_free(char *s);
 

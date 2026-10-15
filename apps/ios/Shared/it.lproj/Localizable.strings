@@ -61,14 +61,8 @@
 "row_verified" = "🔒 ✓ verificato";
 "sec_compare" = "Controlla che %@ mostri lo stesso codice. È facoltativo, ma dimostra che nessuno si è messo in mezzo.";
 "sec_code_emoji_a11y" = "Codice di verifica: %@";
-"sec_code_digits_a11y" = "Codice di verifica, cifre: %@";
-"sec_emoji_short" = "Emoji";
-"sec_show_digits" = "Mostra il codice in numeri";
-"sec_show_emoji" = "Mostra il codice in emoji";
 "sec_match" = "Coincide";
 "sec_match_hint" = "Segna questo dispositivo come verificato";
-"sec_scan_qr" = "Verifica con QR";
-"sec_show_my_qr" = "Mostra il mio QR";
 "sec_later" = "Più tardi";
 "sec_name_clash" = "⚠ Un dispositivo che conosci usa già questo nome: potrebbe essere qualcuno che si spaccia per lui.";
 "sec_verified_now" = "%@ è ora verificato ✓";
@@ -82,18 +76,6 @@
 "aborts_banner" = "Connessioni interrotte sospette da %@ (%d): qualcuno su questa rete potrebbe provare a indovinare il codice di verifica. I tentativi vengono rallentati.";
 "trust_not_saved" = "Impossibile salvare l'elenco dei dispositivi conosciuti: %@";
 "trust_problem" = "L'elenco dei dispositivi conosciuti era danneggiato ed è stato azzerato: %@";
-"camera_denied" = "La fotocamera non è consentita: confronta il codice (Impostazioni → Privacy e sicurezza → Fotocamera → Hoppy).";
-"camera_unavailable" = "Nessuna fotocamera disponibile: confronta il codice.";
-"scan_title" = "Inquadra il codice QR";
-"scan_hint" = "Inquadra il codice QR mostrato dall'altro dispositivo.";
-"qr_checking" = "Controllo il codice QR…";
-"qr_invalid" = "Questo non è un codice di verifica di Hoppy.";
-"qr_local_only" = "%1$@ è verificato qui, ma non ha confermato: %2$@";
-"qr_mismatch" = "Il codice QR non corrisponde a questo dispositivo: non è stato verificato nulla (%@).";
-"qr_title" = "Il mio codice QR";
-"qr_hint" = "Sull'altro telefono o tablet, in Hoppy, tocca «Verifica con QR» e inquadra questo codice.";
-"qr_image_label" = "Codice QR per verificare questo dispositivo";
-"qr_expires" = "Il codice vale una volta sola e solo finché questa schermata è aperta.";
 "close" = "Chiudi";
 "share_device_name" = "%@ (Condividi)";
 

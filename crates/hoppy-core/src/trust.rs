@@ -1,10 +1,9 @@
-//! Trust on first use (spec §7.5) and device verification (§7.6–7.7).
+//! Trust on first use (spec §7.5) and device verification (§7.6: comparing 4 emoji).
 //!
 //! [`TrustStore`] is pure data (`id → fingerprint, name, first_seen, verified, addr`), saved
 //! as JSON by the platform. [`Trust`] wraps it for a running node: thread-safe, optionally
 //! backed by a file that every change re-reads, merges and rewrites under a lock file, so two
-//! processes of the same user (tray and "Send to") do not undo each other, plus the one-time
-//! codes of QR codes on screen.
+//! processes of the same user (tray and "Send to") do not undo each other.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -17,13 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::crypto::{self, DeviceKey, QrPayload};
+use crate::crypto;
 use crate::protocol::DeviceInfo;
 
-/// A QR code on screen accepts its one-time code this long.
-pub const QR_CODE_TTL: Duration = Duration::from_secs(600);
-/// QR codes remembered at once (older ones are dropped).
-const MAX_QR_CODES: usize = 4;
 /// A lock file older than this belongs to a crashed process and is removed.
 const STALE_LOCK: Duration = Duration::from_secs(10);
 /// How long a change waits for another process's lock.
@@ -33,11 +28,11 @@ const LOCK_WAIT: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustState {
-    /// First contact: never seen. Show the SAS and offer "Verify now" / "Later".
+    /// First contact: never seen. Show the SAS (4 emoji), offer "They match" / "Later".
     New,
-    /// Seen before with this key (TOFU), not verified. Show the SAS, offer "Verify".
+    /// Seen before with this key (TOFU), not verified. Same as New in the UI.
     Known,
-    /// The user verified this key (code compared or QR scanned): show ✓.
+    /// The user compared the emoji and confirmed "They match": show ✓.
     Verified,
     /// Seen before with a DIFFERENT key: block (refuse to send, auto-decline) and warn.
     KeyChanged,
@@ -232,7 +227,6 @@ pub fn unix_now() -> u64 {
 struct Inner {
     store: TrustStore,
     path: Option<PathBuf>,
-    qr_codes: Vec<(String, Instant)>,
     /// Something the user should hear about (corrupt file set aside, …), taken once.
     warning: Option<String>,
 }
@@ -349,7 +343,6 @@ impl Trust {
             inner: Arc::new(Mutex::new(Inner {
                 store,
                 path: None,
-                qr_codes: Vec::new(),
                 warning: None,
             })),
         }
@@ -364,7 +357,6 @@ impl Trust {
             inner: Arc::new(Mutex::new(Inner {
                 store: store.unwrap_or_else(TrustStore::new),
                 path: Some(path.to_path_buf()),
-                qr_codes: Vec::new(),
                 warning,
             })),
         })
@@ -435,7 +427,7 @@ impl Trust {
         self.snapshot().name_taken_by_other(id, name)
     }
 
-    /// "Coincide" / "They match" after comparing the SAS, or a QR scan that matched.
+    /// "Coincide" / "They match" after comparing the SAS (local only: nothing is sent).
     pub fn mark_verified(&self, peer: &PeerKey) -> Result<(), Error> {
         self.update(|s| (s.set_verified(peer, unix_now()), true))?
     }
@@ -453,88 +445,6 @@ impl Trust {
             let removed = s.forget(id);
             (removed, removed)
         })
-    }
-
-    /// Starts showing a QR code for this device (spec §7.7): returns the payload to render.
-    /// Its one-time code is accepted by this node's receiver for [`QR_CODE_TTL`].
-    pub fn begin_qr(&self, me: &DeviceInfo, key: &DeviceKey) -> String {
-        let code = crypto::new_qr_code();
-        let mut inner = self.lock();
-        let now = Instant::now();
-        inner
-            .qr_codes
-            .retain(|(_, t)| now.duration_since(*t) < QR_CODE_TTL);
-        if inner.qr_codes.len() >= MAX_QR_CODES {
-            inner.qr_codes.remove(0);
-        }
-        inner.qr_codes.push((code.clone(), now));
-        QrPayload {
-            id: me.id.clone(),
-            fingerprint: key.fingerprint(),
-            code,
-        }
-        .encode()
-    }
-
-    /// The QR code was closed: its code is no longer accepted.
-    pub fn end_qr(&self) {
-        self.lock().qr_codes.clear();
-    }
-
-    /// Consumes a live one-time code (constant-time compare). Used by the receiver when a
-    /// scanner says "verified" (spec §7.7).
-    pub(crate) fn take_qr_code(&self, code: &str) -> bool {
-        let mut inner = self.lock();
-        let now = Instant::now();
-        inner
-            .qr_codes
-            .retain(|(_, t)| now.duration_since(*t) < QR_CODE_TTL);
-        let found = inner
-            .qr_codes
-            .iter()
-            .position(|(c, _)| crate::protocol::tokens_equal(c, code));
-        if let Some(i) = found {
-            inner.qr_codes.remove(i);
-        }
-        found.is_some()
-    }
-
-    /// Scanner side, local part of spec §7.7: the scanned fingerprint must equal the key
-    /// this device knows for that id — from `live` (the session being shown, e.g. the
-    /// accept dialog) when its id matches, else the pinned one. On a match the key is
-    /// marked verified and the payload is returned, so the caller can tell the other side
-    /// (`transfer::confirm_qr`). Mismatch → [`Error::VerificationFailed`].
-    pub fn check_qr(
-        &self,
-        payload: &str,
-        live: Option<&PeerKey>,
-    ) -> Result<(QrPayload, PeerKey), Error> {
-        let qr = QrPayload::parse(payload)
-            .ok_or_else(|| Error::Input("not a Hoppy verification code".into()))?;
-        let known = match live.filter(|p| p.id == qr.id) {
-            Some(p) => p.clone(),
-            None => {
-                let e = self.get(&qr.id).ok_or_else(|| {
-                    Error::VerificationFailed(
-                        "unknown device: exchange a file with it first, then scan again".into(),
-                    )
-                })?;
-                PeerKey {
-                    id: qr.id.clone(),
-                    name: e.name,
-                    platform: String::new(),
-                    fingerprint: e.fingerprint,
-                }
-            }
-        };
-        if known.fingerprint != qr.fingerprint {
-            return Err(Error::VerificationFailed(format!(
-                "the code does not match the key of {} (possible interception)",
-                known.name
-            )));
-        }
-        self.mark_verified(&known)?;
-        Ok((qr, known))
     }
 }
 
@@ -651,60 +561,5 @@ mod tests {
         assert!(t.name_taken_by_other("b", " NAME-A "));
         assert!(!t.name_taken_by_other("a", "name-a"), "its own name");
         assert!(!t.name_taken_by_other("b", "other"));
-    }
-
-    #[test]
-    fn qr_codes_are_one_time() {
-        let trust = Trust::in_memory(TrustStore::new());
-        let key = DeviceKey::generate();
-        let me = DeviceInfo {
-            id: "pc".into(),
-            name: "PC".into(),
-            platform: "windows".into(),
-        };
-        let payload = trust.begin_qr(&me, &key);
-        let qr = QrPayload::parse(&payload).unwrap();
-        assert_eq!(qr.fingerprint, key.fingerprint());
-        assert!(!trust.take_qr_code(&"0".repeat(32)));
-        assert!(trust.take_qr_code(&qr.code));
-        assert!(!trust.take_qr_code(&qr.code), "used once");
-        let again = QrPayload::parse(&trust.begin_qr(&me, &key)).unwrap();
-        trust.end_qr();
-        assert!(!trust.take_qr_code(&again.code), "closed");
-    }
-
-    #[test]
-    fn scanner_checks_fingerprint() {
-        let trust = Trust::in_memory(TrustStore::new());
-        let key = DeviceKey::generate();
-        let pc = DeviceInfo {
-            id: "pc".into(),
-            name: "PC".into(),
-            platform: "windows".into(),
-        };
-        let shown = Trust::in_memory(TrustStore::new()).begin_qr(&pc, &key);
-        // Never seen and no live session: cannot verify.
-        assert!(matches!(
-            trust.check_qr(&shown, None),
-            Err(Error::VerificationFailed(_))
-        ));
-        // A live session with another key (man in the middle): refused, nothing stored.
-        let mitm = PeerKey::new(&pc, DeviceKey::generate().fingerprint());
-        assert!(matches!(
-            trust.check_qr(&shown, Some(&mitm)),
-            Err(Error::VerificationFailed(_))
-        ));
-        assert_eq!(trust.get("pc"), None);
-        // The real key, from the live session: verified and pinned.
-        let real = PeerKey::new(&pc, key.fingerprint());
-        let (qr, who) = trust.check_qr(&shown, Some(&real)).unwrap();
-        assert_eq!((qr.id.as_str(), who), ("pc", real.clone()));
-        assert_eq!(trust.state("pc", &key.fingerprint()), TrustState::Verified);
-        // Later, from the store alone.
-        assert!(trust.check_qr(&shown, None).is_ok());
-        assert!(matches!(
-            trust.check_qr("hello", None),
-            Err(Error::Input(_))
-        ));
     }
 }

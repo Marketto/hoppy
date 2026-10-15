@@ -8,9 +8,9 @@
 //! an option. zenity's question/error text is shown with `--no-markup`; kdialog guesses
 //! rich text from `<…>`, so those characters are swapped for look-alikes there.
 //!
-//! The verification dialog (`dialog_args`) is the one place with Pango markup on: large
-//! emoji and the QR code drawn with Unicode half blocks in a black-on-white monospace span
-//! (it scans like a picture). Every text in it goes through `markup_escape` first.
+//! The verification dialog (`dialog_args`) is the one place with Pango markup on: the 4
+//! emoji large, their names small under them. Every text in it goes through
+//! `markup_escape` first.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -207,77 +207,30 @@ pub fn markup_escape(s: &str) -> String {
     out
 }
 
-/// Pango sizes in 1/1024 pt (the integer form works with every Pango version): emoji,
-/// digits, and the QR code's half blocks (7 pt: about 4 px per module at 96 dpi).
+/// Pango size of the emoji, in 1/1024 pt (the integer form works with every Pango version).
 const EMOJI_SIZE: u32 = 30 * 1024;
-const DIGITS_SIZE: u32 = 26 * 1024;
-const QR_SIZE: u32 = 7 * 1024;
-
-/// What the verification dialog shows this time (it is re-opened to switch).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DialogState {
-    /// The code as digits instead of emoji.
-    pub digits: bool,
-    /// The QR code was confirmed: ✓ text instead of the code.
-    pub verified: bool,
-}
 
 /// The Pango markup of the verification dialog's text.
-pub fn dialog_markup(view: &DialogView, state: DialogState) -> String {
+pub fn dialog_markup(view: &DialogView) -> String {
     let mut parts = vec![markup_escape(&view.text)];
     if !view.note.is_empty() {
         parts.push(markup_escape(&view.note));
     }
     if let Some(code) = &view.code {
-        parts.push(if state.digits {
-            format!(
-                "<span size=\"{DIGITS_SIZE}\" font_family=\"monospace\"><b>{}</b></span>",
-                markup_escape(&code.digits)
-            )
-        } else {
-            format!(
-                "<span size=\"{EMOJI_SIZE}\">{}</span>\n<small>{}</small>",
-                markup_escape(&code.emoji_row()),
-                markup_escape(&code.names_row())
-            )
-        });
-    }
-    if let Some(qr) = &view.qr {
-        parts.push(if state.verified {
-            format!("<b>{}</b>", markup_escape(&qr.verified))
-        } else {
-            // Black on white whatever the theme, so the quiet zone stays light.
-            format!(
-                "<span font_family=\"monospace\" size=\"{QR_SIZE}\" background=\"white\" \
-                 foreground=\"black\">{}</span>\n{}",
-                qr.matrix.half_blocks(),
-                markup_escape(&qr.caption)
-            )
-        });
+        parts.push(format!(
+            "<span size=\"{EMOJI_SIZE}\">{}</span>\n<small>{}</small>",
+            markup_escape(&code.emoji_row()),
+            markup_escape(&code.names_row())
+        ));
     }
     parts.join("\n\n")
 }
 
-/// The code toggle's label for `state` ("123" while the emoji show).
-fn toggle_label(view: &DialogView, state: DialogState) -> Option<&str> {
-    let code = view.code.as_ref()?;
-    Some(if state.digits {
-        &code.to_emoji
-    } else {
-        &code.to_digits
-    })
-}
-
 /// Arguments of the verification dialog. zenity: a question whose Cancel button is the
-/// view's first (default) button, OK the second, then the others and the code toggle as
-/// extra buttons (printed on stdout when clicked). kdialog (no markup, no extra buttons):
+/// view's first (default) button, OK the second, then the others as extra buttons (printed
+/// on stdout when clicked). kdialog (no markup, no extra buttons):
 /// a warning question with the first two buttons and everything as plain text.
-pub fn dialog_args(
-    tool: Tool,
-    view: &DialogView,
-    state: DialogState,
-    timeout: Option<Duration>,
-) -> Vec<String> {
+pub fn dialog_args(tool: Tool, view: &DialogView, timeout: Option<Duration>) -> Vec<String> {
     let label = |i: usize| view.buttons.get(i).map_or("", |b| b.1.as_str());
     match tool {
         Tool::Zenity => {
@@ -293,14 +246,11 @@ pub fn dialog_args(
             };
             args.extend([
                 format!("--title={}", view.title),
-                format!("--text={}", dialog_markup(view, state)),
+                format!("--text={}", dialog_markup(view)),
                 "--width=460".into(),
             ]);
             for (_, extra) in view.buttons.iter().skip(2) {
                 args.push(format!("--extra-button={extra}"));
-            }
-            if let Some(toggle) = toggle_label(view, state) {
-                args.push(format!("--extra-button={toggle}"));
             }
             if let Some(t) = timeout {
                 args.push(format!("--timeout={}", t.as_secs().max(1)));
@@ -328,20 +278,12 @@ pub fn dialog_args(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
     Button(u32),
-    /// The code toggle: show it again the other way.
-    Toggle,
     /// Timed out or failed: the caller uses the default.
     Closed,
 }
 
 /// Maps a dialog's exit code and stdout back to `view`'s buttons.
-pub fn parse_answer(
-    tool: Tool,
-    view: &DialogView,
-    state: DialogState,
-    code: i32,
-    stdout: &str,
-) -> Answer {
+pub fn parse_answer(tool: Tool, view: &DialogView, code: i32, stdout: &str) -> Answer {
     let id = |i: usize| view.buttons.get(i).map(|b| b.0);
     let default = id(0).map_or(Answer::Closed, Answer::Button);
     let affirmative = || id(1).or(id(0)).map_or(Answer::Closed, Answer::Button);
@@ -352,9 +294,6 @@ pub fn parse_answer(
             let printed = stdout.trim_end_matches(['\n', '\r']);
             if printed.is_empty() {
                 return default;
-            }
-            if toggle_label(view, state) == Some(printed) {
-                return Answer::Toggle;
             }
             view.buttons
                 .iter()
@@ -552,18 +491,13 @@ mod tests {
     }
 
     fn verify_view() -> DialogView {
-        use crate::verify::{CodeView, QrMatrix, QrView};
+        use crate::verify::CodeView;
         let sas = hoppy_core::Sas::from_value(0x05_1234);
         DialogView {
             title: "Hoppy — incoming files".into(),
             text: "<b>Mario</b> & co wants to send you 1 file".into(),
             note: "🔒 Encrypted · new device".into(),
-            code: Some(CodeView::new(&sas, false, "123", "Emoji")),
-            qr: Some(QrView {
-                matrix: QrMatrix::encode("hoppy:verify:1:id:FP:00").unwrap(),
-                caption: "Scan with Hoppy on the phone".into(),
-                verified: "✓ Verified".into(),
-            }),
+            code: Some(CodeView::new(&sas, false)),
             buttons: vec![
                 (1, "Decline".into()),
                 (2, "Accept".into()),
@@ -577,7 +511,7 @@ mod tests {
     #[test]
     fn verification_dialog_escapes_text_and_defaults_to_the_first_button() {
         let view = verify_view();
-        let args = dialog_args(Tool::Zenity, &view, DialogState::default(), view.timeout);
+        let args = dialog_args(Tool::Zenity, &view, view.timeout);
         assert_eq!(
             args[..4],
             [
@@ -594,55 +528,36 @@ mod tests {
             "{text}"
         );
         let code = view.code.as_ref().unwrap();
-        let row = format!("<span size=\"30720\">{}</span>", code.emoji_row());
-        assert!(text.contains(&row), "{text}");
-        assert!(text.contains("background=\"white\""));
-        assert!(text.contains(&view.qr.as_ref().unwrap().matrix.half_blocks()));
-        assert!(text.ends_with("\nScan with Hoppy on the phone"));
-        assert_eq!(
-            args[args.len() - 3..],
-            [
-                "--extra-button=They match, accept",
-                "--extra-button=123",
-                "--timeout=110"
-            ]
+        let row = format!(
+            "<span size=\"30720\">{}</span>\n<small>{}</small>",
+            code.emoji_row(),
+            code.names_row()
         );
-        // Digits, verified: the toggle flips, ✓ replaces the code.
-        let state = DialogState {
-            digits: true,
-            verified: true,
-        };
-        let args = dialog_args(Tool::Zenity, &view, state, None);
-        let text = args.iter().find(|a| a.starts_with("--text=")).unwrap();
-        assert!(text.contains(&format!("<b>{}</b>", code.digits)), "{text}");
-        assert!(text.ends_with("<b>✓ Verified</b>") && !text.contains('█'));
-        assert!(args.contains(&"--extra-button=Emoji".to_owned()));
+        assert!(text.ends_with(&row), "{text}");
+        assert_eq!(
+            args[args.len() - 2..],
+            ["--extra-button=They match, accept", "--timeout=110"]
+        );
+        let args = dialog_args(Tool::Zenity, &view, None);
         assert!(!args.iter().any(|a| a.starts_with("--timeout")));
         // kdialog: plain text, No (= Decline) focused.
-        let kde = dialog_args(Tool::Kdialog, &view, DialogState::default(), None);
+        let kde = dialog_args(Tool::Kdialog, &view, None);
         assert_eq!(kde[1..3], ["--yes-label=Accept", "--no-label=Decline"]);
         assert!(kde[3].starts_with("--warningyesno=‹b›Mario‹/b› & co"));
-        assert!(kde[3].contains(&view.code.as_ref().unwrap().digits));
+        assert!(kde[3].contains(&code.one_line()));
     }
 
     #[test]
     fn verification_answers_map_back_to_buttons() {
         let view = verify_view();
-        let s = DialogState::default();
-        let z = |code, out| parse_answer(Tool::Zenity, &view, s, code, out);
+        let z = |code, out| parse_answer(Tool::Zenity, &view, code, out);
         assert_eq!(z(0, ""), Answer::Button(2));
         assert_eq!(z(1, ""), Answer::Button(1));
         assert_eq!(z(1, "They match, accept\n"), Answer::Button(3));
-        assert_eq!(z(1, "123\n"), Answer::Toggle);
-        assert_eq!(
-            z(1, "Emoji\n"),
-            Answer::Button(1),
-            "not the toggle in this state"
-        );
         assert_eq!(z(1, "something else\n"), Answer::Button(1));
         assert_eq!(z(5, ""), Answer::Closed);
         assert_eq!(z(-1, ""), Answer::Closed);
-        let k = |code| parse_answer(Tool::Kdialog, &view, s, code, "");
+        let k = |code| parse_answer(Tool::Kdialog, &view, code, "");
         assert_eq!(
             (k(0), k(1), k(2)),
             (Answer::Button(2), Answer::Button(1), Answer::Closed)

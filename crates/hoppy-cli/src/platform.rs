@@ -480,11 +480,10 @@ pub mod win {
     };
     use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
     use windows_sys::Win32::Graphics::Gdi::{
-        BLACK_BRUSH, BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_BTNFACE,
-        CreateFontW, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_NOPREFIX, DT_SINGLELINE,
-        DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FW_NORMAL, FW_SEMIBOLD, FillRect, GetDC,
-        GetDeviceCaps, GetStockObject, GetSysColorBrush, HFONT, InvalidateRect, LOGPIXELSY,
-        OUT_DEFAULT_PRECIS, PAINTSTRUCT, ReleaseDC, SelectObject, WHITE_BRUSH,
+        CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_BTNFACE, CreateFontW, DEFAULT_CHARSET,
+        DEFAULT_PITCH, DT_CALCRECT, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, DeleteObject,
+        DrawTextW, FW_NORMAL, GetDC, GetDeviceCaps, GetSysColorBrush, HFONT, LOGPIXELSY,
+        OUT_DEFAULT_PRECIS, ReleaseDC, SelectObject,
     };
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     use windows_sys::Win32::Networking::WinHttp::{
@@ -522,10 +521,9 @@ pub mod win {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRectEx, BN_CLICKED, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, DC_HASDEFID, DM_GETDEFID,
         HMENU, HWND_TOPMOST, IDC_ARROW, IDCANCEL, IsDialogMessageW, LoadCursorW, PostQuitMessage,
-        SPI_GETWORKAREA, SW_SHOW, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow,
-        SystemParametersInfoW, WM_CLOSE, WM_COMMAND, WM_PAINT, WM_SETFONT, WS_CAPTION, WS_CHILD,
-        WS_EX_APPWINDOW, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-        WS_VISIBLE,
+        SPI_GETWORKAREA, SendMessageW, SetWindowPos, ShowWindow, SystemParametersInfoW, WM_CLOSE,
+        WM_COMMAND, WM_SETFONT, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW, WS_EX_DLGMODALFRAME,
+        WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -549,7 +547,7 @@ pub mod win {
         verb_label,
     };
     use crate::diag;
-    use crate::verify::{DialogLive, DialogView, QrMatrix};
+    use crate::verify::{DialogLive, DialogView};
 
     // The only sound `hoppyw send` plays (on delivery). 'static, so the buffer outlives the
     // asynchronous SND_MEMORY playback.
@@ -1291,18 +1289,16 @@ pub mod win {
 
     // ------------------------------------------------------------ verification dialog
     //
-    // A small window of our own (MessageBox cannot show large emoji, a toggle or a QR
-    // code): static texts, the 4 emoji in "Segoe UI Emoji" (GDI draws them in one colour,
-    // so each has its name under it), the same code as digits behind a "123" button, the QR
-    // code painted module by module, push buttons. It runs its own message loop on the
-    // calling thread (a worker: never the tray thread), with IsDialogMessageW for Tab, Enter
-    // (= the first, default button) and Esc (= closed = the default answer).
+    // A small window of our own (MessageBox cannot show large emoji): static texts, the 4
+    // emoji in "Segoe UI Emoji" (GDI draws them in one colour, so each has its name under
+    // it), push buttons. It runs its own message loop on the calling thread (a worker: never
+    // the tray thread), with IsDialogMessageW for Tab, Enter (= the first, default button)
+    // and Esc (= closed = the default answer).
 
     const DIALOG_CLASS: &str = "HoppyDialog";
     const DIALOG_TIMER: usize = 1;
-    /// Control ids: buttons `CTL_BUTTON + index`, the code toggle `CTL_TOGGLE`.
+    /// Control ids of the buttons: `CTL_BUTTON + index`.
     const CTL_BUTTON: usize = 100;
-    const CTL_TOGGLE: usize = 90;
     /// Not exported without the SystemServices feature.
     const SS_CENTER: u32 = 0x1;
     const SS_NOPREFIX: u32 = 0x80;
@@ -1310,8 +1306,6 @@ pub mod win {
     thread_local! {
         /// The last button (or Enter/Esc) of this thread's dialog, set by `dialog_wndproc`.
         static DLG_COMMAND: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
-        /// The QR code `dialog_wndproc` paints: modules, left, top, pixels per module.
-        static DLG_QR: RefCell<Option<(QrMatrix, i32, i32, i32)>> = const { RefCell::new(None) };
     }
 
     unsafe extern "system" fn dialog_wndproc(
@@ -1332,56 +1326,9 @@ pub mod win {
             }
             // Enter = the first button, never "Accept".
             DM_GETDEFID => ((DC_HASDEFID as LRESULT) << 16) | CTL_BUTTON as LRESULT,
-            WM_PAINT => {
-                paint_qr(hwnd);
-                0
-            }
             // SAFETY: forwards the unmodified arguments Windows passed to us.
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
-    }
-
-    /// Paints the QR code (black on white whatever the theme, quiet zone included).
-    fn paint_qr(hwnd: HWND) {
-        let mut ps = PAINTSTRUCT::default();
-        // SAFETY: our live window, in its WM_PAINT; EndPaint below balances BeginPaint.
-        let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-        DLG_QR.with(|qr| {
-            let Some((m, left, top, px)) =
-                qr.borrow().as_ref().map(|q| (q.0.clone(), q.1, q.2, q.3))
-            else {
-                return;
-            };
-            let n = m.full_width();
-            let side = n as i32 * px;
-            // SAFETY: stock brushes are never deleted; the DC is valid during WM_PAINT.
-            unsafe {
-                let (white, black) = (GetStockObject(WHITE_BRUSH), GetStockObject(BLACK_BRUSH));
-                let all = RECT {
-                    left,
-                    top,
-                    right: left + side,
-                    bottom: top + side,
-                };
-                FillRect(hdc, &all, white);
-                for y in 0..n {
-                    for x in 0..n {
-                        if m.is_dark(x, y) {
-                            let (l, t) = (left + x as i32 * px, top + y as i32 * px);
-                            let r = RECT {
-                                left: l,
-                                top: t,
-                                right: l + px,
-                                bottom: t + px,
-                            };
-                            FillRect(hdc, &r, black);
-                        }
-                    }
-                }
-            }
-        });
-        // SAFETY: balances BeginPaint above.
-        unsafe { EndPaint(hwnd, &ps) };
     }
 
     /// A GDI font, deleted on drop.
@@ -1491,17 +1438,6 @@ pub mod win {
         hwnd
     }
 
-    fn set_text(hwnd: HWND, text: &str) {
-        let text = wide(text);
-        // SAFETY: NUL-terminated buffer alive for the call; the control copies it.
-        unsafe { SetWindowTextW(hwnd, text.as_ptr()) };
-    }
-
-    fn show(hwnd: HWND, visible: bool) {
-        // SAFETY: plain call on our own control.
-        unsafe { ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE }) };
-    }
-
     /// The accept question: the verification dialog (Decline is the default button).
     pub fn ask_offer(view: &DialogView, live: &DialogLive) -> Option<u32> {
         show_dialog(view, live)
@@ -1540,7 +1476,6 @@ pub mod win {
         let text_font = Font::new("Segoe UI", px(15), FW_NORMAL);
         let small_font = Font::new("Segoe UI", px(12), FW_NORMAL);
         let emoji_font = Font::new("Segoe UI Emoji", px(40), FW_NORMAL);
-        let digits_font = Font::new("Segoe UI", px(34), FW_SEMIBOLD);
         let (width, margin) = (px(480), px(18));
         let inner = width - 2 * margin;
 
@@ -1595,15 +1530,13 @@ pub mod win {
             );
             y += h + px(10);
         }
-        let mut code_controls = Vec::new();
-        let mut digits = null_mut();
         if let Some(code) = &view.code {
             let cell = inner / 4;
             let (emoji_h, names_h) = (px(56), px(34));
             for i in 0..4 {
                 let x = margin + cell * i as i32;
                 let center = label | SS_CENTER;
-                code_controls.push(child(
+                child(
                     hwnd,
                     "STATIC",
                     code.emoji[i],
@@ -1611,8 +1544,8 @@ pub mod win {
                     0,
                     (x, y, cell, emoji_h),
                     &emoji_font,
-                ));
-                code_controls.push(child(
+                );
+                child(
                     hwnd,
                     "STATIC",
                     code.names[i],
@@ -1620,45 +1553,11 @@ pub mod win {
                     0,
                     (x, y + emoji_h, cell, names_h),
                     &small_font,
-                ));
+                );
             }
-            digits = child(
-                hwnd,
-                "STATIC",
-                &code.digits,
-                label | SS_CENTER,
-                0,
-                (margin, y + px(14), inner, emoji_h),
-                &digits_font,
-            );
-            show(digits, false);
             y += emoji_h + names_h + px(10);
         }
-        let mut caption = null_mut();
-        if let Some(qr) = &view.qr {
-            let module = px(4).max(3);
-            let side = qr.matrix.full_width() as i32 * module;
-            DLG_QR.with(|q| {
-                *q.borrow_mut() = Some((qr.matrix.clone(), (width - side) / 2, y, module));
-            });
-            y += side + px(6);
-            let h = text_height(&qr.caption, &text_font, inner).max(text_height(
-                &qr.verified,
-                &text_font,
-                inner,
-            ));
-            caption = child(
-                hwnd,
-                "STATIC",
-                &qr.caption,
-                label | SS_CENTER,
-                0,
-                (margin, y, inner, h),
-                &text_font,
-            );
-            y += h + px(10);
-        }
-        // Buttons right-aligned in the view's order; the code toggle on the left.
+        // Buttons right-aligned in the view's order.
         let button_h = px(30);
         let button_w = |t: &str| (text_width(t, &text_font) + px(28)).max(px(90));
         let mut x = width - margin;
@@ -1685,18 +1584,6 @@ pub mod win {
             }
             x -= px(8);
         }
-        let toggle = view.code.as_ref().map(|code| {
-            let w = button_w(&code.to_emoji).max(button_w(&code.to_digits));
-            child(
-                hwnd,
-                "BUTTON",
-                &code.to_digits,
-                WS_TABSTOP | BS_PUSHBUTTON as u32,
-                CTL_TOGGLE,
-                (margin, y, w, button_h),
-                &text_font,
-            )
-        });
         let client_h = y + button_h + margin;
 
         // Size and centre on the work area, then show.
@@ -1727,48 +1614,17 @@ pub mod win {
         }
 
         let deadline = view.timeout.map(|t| Instant::now() + t);
-        let mut showing_digits = false;
-        let mut verified_shown = false;
         DLG_COMMAND.with(|c| c.set(None));
         let answer = loop {
             if let Some(id) = DLG_COMMAND.with(std::cell::Cell::take) {
-                match id {
-                    CTL_TOGGLE => {
-                        showing_digits = !showing_digits;
-                        for &c in &code_controls {
-                            show(c, !showing_digits);
-                        }
-                        show(digits, showing_digits);
-                        if let (Some(t), Some(code)) = (toggle, &view.code) {
-                            set_text(
-                                t,
-                                if showing_digits {
-                                    &code.to_emoji
-                                } else {
-                                    &code.to_digits
-                                },
-                            );
-                        }
-                        continue;
-                    }
-                    id if id >= CTL_BUTTON => {
-                        break view.buttons.get(id - CTL_BUTTON).map(|b| b.0);
-                    }
-                    _ => break None, // Esc, the close box
-                }
+                // Esc and the close box (IDCANCEL) are below CTL_BUTTON: closed.
+                break id
+                    .checked_sub(CTL_BUTTON)
+                    .and_then(|i| view.buttons.get(i))
+                    .map(|b| b.0);
             }
             if live.closed() || deadline.is_some_and(|d| Instant::now() >= d) {
                 break None;
-            }
-            if !verified_shown
-                && live.verified()
-                && let Some(qr) = &view.qr
-            {
-                verified_shown = true;
-                DLG_QR.with(|q| q.borrow_mut().take());
-                set_text(caption, &qr.verified);
-                // SAFETY: our live window; repaints (and erases) the QR code's area.
-                unsafe { InvalidateRect(hwnd, null(), 1) };
             }
             let mut msg = MSG::default();
             // SAFETY: valid out-pointer; null hwnd = every message of this thread (the
@@ -1796,7 +1652,6 @@ pub mod win {
             KillTimer(hwnd, DIALOG_TIMER);
             DestroyWindow(hwnd);
         }
-        DLG_QR.with(|q| q.borrow_mut().take());
         DLG_COMMAND.with(|c| c.set(None));
         answer
     }

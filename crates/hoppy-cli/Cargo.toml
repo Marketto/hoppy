@@ -26,8 +26,6 @@ clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
 gethostname = "1.1.0"
 hoppy-core = { path = "../hoppy-core" }
-# QR codes of device verification (spec §7.7), drawn by each desktop backend; no renderers.
-qrcode = { version = "0.14.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Update check: verifies the downloaded installer (same version as hoppy-core).
@@ -86,7 +84,6 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSGraphics",
     "NSGraphicsContext",
     "NSImage",
-    "NSImageView",
     "NSMenu",
     "NSMenuItem",
     "NSOpenPanel",

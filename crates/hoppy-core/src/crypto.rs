@@ -1,6 +1,5 @@
 //! Protocol v1 building blocks (spec §7, ADR 0010): the device's static X25519 key, key
-//! fingerprints, the short authentication string (SAS: 4 emoji or 8 digits, same value) and
-//! the QR verification payload. The handshake itself lives in `session.rs`, the trust
+//! fingerprints and the short authentication string (SAS: 4 emoji). The handshake itself lives in `session.rs`, the trust
 //! store in `trust.rs`.
 //!
 //! Every value here has a vector in `docs/test-vectors.json` (`v1`), shared with the
@@ -19,11 +18,7 @@ use crate::Error;
 
 /// Length of an unpadded RFC 4648 base32 SHA-256 (the whole hash, 256 bits → 52 chars).
 pub const FINGERPRINT_LEN: usize = 52;
-/// Prefix of the QR verification payload (spec §7.7).
-pub const QR_PREFIX: &str = "hoppy:verify:1:";
-/// One-time QR code: 128 random bits as 32 lowercase hex characters.
-pub const QR_CODE_HEX_LEN: usize = 32;
-/// Longest device id accepted in a QR payload or a handshake (bytes).
+/// Longest device id accepted in a handshake (bytes).
 pub const MAX_ID_BYTES: usize = 128;
 
 const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -372,7 +367,7 @@ pub const SAS_EMOJI: [SasEmoji; 64] = [
 ];
 
 /// The short authentication string of a session (spec §7.6): a 24-bit value shown as
-/// 4 emoji (6 bits each, most significant first) or as 8 zero-padded digits "1234 5678".
+/// 4 emoji (6 bits each, most significant first); the only form shown to users.
 /// Both ends of an honest session show the same value; a man in the middle cannot make
 /// them match except by a 1 in 2^24 chance (commit/reveal, spec §7.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -382,8 +377,6 @@ pub struct Sas {
     pub emoji: [u8; 4],
     /// The 4 emoji as one string.
     pub text: String,
-    /// "1234 5678".
-    pub digits: String,
 }
 
 impl Sas {
@@ -395,13 +388,7 @@ impl Sas {
             .iter()
             .map(|&i| SAS_EMOJI[usize::from(i)].emoji)
             .collect();
-        let d = format!("{value:08}");
-        Self {
-            value,
-            emoji,
-            text,
-            digits: format!("{} {}", &d[..4], &d[4..]),
-        }
+        Self { value, emoji, text }
     }
 
     /// Spec §7.6: first 3 bytes (big-endian) of
@@ -427,45 +414,6 @@ impl Sas {
             })
             .collect()
     }
-}
-
-/// The QR verification payload (spec §7.7):
-/// `hoppy:verify:1:<device id>:<fingerprint>:<one-time code>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QrPayload {
-    pub id: String,
-    pub fingerprint: String,
-    pub code: String,
-}
-
-impl QrPayload {
-    pub fn encode(&self) -> String {
-        format!("{QR_PREFIX}{}:{}:{}", self.id, self.fingerprint, self.code)
-    }
-
-    /// `None` for anything that is not a well-formed v1 payload. The fingerprint is
-    /// accepted in either case (normalised to upper case); the id may contain ':'.
-    pub fn parse(text: &str) -> Option<Self> {
-        let rest = text.trim().strip_prefix(QR_PREFIX)?;
-        let mut parts = rest.rsplitn(3, ':');
-        let code = parts.next()?;
-        let fingerprint = parts.next()?.to_ascii_uppercase();
-        let id = parts.next()?;
-        let code_ok = code.len() == QR_CODE_HEX_LEN && unhex(code).is_some();
-        let id_ok = !id.is_empty() && id.len() <= MAX_ID_BYTES && !id.chars().any(char::is_control);
-        (code_ok && id_ok && is_fingerprint(&fingerprint)).then(|| Self {
-            id: id.to_string(),
-            fingerprint,
-            code: code.to_string(),
-        })
-    }
-}
-
-/// A fresh one-time QR code.
-pub fn new_qr_code() -> String {
-    let mut bytes = [0u8; QR_CODE_HEX_LEN / 2];
-    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
-    hex(&bytes)
 }
 
 #[cfg(test)]
@@ -513,7 +461,6 @@ mod tests {
                 .map(|v| v.as_u64().unwrap())
                 .collect();
             assert_eq!(sas.emoji.map(u64::from).to_vec(), idx);
-            assert_eq!(sas.digits, case["digits"].as_str().unwrap());
             assert_eq!(sas.text, case["text"].as_str().unwrap());
         }
         assert_eq!(Sas::from_value(0x1FF_FFFF).value, 0xFF_FFFF);
@@ -538,31 +485,6 @@ mod tests {
         assert_eq!(base32(b"f"), "MY");
         assert_eq!(base32(b"foobar"), "MZXW6YTBOI"); // RFC 4648 §10, unpadded
         assert_eq!(fingerprint(b"").len(), FINGERPRINT_LEN);
-    }
-
-    #[test]
-    fn qr_payload_roundtrip_and_rejects() {
-        let v = &v1()["qr_example"];
-        let text = v["payload"].as_str().unwrap();
-        let qr = QrPayload::parse(text).unwrap();
-        assert_eq!(qr.id, v["id"].as_str().unwrap());
-        assert_eq!(qr.fingerprint, v["fingerprint"].as_str().unwrap());
-        assert_eq!(qr.code, v["code"].as_str().unwrap());
-        assert_eq!(qr.encode(), text);
-        assert_eq!(
-            QrPayload::parse(&text.replace(&qr.fingerprint, &qr.fingerprint.to_lowercase())),
-            Some(qr.clone())
-        );
-        for bad in v["invalid"].as_array().unwrap() {
-            assert_eq!(QrPayload::parse(bad.as_str().unwrap()), None, "{bad}");
-        }
-        let colon = QrPayload {
-            id: "a:b".into(),
-            ..qr
-        };
-        assert_eq!(QrPayload::parse(&colon.encode()), Some(colon));
-        assert_ne!(new_qr_code(), new_qr_code());
-        assert_eq!(new_qr_code().len(), QR_CODE_HEX_LEN);
     }
 
     #[test]

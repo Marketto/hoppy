@@ -8,8 +8,8 @@ description: Use for the Windows experience - the hoppyw tray receiver, the "Sen
 PoC UX (no console windows):
 - **Receive**: `hoppyw.exe` starts at login as an icon in the notification area (near the
   clock). Each incoming offer asks with Hoppy's own dialog (`win::show_dialog`: Rifiuta
-  default / Accetta / "Coincide, accetta" + the 4-emoji code with names, "123" → digits, a
-  QR code for phones; 110 s timeout = declined); files go to `Downloads\Hoppy`; a
+  default / Accetta / "Coincide, accetta" + the 4-emoji code with names, compared by eye:
+  no digits, no QR code; 110 s timeout = declined); files go to `Downloads\Hoppy`; a
   balloon/toast says "Ricevuti N file da …", clicking it opens the folder. Verification UI:
   docs/platforms/windows.md "Device verification".
 - **Send**: Explorer → select files → right click → **Send with Hoppy** (HKCU verb; on Win11
@@ -56,9 +56,9 @@ PoC UX (no console windows):
   logged, watchdog line > 2 s). Init only in `hoppyw` tray/send (not `firewall`: elevated
   copy may be another user). Tray menu *About & diagnostics…* opens it in Notepad.
 - `crates/hoppy-cli/src/verify.rs` — what the verification dialogs show (`DialogView`:
-  text, `CodeView`, `QrView` with a `QrMatrix` from the `qrcode` crate, buttons — the first
-  is the default and the answer on close/timeout), `DialogLive` (verified → QR becomes ✓;
-  close). Built by `gui.rs` (`offer_dialog`, `code_dialog`, `key_changed_dialog`,
+  text, `CodeView` = the 4 emoji + their names, buttons — the first is the default and the
+  answer on close/timeout), `DialogLive` (close when the transfer ends). Sender code window:
+  "Più tardi"/"Later" (default) + "Coincide"/"They match". Built by `gui.rs` (`offer_dialog`, `code_dialog`, `key_changed_dialog`,
   `forget_dialog`, `device_label`, `trusted_devices`, all unit-tested), drawn by
   `ui::show_dialog` / `ui::ask_offer` on each platform.
 - `crates/hoppy-cli/src/update.rs` — tray update check, pure and Linux-tested: semver
@@ -99,8 +99,8 @@ PoC UX (no console windows):
   for netsh/powershell children of the GUI exe), and `play_done_jingle`/`stop_sound` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`;
   only `assets/music/desktop_done.wav` is embedded, with `include_bytes!`, only in Windows
   builds), and `show_dialog` (verification/warning window: STATIC/BUTTON children, emoji in
-  "Segoe UI Emoji", QR painted in `WM_PAINT`, own message loop with `IsDialogMessageW`,
-  `DM_GETDEFID` = first button, thread-locals `DLG_COMMAND`/`DLG_QR`; worker threads only,
+  "Segoe UI Emoji" with the names under them, own message loop with `IsDialogMessageW`,
+  `DM_GETDEFID` = first button, thread-local `DLG_COMMAND`; worker threads only,
   never the tray thread). On Linux `crate::linux::ui` and on macOS `crate::macos::ui` have the same API, so
   `gui.rs` compiles, lints and runs there; a new `win` function used by `gui.rs` needs its
   Linux and macOS twins (and vice versa).
@@ -192,7 +192,7 @@ send sound (silent until delivery, then the jingle once; "♪ Sound when deliver
 (UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`,
 callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while the tray
 runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon;
-verification dialogs (receiver: emoji + names legible at 100/150/200 % scaling, "123"
-toggle, Tab/Enter/Esc, Enter declines, QR scans from a phone and turns into ✓, Narrator
-reads names/digits, high-contrast theme; sender code window closes when the send ends;
+verification dialogs (receiver: emoji + names legible at 100/150/200 % scaling, no digits
+or QR code, Tab/Enter/Esc, Enter declines, Narrator reads the names, high-contrast theme;
+sender code window "Later"/"They match", closes when the send ends;
 key-change warning + "Forget device"; "Trusted devices…").

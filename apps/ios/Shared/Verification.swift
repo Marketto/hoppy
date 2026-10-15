@@ -1,6 +1,6 @@
 // Protocol v1 verification UI shared by the app and the Share extension (spec §7, ADR 0010):
-// the security line, the 4-emoji / 8-digit code with "Coincide", "Verifica con QR",
-// "Mostra il mio QR", "Più tardi", and a dismissable banner. Same UX as the other platforms.
+// the security line, the 4-emoji code compared by eye with "Coincide" / "Più tardi", and a
+// dismissable banner. Same UX as the other platforms.
 // No protocol logic: the code, the trust state and the checks come from the Rust core.
 import SwiftUI
 
@@ -21,47 +21,28 @@ enum SecurityText {
     }
 }
 
-/// The code: 4 large emoji (VoiceOver reads their names) or, with "123", 8 digits.
+/// The code: 4 large emoji (VoiceOver reads their names), compared by eye.
 struct SasView: View {
     let sas: HoppySas
     let palette: Palette
-    @State var digits = false
     @ScaledMetric(relativeTo: .largeTitle) var emojiSize: CGFloat = 44
 
     var body: some View {
-        HStack(spacing: 12) {
-            Group {
-                if digits {
-                    Text(sas.digits)
-                        .font(.system(size: emojiSize * 0.75, weight: .bold, design: .monospaced))
-                        .foregroundColor(palette.text)
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-                } else {
-                    HStack(spacing: 8) {
-                        ForEach(Array(sas.symbols.enumerated()), id: \.offset) { item in
-                            Text(item.element).font(.system(size: emojiSize))
-                        }
-                    }
-                }
+        HStack(spacing: 8) {
+            ForEach(Array(sas.symbols.enumerated()), id: \.offset) { item in
+                Text(item.element).font(.system(size: emojiSize))
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(digits
-                ? L("sec_code_digits_a11y", sas.digits.filter(\.isNumber).map(String.init).joined(separator: " "))
-                : L("sec_code_emoji_a11y", sas.names.joined(separator: ", ")))
             Spacer(minLength: 0)
-            Button(digits ? L("sec_emoji_short") : "123") { digits.toggle() }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(L(digits ? "sec_show_emoji" : "sec_show_digits"))
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L("sec_code_emoji_a11y", sas.names.joined(separator: ", ")))
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(palette.bg))
     }
 }
 
 /// Security of one session (an incoming offer or the send in progress). The buttons are
-/// shown only when the matching action is given (the Share extension has no camera and no
-/// receiver, so no QR there).
+/// shown only when the matching action is given.
 struct SecurityPanel: View {
     let security: HoppySecurity
     let peerName: String
@@ -70,8 +51,6 @@ struct SecurityPanel: View {
     var collapsed = false
     var note: String?
     var onMatch: (() -> Void)?
-    var onScanQR: (() -> Void)?
-    var onShowQR: (() -> Void)?
     var onLater: (() -> Void)?
 
     var body: some View {
@@ -99,18 +78,6 @@ struct SecurityPanel: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .accessibilityHint(L("sec_match_hint"))
-                    }
-                    if let onScanQR = onScanQR {
-                        Button(action: onScanQR) {
-                            Label(L("sec_scan_qr"), systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    if let onShowQR = onShowQR {
-                        Button(action: onShowQR) {
-                            Label(L("sec_show_my_qr"), systemImage: "qrcode").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
                     }
                     if let onLater = onLater {
                         Button(action: onLater) {

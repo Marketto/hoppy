@@ -16,11 +16,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::Error;
-use crate::crypto::{DeviceKey, QrPayload};
+use crate::crypto::DeviceKey;
 use crate::discovery::{
     CALLBACK_CONNECT_TIMEOUT, CALLBACK_RESEND, CALLBACK_WINDOW, CallbackRequest, Discovery, Peer,
     same_ip,
@@ -122,11 +121,6 @@ impl Local {
     pub fn fingerprint(&self) -> String {
         self.key.fingerprint()
     }
-
-    /// Starts showing a QR code for this device; returns the payload (spec §7.7).
-    pub fn begin_qr(&self) -> String {
-        self.trust.begin_qr(&self.device, &self.key)
-    }
 }
 
 /// Progress callbacks, shared by sender and receiver.
@@ -214,67 +208,6 @@ pub fn send_via_callback(
     let offer = build_offer(&local.device, paths)?;
     let (stream, route) = connect(peer, Some(discovery), false, progress)?;
     send_session(stream, route, peer, local, &offer, paths, progress)
-}
-
-/// Scanner side of the QR verification (spec §7.7), after `Trust::check_qr` matched
-/// locally: opens an encrypted session to `peer`, checks that it presents exactly the
-/// scanned key, and sends the one-time code so the other device marks this one verified
-/// too. The code is never sent over a session with another key.
-pub fn confirm_qr(
-    peer: &Peer,
-    local: &Local,
-    discovery: Option<&Discovery>,
-    qr: &QrPayload,
-) -> Result<(), Error> {
-    if peer.device.id != qr.id {
-        return Err(Error::Input("the code belongs to another device".into()));
-    }
-    let (stream, _) = connect(peer, discovery, true, &mut |_| {})?;
-    let timing = Timing::new(IO_TIMEOUT, Some(Instant::now() + IO_TIMEOUT));
-    let mut timed = TimedStream::new(&stream, &timing)?;
-    let opened = open_initiator(
-        &stream,
-        &mut timed,
-        local,
-        Some(&qr.id),
-        Some(&qr.fingerprint),
-    );
-    let (cipher, _) = match opened {
-        Ok(v) => v,
-        Err(Handshake::PeerClosed) => {
-            return Err(Error::Unencrypted(format!(
-                "{} cannot verify (old Hoppy version)",
-                peer.device.name
-            )));
-        }
-        Err(Handshake::Failed(e)) => return Err(e),
-    };
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
-    let mut writer = NoiseWriter::new(stream.try_clone()?, cipher.clone());
-    let mut reader = NoiseReader::new(BufReader::new(timed), cipher);
-    protocol::write_json(
-        &mut writer,
-        &VerifyRequest {
-            verify: qr.code.clone(),
-        },
-    )?;
-    writer.flush()?;
-    let result: TransferResult = protocol::read_json(&mut reader)?;
-    if result.ok {
-        Ok(())
-    } else {
-        Err(Error::Remote(
-            result
-                .error
-                .unwrap_or_else(|| "verification refused".into()),
-        ))
-    }
-}
-
-/// First frame of a verification session instead of an Offer (spec §7.7).
-#[derive(Serialize, Deserialize)]
-struct VerifyRequest {
-    verify: String,
 }
 
 /// How the connection came about; a callback hello may say whether the peer encrypts.
@@ -519,15 +452,13 @@ fn closed_by_peer(e: &std::io::Error) -> bool {
 }
 
 /// Initiator side of spec §7.3 on a fresh connection: `HOPY 0x01` + message 1, read
-/// message 2 (from `reader`, which bounds the time), check the responder (expected id;
-/// `expect_fp` for QR verification, else the trust store: a changed key aborts before we
-/// reveal anything), write message 3.
+/// message 2 (from `reader`, which bounds the time), check the responder (expected id, then
+/// the trust store: a changed key aborts before we reveal anything), write message 3.
 fn open_initiator(
     stream: &TcpStream,
     reader: &mut dyn Read,
     local: &Local,
     expected_id: Option<&str>,
-    expect_fp: Option<&str>,
 ) -> Result<(Cipher, SessionInfo), Handshake> {
     let io = |e: std::io::Error| Handshake::Failed(e.into());
     stream.set_nodelay(true).map_err(io)?;
@@ -563,18 +494,8 @@ fn open_initiator(
         ))));
     }
     let state = local.trust.state(&peer.id, &peer.fingerprint);
-    match expect_fp {
-        Some(fp) if fp != peer.fingerprint => {
-            return Err(Handshake::Failed(Error::VerificationFailed(format!(
-                "{} presented another key than the scanned code (possible interception)",
-                remote.device.name
-            ))));
-        }
-        Some(_) => {}
-        None if state == TrustState::KeyChanged => {
-            return Err(Handshake::Failed(Error::KeyChanged(remote.device.name)));
-        }
-        None => {}
+    if state == TrustState::KeyChanged {
+        return Err(Handshake::Failed(Error::KeyChanged(remote.device.name)));
     }
     let msg3 = init.write_msg3(&local.device)?;
     write_frame(&mut &*stream, &msg3).map_err(io)?;
@@ -629,7 +550,7 @@ fn send_session(
     };
     let timing = new_timing();
     let mut timed = TimedStream::new(&stream, &timing)?;
-    match open_initiator(&stream, &mut timed, local, expected, None) {
+    match open_initiator(&stream, &mut timed, local, expected) {
         Ok((cipher, info)) => {
             let peer_key = info.peer.clone();
             progress(Progress::Session(info));
@@ -772,9 +693,6 @@ pub trait ReceiveHandler: Send + Sync {
     /// `encryption_required` (plaintext from a device known to encrypt, or plaintext not
     /// allowed).
     fn blocked(&self, _from: SocketAddr, _offer: &Offer, _session: &SessionInfo, _reason: &str) {}
-    /// A device that scanned this device's QR code proved it (spec §7.7): it is now
-    /// verified here too (show ✓, close the QR code).
-    fn verified(&self, _from: SocketAddr, _peer: &PeerKey) {}
     /// Something to tell the user (rate-limited by the core; spec §7.3, §7.5).
     fn warning(&self, _from: SocketAddr, _warning: &Warning) {}
     /// `true` if `decide` accepts without asking a person (`hoppy receive --yes`): such
@@ -844,7 +762,7 @@ pub fn answer_callback(
 }
 
 /// Handles a single connection (v0 or v1, chosen by the hello byte). Returns `None` if the
-/// offer was declined or invalid, or the connection was a verification.
+/// offer was declined or invalid.
 pub fn receive_one(
     stream: TcpStream,
     from: SocketAddr,
@@ -923,7 +841,8 @@ fn report_aborts(local: &Local, handler: &dyn ReceiveHandler, from: SocketAddr, 
     }
 }
 
-/// Responder side of spec §7.3, then the offer (or a verification, §7.7). Sessions that end
+/// Responder side of spec §7.3, then the offer (§7.4: any other first frame is an invalid
+/// offer). Sessions that end
 /// after message 2 without a first frame count as aborted handshakes ([`Guard`]).
 fn receive_v1(
     stream: TcpStream,
@@ -984,16 +903,6 @@ fn receive_v1(
     };
     let mut writer: Box<dyn Write> = Box::new(NoiseWriter::new(stream, cipher));
 
-    if let Some(code) = first.get("verify") {
-        let code = code.as_str().unwrap_or_default();
-        let reply = answer_verify(code, &peer, state, local);
-        if reply.ok {
-            handler.verified(from, &peer);
-        }
-        let _ = protocol::write_json(&mut writer, &reply);
-        let _ = writer.flush();
-        return None;
-    }
     let offer: Offer = match serde_json::from_value(first) {
         Ok(o) => o,
         Err(_) => {
@@ -1021,27 +930,6 @@ fn receive_v1(
         local,
         handler,
     )
-}
-
-/// The receiver's answer to a verification request (spec §7.7).
-fn answer_verify(code: &str, peer: &PeerKey, state: TrustState, local: &Local) -> TransferResult {
-    let fail = |e: &str| TransferResult {
-        ok: false,
-        error: Some(e.into()),
-    };
-    if state == TrustState::KeyChanged {
-        return fail("key_changed");
-    }
-    if !local.trust.take_qr_code(code) {
-        return fail("invalid_code");
-    }
-    match local.trust.mark_verified(peer) {
-        Ok(()) => TransferResult {
-            ok: true,
-            error: None,
-        },
-        Err(_) => fail("key_changed"),
-    }
 }
 
 /// Common to v0 and v1 once the offer is read: validate, ask, receive, answer.

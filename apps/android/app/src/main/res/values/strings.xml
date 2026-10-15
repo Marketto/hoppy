@@ -75,7 +75,7 @@
     <string name="update_failed">Update failed: %1$s</string>
     <string name="update_bad_checksum">the download is damaged (checksum mismatch)</string>
     <string name="update_install_failed">could not install</string>
-    <!-- Protocol v1 (docs/protocol.md §7): encryption badges, verification code, QR, trust warnings. -->
+    <!-- Protocol v1 (docs/protocol.md §7): encryption badges, verification code (4 emoji), trust warnings. -->
     <string name="peer_secure">%1$s · 🔒</string>
     <string name="peer_secure_verified">%1$s · 🔒 ✓</string>
     <string name="peer_plain">%1$s · ⚠ not encrypted</string>
@@ -85,26 +85,11 @@
     <string name="verify_title_new">First time with “%1$s”: check that the other screen shows the same code</string>
     <string name="verify_title_known">“%1$s” is not verified yet: compare the code</string>
     <string name="verify_code_cd">Verification code: %1$s</string>
-    <string name="verify_digits_cd">Verification code in numbers: %1$s</string>
-    <string name="verify_show_digits" translatable="false">123</string>
-    <string name="verify_show_digits_cd">Show the code as numbers</string>
-    <string name="verify_show_emoji">Emoji</string>
-    <string name="verify_show_emoji_cd">Show the code as emoji</string>
     <string name="verify_match">They match</string>
-    <string name="verify_scan">Verify with QR</string>
-    <string name="verify_show_mine">Show my QR</string>
     <string name="verify_later">Later</string>
     <string name="verify_done">✓ “%1$s” is verified</string>
     <string name="verify_name_warning">⚠ A device you already know uses this name: this one may be pretending to be it.</string>
     <string name="verify_save_failed">Could not save: %1$s</string>
-    <string name="verify_no_camera">No camera access: compare the code on both screens instead.</string>
-    <string name="verify_scan_prompt">Point at the Hoppy QR code on the other device</string>
-    <string name="verify_qr_ok">✓ “%1$s” is verified on both devices</string>
-    <string name="verify_qr_ok_local">✓ “%1$s” is verified on this phone (the other device can\'t be reached right now)</string>
-    <string name="verify_qr_mismatch">⚠ This QR code does not match the device\'s key: it may be intercepted. Nothing was verified.</string>
-    <string name="verify_qr_unknown">Send a file to this device first (or turn on receiving there), then scan again.</string>
-    <string name="verify_qr_not_hoppy">This is not a Hoppy QR code.</string>
-    <string name="verify_failed">Verification failed: %1$s</string>
     <string name="verify_action">Verify</string>
     <string name="send_encrypted">🔒 Encrypted</string>
     <string name="send_encrypted_verified">🔒 Encrypted · ✓ verified device</string>
@@ -120,8 +105,8 @@
     <string name="forget_device">Forget device</string>
     <string name="forgotten">“%1$s” forgotten. Next time it will be a new device.</string>
     <string name="channel_security">Security warnings</string>
-    <string name="incoming_secure_new">🔒 New device · code %1$s (%2$s)</string>
-    <string name="incoming_secure_known">🔒 Not verified · code %1$s (%2$s)</string>
+    <string name="incoming_secure_new">🔒 New device · code %1$s</string>
+    <string name="incoming_secure_known">🔒 Not verified · code %1$s</string>
     <string name="incoming_secure_verified">🔒 ✓ Verified device</string>
     <string name="incoming_plain">⚠ Not encrypted (old Hoppy version)</string>
     <string name="blocked_key_changed">“%1$s” has a different key than before: its files were refused</string>
@@ -129,16 +114,9 @@
     <string name="blocked_plaintext">“%1$s” tried to send without encryption: refused</string>
     <string name="blocked_plaintext_detail">That device used encryption before. It may be an impostor.</string>
     <string name="aborts_title">Someone may be guessing verification codes</string>
-    <string name="aborts_text">%1$d encrypted connections were broken off right after the key exchange. Hoppy is slowing them down. Verify your devices with the code or the QR.</string>
+    <string name="aborts_text">%1$d encrypted connections were broken off right after the key exchange. Hoppy is slowing them down. Verify your devices by comparing the emoji.</string>
     <string name="trust_not_saved">The list of known devices could not be saved: %1$s</string>
     <string name="trust_damaged">The list of known devices was damaged and has been reset.</string>
-    <string name="verified_by_qr">“%1$s” scanned your QR code: verified ✓</string>
-    <string name="scan_qr">Scan a QR</string>
-    <string name="my_qr_title">Verify this phone</string>
-    <string name="my_qr_hint">On the other device, open Hoppy and scan this code. It works once, for 10 minutes.</string>
-    <string name="my_qr_cd">QR code to verify this device</string>
-    <string name="my_fingerprint">This device\'s key:\n%1$s</string>
-    <string name="my_qr_expired">The code expired.</string>
     <plurals name="incoming_title">
         <item quantity="one">%1$s wants to send %2$d file (%3$s)</item>
         <item quantity="other">%1$s wants to send %2$d files (%3$s)</item>

@@ -13,10 +13,10 @@ import app.hoppy.security.Security
 import kotlin.concurrent.thread
 
 /**
- * Receiver side of device verification (spec §7.5–7.7), opened only from our own
+ * Receiver side of device verification (spec §7.5–7.6), opened only from our own
  * notifications (not exported):
- * - [EXTRA_PENDING]: the "Verify" action of an incoming offer: its code (emoji / 123), "They
- *   match", "Verify with QR", "Show my QR", "Later". Accept/Decline stay in the notification
+ * - [EXTRA_PENDING]: the "Verify" action of an incoming offer: its code (4 large emoji),
+ *   "They match", "Later". Accept/Decline stay in the notification
  *   (declined by default after 60 s).
  * - [EXTRA_FORGET_ID]: a sender with a different key was refused: explain, offer
  *   "Forget device" (the next contact is New).
@@ -24,16 +24,7 @@ import kotlin.concurrent.thread
 class VerifyActivity : ThemedActivity() {
     private lateinit var b: ActivityVerifyBinding
     private var panel: VerifyPanel? = null
-    private var live: PeerKey? = null
     private var pendingId = -1
-
-    private val scanner = QrScanner(
-        this,
-        onResult = { payload ->
-            QrScanner.verify(this, payload, live) { ok, message -> onVerifyResult(ok, message) }
-        },
-        onUnavailable = { Toast.makeText(this, R.string.verify_no_camera, Toast.LENGTH_LONG).show() },
-    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,15 +42,12 @@ class VerifyActivity : ThemedActivity() {
             finish() // the offer was answered or timed out meanwhile
             return
         }
-        live = session.peer
         panel = VerifyPanel(
             b.verify,
             object : VerifyPanel.Actions {
                 override fun onMatch(peer: PeerKey) {
                     VerifyPanel.markVerified(this@VerifyActivity, peer) { ok, message -> onVerifyResult(ok, message) }
                 }
-                override fun onScan() = scanner.start()
-                override fun onShowMine() = startActivity(QrActivity.showIntent(this@VerifyActivity))
                 override fun onLater() = finish()
             },
         ).also { it.show(session) }
