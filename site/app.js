@@ -32,9 +32,9 @@
       qrText: "Inquadra il codice con la fotocamera: si apre questa pagina e trovi l'app giusta.",
       allTitle: "Tutte le versioni",
       howTitle: "Come funziona",
-      step1: "Installa Hoppy sui tuoi dispositivi.",
-      step2: "Su Windows: tasto destro → Invia a → Hoppy. Su Android: Condividi → Hoppy.",
-      step3: "Tocchi il dispositivo vicino. L'altro accetta e il file arriva.",
+      howLead: "Ecco cosa vedrai su {name}, passo per passo.",
+      howLeadSoon: "Hoppy per {name} è in arrivo: ecco come funzionerà.",
+      howTabs: "Scegli il sistema",
       warn: "Anteprima: in questa versione il trasferimento non è ancora cifrato. Usa Hoppy solo su reti di cui ti fidi.",
       versionUnknown: "Versione in preparazione",
       version: "Versione {v} · {date}",
@@ -69,9 +69,9 @@
       qrText: "Point the camera at the code: this page opens and you get the right app.",
       allTitle: "All versions",
       howTitle: "How it works",
-      step1: "Install Hoppy on your devices.",
-      step2: "On Windows: right-click → Send to → Hoppy. On Android: Share → Hoppy.",
-      step3: "Tap the nearby device. They accept and the file arrives.",
+      howLead: "Here is what you will see on {name}, step by step.",
+      howLeadSoon: "Hoppy for {name} is coming soon: here is how it will work.",
+      howTabs: "Pick a system",
       warn: "Preview: transfers are not encrypted yet in this version. Use Hoppy only on networks you trust.",
       versionUnknown: "First version coming soon",
       version: "Version {v} · {date}",
@@ -323,6 +323,16 @@
         li.querySelector(".badge").textContent = t.soon;
       }
       grid.appendChild(li);
+    }
+
+    // How it works: mockups of the send/receive flow for the chosen OS (site/howto.js)
+    if (window.HoppyHowto) {
+      const icons = {};
+      for (const x of PLATFORMS) icons[x.id] = ICONS[x.icon];
+      window.HoppyHowto.render({
+        lang: state.lang, os: state.env.os, names: t.names, soon: t.soon, t, icons,
+        isLive: (id) => available(PLATFORMS.find((x) => x.id === id)),
+      });
     }
 
     // Version line
