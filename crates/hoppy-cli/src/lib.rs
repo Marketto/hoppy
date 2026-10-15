@@ -1,13 +1,17 @@
 //! Code shared by the two desktop binaries:
 //! - `hoppy` (`src/main.rs`): the CLI, also used by scripts, tests and Linux/macOS;
-//! - `hoppyw` (`src/bin/hoppyw.rs`): the Windows tray receiver + "Send to → Hoppy" GUI.
+//! - `hoppyw` (`src/bin/hoppyw.rs`): the desktop tray receiver + "Send with Hoppy" GUI
+//!   (Windows and Linux).
 //!
-//! Win32 FFI lives only in `platform.rs`; `gui.rs` is safe Rust on top of it.
+//! Win32 FFI lives only in `platform.rs`; the Linux desktop backend in `linux/`; `gui.rs`
+//! is safe, platform-neutral Rust on top of `platform::ui`.
 
 pub mod config;
 pub mod diag;
 pub mod firewall;
 pub mod gui;
+#[cfg(not(windows))]
+pub mod linux;
 pub mod platform;
 pub mod update;
 

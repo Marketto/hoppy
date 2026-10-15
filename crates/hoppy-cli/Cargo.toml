@@ -1,5 +1,6 @@
 [package]
 name = "hoppy"
+description = "Send files to nearby devices"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -51,18 +52,46 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Linux desktop (`hoppyw`, src/linux/): pure-Rust D-Bus (no libdbus), tray icon
+# (StatusNotifierItem), notifications, single instance. zbus runs its own background
+# executor thread; Hoppy's code stays blocking (no tokio).
+[target."cfg(not(windows))".dependencies]
+ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
+png = "0.18.1"
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 
 [build-dependencies]
 winresource = "0.1.34"
 
-# Debian/Ubuntu package (release.yml linux job, gated by the ENABLE_LINUX repo variable).
+# Debian/Ubuntu package (release.yml `linux` job → Hoppy-linux-amd64.deb; docs/platforms/linux.md).
+# Built on ubuntu-22.04 so it runs on Ubuntu 22.04+ (glibc 2.35). Per-user pieces (right-click
+# entries, autostart) are written by `hoppyw` on its first run, not by the package.
 [package.metadata.deb]
 name = "hoppy"
 maintainer = "Marco Ricupero <Marketto@users.noreply.github.com>"
 copyright = "2026 Marco Ricupero"
-extended-description = "Send files to nearby devices (Windows, Android, Linux) over the local network."
+extended-description = """\
+Send files to nearby devices (Windows, Android, Linux) over the local network. \
+Includes the hoppy command line tool and the Hoppy desktop app: a panel icon that \
+receives files, and "Send with Hoppy" in the Files right-click menu."""
 section = "net"
 priority = "optional"
-assets = [["target/release/hoppy", "usr/bin/", "755"], ["../../LICENSE", "usr/share/doc/hoppy/", "644"]]
+depends = "$auto"
+# zenity/kdialog: device list and file picker; curl/wget: update check; xdg-utils: open folders.
+recommends = "zenity | kdialog, curl | wget, xdg-utils"
+# Shows the panel icon on GNOME (preinstalled and enabled on Ubuntu).
+suggests = "gnome-shell-extension-appindicator"
+assets = [
+    ["target/release/hoppy", "usr/bin/", "755"],
+    ["target/release/hoppyw", "usr/bin/", "755"],
+    ["../../apps/linux/hoppy.desktop", "usr/share/applications/", "644"],
+    ["../../assets/brand/linux/hoppy-48.png", "usr/share/icons/hicolor/48x48/apps/hoppy.png", "644"],
+    ["../../assets/brand/linux/hoppy-128.png", "usr/share/icons/hicolor/128x128/apps/hoppy.png", "644"],
+    ["../../assets/brand/linux/hoppy-256.png", "usr/share/icons/hicolor/256x256/apps/hoppy.png", "644"],
+    ["../../assets/brand/linux/hoppy-512.png", "usr/share/icons/hicolor/512x512/apps/hoppy.png", "644"],
+    ["../../assets/brand/linux/hoppy.svg", "usr/share/icons/hicolor/scalable/apps/hoppy.svg", "644"],
+    ["../../LICENSE", "usr/share/doc/hoppy/", "644"],
+]

@@ -29,12 +29,15 @@ PoC UX (no console windows):
   [--restart-explorer]`, `log [--lines N]`, `firewall [--fix|--remove]` (these three run
   before `config::load_or_create`; for `firewall` the elevated copy may be another user). The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
   fallback (`send --pause` when `hoppyw.exe` is missing).
-- `crates/hoppy-cli/src/bin/hoppyw.rs` — GUI-subsystem binary; calls `hoppy::gui::run`.
-  Off Windows it prints that it is Windows-only and exits 1.
+- `crates/hoppy-cli/src/bin/hoppyw.rs` — GUI-subsystem binary; calls `hoppy::gui::run`
+  (also on Linux: `.claude/skills/hoppy-linux/SKILL.md`; elsewhere exits 1).
 - `crates/hoppy-cli/src/lib.rs` — shared helpers (`start_discovery`, `bind_receiver`,
   `default_receive_dir`, `human`, `parse_direct`, …).
 - `crates/hoppy-cli/src/gui.rs` — tray receiver + send flow, IT/EN string table
-  (`GetUserDefaultUILanguage`), safe Rust only. Worker threads update `Mutex` state and call
+  (`GetUserDefaultUILanguage`), safe Rust only, shared with Linux: it calls `platform::ui`
+  (= `win` here). The tray menu is built by `TrayMenu::items` and run by `on_pick`;
+  `ui::NATIVE_POPUPS` is true on Windows (menu built per click, `Tray::set_menu` is a
+  no-op, `TrayEvent::Menu`/`MenuOpening` never occur). Worker threads update `Mutex` state and call
   `Waker::wake` (→ `WM_APP` → `TrayEvent::Wake`); only the UI thread touches the tray.
   **The UI thread does no file/registry/network I/O and never waits on a lock held across
   I/O**: device.json is cached in `Prefs` (refreshed by a worker on each menu open; writes
@@ -83,7 +86,8 @@ PoC UX (no console windows):
   `Win32_System_Registry` feature for `SHELLEXECUTEINFOW`), `no_window` (CREATE_NO_WINDOW
   for netsh/powershell children of the GUI exe), and `play_done_jingle`/`stop_sound` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`;
   only `assets/music/desktop_done.wav` is embedded, with `include_bytes!`, only in Windows
-  builds). A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
+  builds). On Linux `crate::linux::ui` has the same API, so `gui.rs` compiles, lints and runs
+  there; a new `win` function used by `gui.rs` needs its Linux twin (and vice versa).
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
   string-interpolated): `%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk` → `hoppyw.exe send`
   and `...\Startup\Hoppy receiver.lnk` → `hoppyw.exe`.

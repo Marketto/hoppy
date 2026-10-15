@@ -22,6 +22,11 @@ pub struct Identity {
     /// per version; the menu item stays while the problem does).
     #[serde(default)]
     pub firewall_hint: String,
+    /// Linux desktop integration (right-click entries, launcher, autostart): the version
+    /// that last wrote them, or `"off"` after `hoppy uninstall` (the tray then never adds
+    /// them again by itself; `hoppy install` does).
+    #[serde(default)]
+    pub desktop_integration: String,
 }
 
 fn default_music() -> bool {
@@ -50,6 +55,7 @@ pub fn load_or_create() -> Result<Identity> {
         name: default_name(),
         music: default_music(),
         firewall_hint: String::new(),
+        desktop_integration: String::new(),
     };
     save(&identity)?;
     Ok(identity)
@@ -79,6 +85,14 @@ pub fn set_music(on: bool) -> Result<Identity> {
 pub fn set_firewall_hint(version: &str) -> Result<Identity> {
     let mut identity = load_or_create()?;
     identity.firewall_hint = version.to_owned();
+    save(&identity)?;
+    Ok(identity)
+}
+
+/// Records the Linux desktop integration state (re-reads the file first, like `set_music`).
+pub fn set_desktop_integration(state: &str) -> Result<Identity> {
+    let mut identity = load_or_create()?;
+    identity.desktop_integration = state.to_owned();
     save(&identity)?;
     Ok(identity)
 }
@@ -114,6 +128,7 @@ mod tests {
         let old: Identity = serde_json::from_str(r#"{"id":"x","name":"PC"}"#).unwrap();
         assert!(old.music);
         assert!(old.firewall_hint.is_empty());
+        assert!(old.desktop_integration.is_empty());
         let off: Identity =
             serde_json::from_str(r#"{"id":"x","name":"PC","music":false}"#).unwrap();
         assert!(!off.music);

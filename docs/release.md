@@ -7,7 +7,7 @@
 | Windows 10/11 x64 | **live** | `Hoppy-Setup-x64.exe` (Inno Setup, per-user, adds Send To), `Hoppy-windows-x64.zip` (portable) | `release.yml` → `windows` |
 | Android 10+ (phone + tablet, one universal APK) | **live** | `Hoppy-android.apk` | `release.yml` → `android` |
 | macOS 12+ — Intel Macs from 2015 and Apple silicon | gated (`ENABLE_MACOS`) | `Hoppy-macos-universal.dmg` (x86_64 + arm64 via `lipo`) | `release.yml` → `macos` |
-| Ubuntu 22.04+ x64 | gated (`ENABLE_LINUX`) | `hoppy_amd64.deb` (`cargo-deb`) | `release.yml` → `linux` |
+| Ubuntu 22.04+ x64 | **live** | `Hoppy-linux-amd64.deb` (`cargo-deb`, built on ubuntu-22.04: glibc 2.35) | `release.yml` → `linux` |
 | iPhone / iPad from 2021 | gated (`ENABLE_IOS`) | TestFlight / App Store link (no app yet) | `release.yml` → `ios` (placeholder) |
 
 Every release also carries `SHA256SUMS.txt` (`sha256sum` output: `<hex>  <name>` per line).
@@ -29,6 +29,11 @@ The **Windows tray updater** (`crates/hoppy-cli/src/update.rs`, docs/platforms/w
 /UPDATE=1` (`hoppy.iss` relaunches the tray when it sees `/UPDATE=1`, also if setup fails). A
 release without both assets is not offered. **Never rename `Hoppy-Setup-x64.exe` or
 `SHA256SUMS.txt`**, never drop the installer from the sums, and keep tags `v` + plain `X.Y.Z`.
+
+The **Linux tray** (docs/platforms/linux.md "How it works") reads the same `releases/latest`
+and offers a version only when `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached;
+it never downloads: it links to the portal, whose Ubuntu button points at
+`releases/latest/download/Hoppy-linux-amd64.deb` (`site/app.js`). **Never rename it.**
 
 **Trust model of updates.** `SHA256SUMS.txt` comes from the same GitHub Release as the
 installer, so it proves *integrity* (no corrupted or truncated download), not *authenticity*:
@@ -58,7 +63,8 @@ publishing (they appear as workflow artifacts).
 
 1. Make the platform's build real (macOS: signed `.app` in the `.dmg`; iOS: Xcode project).
 2. Set the repository variable (`Settings → Secrets and variables → Actions → Variables`):
-   `ENABLE_MACOS`, `ENABLE_LINUX` or `ENABLE_IOS` = `true`.
+   `ENABLE_MACOS` or `ENABLE_IOS` = `true` (Ubuntu is always built; `ENABLE_LINUX` is no
+   longer read).
 3. Cut a release. The portal shows a download as soon as the latest release contains the
    platform's asset; until then it says "Coming soon". For iOS, add the store link in
    `site/app.js` (`PLATFORMS`, `ios`).

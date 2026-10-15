@@ -17,7 +17,8 @@ veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto
 | --- | --- | --- |
 | **Windows** | tasto destro su uno o più file → *Invia con Hoppy*, file trascinati sull'icona Hoppy del desktop, *Invia a → Hoppy*, o clic sull'icona → *Invia file…* | icona vicino all'orologio, con conferma Sì/No |
 | **Android** | *Condividi → Hoppy* o pulsante *Invia file* | interruttore *Pronto a ricevere*, conferma da notifica |
-| **Linux / macOS** | `hoppy send` | `hoppy receive` |
+| **Ubuntu / Linux** | tasto destro su uno o più file → *Script → Invia con Hoppy* (File/Nautilus), *Invia con Hoppy* (Dolphin, Nemo), *Apri con → Hoppy*, o clic sull'icona → *Invia file…* | icona nella barra in alto, conferma con *Accetta/Rifiuta* nella notifica |
+| **macOS** | `hoppy send` | `hoppy receive` |
 
 Cinque temi animati da scegliere al primo avvio: **Purikura** (predefinito), **Showa**,
 **Manga** (proposto con il contrasto elevato), **Yume** e **Notte** (proposto con il tema scuro).
@@ -41,7 +42,17 @@ In alternativa trascina i file sull'icona **Hoppy** del desktop (doppio clic: sc
 oppure usa *Invia a → Hoppy*. Nessun permesso di amministratore, niente Microsoft Store.
 
 Se qualcosa non va, *Informazioni e diagnostica…* nel menu dell'icona apre il registro
-(`%LOCALAPPDATA%\Hoppy\hoppy.log`; da terminale: `hoppy log`).
+(`%LOCALAPPDATA%\Hoppy\hoppy.log`, su Linux `~/.local/share/hoppy/hoppy.log`; da terminale:
+`hoppy log`).
+
+**Ubuntu** (22.04 o successivo) — scarica `Hoppy-linux-amd64.deb` dalla pagina Release e aprilo
+con *App Center* (o `sudo apt install ./Hoppy-linux-amd64.deb`). Avvia **Hoppy** dalle
+applicazioni una volta: compare l'icona nella barra in alto (si riavvia da sola a ogni accesso)
+e il tasto destro sui file in *File* offre **Script → Invia con Hoppy**. Scegli il dispositivo
+dalla lista; l'avanzamento è nella notifica, con *Annulla invio*. Quando qualcuno ti invia
+dei file arriva una notifica con **Accetta / Rifiuta**; i file vanno in `Scaricati/Hoppy`.
+Su KDE la voce è direttamente nel menu del tasto destro di Dolphin. Dettagli, altri desktop e
+risoluzione dei problemi: [`docs/platforms/linux.md`](docs/platforms/linux.md).
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.
 

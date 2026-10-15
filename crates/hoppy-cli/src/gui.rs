@@ -1,7 +1,13 @@
-//! `hoppyw`: the Windows tray receiver and the "Send with Hoppy" / "Send to → Hoppy" GUI.
+//! `hoppyw`: the desktop tray receiver and the "Send with Hoppy" / "Send to → Hoppy" GUI,
+//! for Windows (`platform::win`) and Linux (`crate::linux::ui`), through `platform::ui`.
 //!
 //! - `hoppyw` (no args): single instance, notification-area icon, receives into
-//!   Downloads\Hoppy asking Yes/No for each offer, balloon when done.
+//!   Downloads\Hoppy asking Yes/No for each offer, balloon when done. Linux: panel icon
+//!   (StatusNotifierItem) with a persistent menu (`Tray::set_menu`, picks arrive as
+//!   `TrayEvent::Menu`), notifications as balloons, Accept/Decline buttons on the offer
+//!   notification, and the per-user right-click entries + autostart written on the first
+//!   run of each version (`platform::first_run_integration`).
+//! - `hoppyw open [FILE…]` (Linux launcher): files → `send`, none → the receiver.
 //! - `hoppyw send FILE…`: searches nearby devices, shows a popup menu at the cursor, sends
 //!   with progress in the tray tooltip, final balloon, then exits. Silent while searching
 //!   and sending; on delivery plays the done jingle unless muted (`music` in device.json,
@@ -17,9 +23,12 @@
 //! - `hoppyw firewall --apply|--remove`: no UI, exit code only (started elevated by the tray
 //!   and the installer).
 //!
-//! Safe Rust only: every Win32 call goes through `platform::win` (a stub off Windows, so
-//! this module is compiled and linted everywhere). Worker threads never touch the UI; they
-//! update shared state and call `Waker::wake`, which the UI thread sees as `TrayEvent::Wake`.
+//! Safe Rust only: every OS call goes through `platform::ui` (Win32 on Windows, D-Bus +
+//! zenity on Linux), so this module is compiled, linted and tested on Linux. Worker threads
+//! never touch the UI; they update shared state and call `Waker::wake`, which the UI thread
+//! sees as `TrayEvent::Wake`. `ui::NATIVE_POPUPS` (false on Linux) switches the two places
+//! where the UIs differ: popup menus vs a persistent tray menu, and menus vs dialogs that
+//! have their own Cancel button.
 //!
 //! The UI thread never does file, registry or network I/O and never waits on a lock that
 //! is held across I/O: device.json is cached in `Prefs` (re-read by a worker on each menu
@@ -45,7 +54,7 @@ use hoppy_core::{
 };
 
 use crate::firewall::{self, Verdict};
-use crate::platform::win::{self, Tray, Waker};
+use crate::platform::ui::{self, Tray, Waker};
 use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
@@ -54,7 +63,7 @@ use crate::{
 };
 
 /// Window titles double as identities: `signal_existing` looks for the tray one.
-const TRAY_WINDOW: &str = "Hoppy tray";
+pub(crate) const TRAY_WINDOW: &str = "Hoppy tray";
 const SEND_WINDOW: &str = "Hoppy send";
 const INSTANCE_MUTEX: &str = r"Local\HoppyTray";
 
@@ -122,6 +131,9 @@ pub struct Strings {
     pub restart_explorer: &'static str,
     pub classic_failed: &'static str,
     pub about_failed: &'static str,
+    pub accept: &'static str,
+    pub decline: &'static str,
+    pub no_dialog_tool: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -179,6 +191,9 @@ pub const IT: Strings = Strings {
     restart_explorer: "Il nuovo menu del tasto destro compare dopo il riavvio di Esplora risorse (o al prossimo accesso).\n\nRiavviare Esplora risorse ora? Le finestre di Esplora file aperte verranno chiuse.",
     classic_failed: "Impossibile cambiare il menu del tasto destro",
     about_failed: "Impossibile aprire il registro di diagnostica",
+    accept: "Accetta",
+    decline: "Rifiuta",
+    no_dialog_tool: "Per scegliere file e dispositivi Hoppy usa zenity: installalo con «sudo apt install zenity».",
 };
 
 pub const EN: Strings = Strings {
@@ -236,6 +251,9 @@ pub const EN: Strings = Strings {
     restart_explorer: "The new right-click menu appears after File Explorer restarts (or at the next sign-in).\n\nRestart File Explorer now? Open File Explorer windows will close.",
     classic_failed: "Could not change the right-click menu",
     about_failed: "Could not open the diagnostic log",
+    accept: "Accept",
+    decline: "Decline",
+    no_dialog_tool: "Hoppy needs zenity to pick files and devices: install it with \"sudo apt install zenity\".",
 };
 
 pub fn strings() -> &'static Strings {
@@ -335,6 +353,12 @@ pub fn run(args: Vec<OsString>) -> i32 {
     let s = strings();
     let mode = args.first().map(|a| a.to_str());
     // Not for `firewall`: the elevated copy may run as another (admin) user.
+    // `open` (Linux launcher): with files it sends them, without it is the receiver.
+    let mode = match mode {
+        Some(Some("open")) if args.len() > 1 => Some(Some("send")),
+        Some(Some("open")) => None,
+        other => other,
+    };
     match mode {
         None => diag::init("tray"),
         Some(Some("send")) => diag::init("send"),
@@ -355,7 +379,7 @@ pub fn run(args: Vec<OsString>) -> i32 {
         Ok(()) => 0,
         Err(e) => {
             diag::log(format!("exit with error: {}", diag::error_chain(&e)));
-            win::message_box_error("Hoppy", &format!("{e:#}"));
+            ui::message_box_error("Hoppy", &format!("{e:#}"));
             1
         }
     };
@@ -411,7 +435,7 @@ impl ReceiveHandler for GuiReceiver {
             return false; // another offer is waiting for an answer
         };
         let body = offer_body(self.s, offer, from);
-        let accepted = platform::ask_accept(self.s.incoming_title, &body);
+        let accepted = ui::message_box_yes_no(self.s.incoming_title, &body);
         diag::log(format!(
             "receive: offer of {} file(s) from {}: accepted={accepted}",
             offer.files.len(),
@@ -542,6 +566,9 @@ impl Ctx {
             }
             p.refreshing = false;
             drop((p, io));
+            if !ui::NATIVE_POPUPS {
+                ctx.waker.wake(); // rebuild the persistent tray menu
+            }
             let took = started.elapsed();
             if took >= diag::SLOW_HANDLER {
                 diag::log(format!("settings: refresh took {} ms", took.as_millis()));
@@ -603,7 +630,7 @@ impl Ctx {
         });
     }
 
-    /// Writes a summary line, then opens the log in Notepad.
+    /// Writes a summary line, then opens the log in Notepad (the default editor on Linux).
     fn open_about(&self, mode: UpdateMode) {
         let (music, classic) = {
             let p = lock(&self.prefs);
@@ -622,11 +649,15 @@ impl Ctx {
         thread::spawn(move || {
             diag::flush(Duration::from_secs(2));
             let opened = match diag::log_path() {
-                Some(path) => Command::new("notepad.exe")
-                    .arg(path)
-                    .spawn()
-                    .map(|_| ())
-                    .map_err(anyhow::Error::from),
+                Some(path) => Command::new(if cfg!(windows) {
+                    "notepad.exe"
+                } else {
+                    "xdg-open"
+                })
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(anyhow::Error::from),
                 None => Err(anyhow::anyhow!("LOCALAPPDATA is not set")),
             };
             if let Err(e) = opened {
@@ -641,7 +672,7 @@ fn open_dir(dir: &std::path::Path) {
     let dir = dir.to_path_buf();
     thread::spawn(move || {
         let _ = std::fs::create_dir_all(&dir);
-        if !win::open_folder(&dir) {
+        if !ui::open_folder(&dir) {
             diag::log("opening the received folder failed");
         }
     });
@@ -649,7 +680,7 @@ fn open_dir(dir: &std::path::Path) {
 
 fn open_url(url: &'static str) {
     thread::spawn(move || {
-        if !win::open_url(url) {
+        if !ui::open_url(url) {
             diag::log(format!("opening {url} failed"));
         }
     });
@@ -663,13 +694,56 @@ fn event_name(event: &TrayEvent) -> &'static str {
         TrayEvent::Wake => "wake",
         TrayEvent::Reopen => "reopen",
         TrayEvent::Timer(_) => "timer",
+        TrayEvent::Menu(_) => "menu",
+        TrayEvent::MenuOpening => "menu opening",
+    }
+}
+
+/// What the tray menu shows besides the fixed entries.
+struct TrayMenu {
+    /// (clickable, text) of the update entry.
+    update: Option<(bool, String)>,
+    firewall: Option<&'static str>,
+    music: bool,
+    classic: Option<bool>,
+}
+
+impl TrayMenu {
+    fn items<'a>(&'a self, s: &'a Strings, header: &'a str) -> Vec<MenuItem<'a>> {
+        let mut items = Vec::new();
+        if let Some((clickable, text)) = &self.update {
+            items.push(if *clickable {
+                MenuItem::Bold(ID_UPDATE, text)
+            } else {
+                MenuItem::Label(text)
+            });
+            items.push(MenuItem::Separator);
+        }
+        items.extend([
+            MenuItem::Label(header),
+            MenuItem::Action(ID_SEND, s.menu_send),
+            MenuItem::Action(ID_OPEN, s.menu_open),
+            MenuItem::Check(ID_MUSIC, s.menu_music, self.music),
+        ]);
+        if let Some(on) = self.classic {
+            items.push(MenuItem::Check(ID_CLASSIC, s.menu_classic, on));
+        }
+        if let Some(text) = self.firewall {
+            items.push(MenuItem::Action(ID_FIREWALL, text));
+        }
+        items.extend([
+            MenuItem::Separator,
+            MenuItem::Action(ID_ABOUT, s.menu_about),
+            MenuItem::Action(ID_QUIT, s.menu_quit),
+        ]);
+        items
     }
 }
 
 fn tray_mode(s: &'static Strings) -> Result<()> {
-    let Some(_instance) = win::single_instance(INSTANCE_MUTEX) else {
+    let Some(_instance) = ui::single_instance(INSTANCE_MUTEX) else {
         diag::log("tray: already running, asking it to show itself");
-        win::signal_existing(TRAY_WINDOW);
+        ui::signal_existing(TRAY_WINDOW);
         return Ok(());
     };
     // Before the icon exists, so nothing is waiting on the UI thread yet.
@@ -717,69 +791,81 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     let fw = Arc::new(Mutex::new(FirewallState::default()));
     spawn_firewall_check(&fw, tray.waker());
 
+    // Linux: right-click entries, launcher and autostart, once per version (release
+    // builds only: a dev build must not point the user's desktop at target/).
+    if !cfg!(windows) && mode != UpdateMode::Off {
+        ctx.config_job("desktop integration", platform::first_run_integration);
+    }
+
     let ready_tip = fill(s.tip_ready, &[("name", &me.name)]);
     let header = fill(s.menu_header, &[("name", &me.name)]);
+    // The tray menu as of now; on Windows built at each click, on Linux kept up to date
+    // after every event (`Tray::set_menu`).
+    let menu = || {
+        let (music, classic) = {
+            let p = lock(&ctx.prefs);
+            (p.identity.music, p.classic)
+        };
+        TrayMenu {
+            update: update_menu_text(s, &lock(&updates), mode),
+            firewall: firewall_menu_text(s, &fw, &tray),
+            music,
+            classic,
+        }
+    };
+    // Runs a menu pick; false = quit. `shown`: the menu the user picked from (toggles flip
+    // what they saw, not a value refreshed meanwhile).
+    let on_pick = |id: u32, shown: &TrayMenu, h: &mut diag::Handler<'_>| -> bool {
+        match id {
+            ID_UPDATE => start_update(s, &updates, mode, tray.waker()),
+            ID_SEND => match h.modal(|| tray.pick_files(s.pick_title)) {
+                Ok(files) if files.is_empty() => {}
+                Ok(files) => spawn_sender(&ctx, files),
+                Err(TooManyFiles) => {
+                    h.modal(|| ui::message_box_error("Hoppy", s.too_many_files));
+                }
+            },
+            ID_OPEN => open_dir(&dir),
+            ID_FIREWALL => match lock(&fw).verdict {
+                Some(Verdict::PublicNetwork) => open_url(NETWORK_SETTINGS),
+                _ => start_firewall_fix(&ctx, &fw),
+            },
+            ID_MUSIC => ctx.set_music(!shown.music),
+            ID_CLASSIC => ctx.set_classic(!shown.classic.unwrap_or(false)),
+            ID_ABOUT => ctx.open_about(mode),
+            ID_QUIT => return false,
+            _ => {}
+        }
+        true
+    };
     let mut balloon_action = BalloonAction::Nothing;
     let watch = diag::UiWatch::start();
+    // Linux: the menu currently published (`Tray::set_menu`).
+    let mut published = menu();
+    if !ui::NATIVE_POPUPS {
+        tray.set_menu(&published.items(s, &header));
+    }
     while let Some(event) = tray.next_event() {
         let mut h = watch.handler(event_name(&event));
         match event {
             TrayEvent::Click(anchor) => {
-                let (music, classic) = {
-                    let p = lock(&ctx.prefs);
-                    (p.identity.music, p.classic)
-                };
+                let current = menu();
                 // For the next menu: `hoppy music on|off` may have changed it meanwhile.
                 ctx.refresh_prefs();
-                let update_item = update_menu_text(s, &lock(&updates), mode);
-                let fw_item = firewall_menu_text(s, &fw, &tray);
-                let mut items = Vec::new();
-                if let Some((clickable, text)) = &update_item {
-                    items.push(if *clickable {
-                        MenuItem::Bold(ID_UPDATE, text)
-                    } else {
-                        MenuItem::Label(text)
-                    });
-                    items.push(MenuItem::Separator);
-                }
-                items.extend([
-                    MenuItem::Label(&header),
-                    MenuItem::Action(ID_SEND, s.menu_send),
-                    MenuItem::Action(ID_OPEN, s.menu_open),
-                    MenuItem::Check(ID_MUSIC, s.menu_music, music),
-                ]);
-                if let Some(on) = classic {
-                    items.push(MenuItem::Check(ID_CLASSIC, s.menu_classic, on));
-                }
-                if let Some(text) = fw_item {
-                    items.push(MenuItem::Action(ID_FIREWALL, text));
-                }
-                items.extend([
-                    MenuItem::Separator,
-                    MenuItem::Action(ID_ABOUT, s.menu_about),
-                    MenuItem::Action(ID_QUIT, s.menu_quit),
-                ]);
-                match h.modal(|| tray.popup_menu(&items, true, anchor)) {
-                    Some(ID_UPDATE) => start_update(s, &updates, mode, tray.waker()),
-                    Some(ID_SEND) => match h.modal(|| tray.pick_files(s.pick_title)) {
-                        Ok(files) if files.is_empty() => {}
-                        Ok(files) => spawn_sender(&ctx, files),
-                        Err(TooManyFiles) => {
-                            h.modal(|| win::message_box_error("Hoppy", s.too_many_files));
-                        }
-                    },
-                    Some(ID_OPEN) => open_dir(&dir),
-                    Some(ID_FIREWALL) => match lock(&fw).verdict {
-                        Some(Verdict::PublicNetwork) => open_url(NETWORK_SETTINGS),
-                        _ => start_firewall_fix(&ctx, &fw),
-                    },
-                    Some(ID_MUSIC) => ctx.set_music(!music),
-                    Some(ID_CLASSIC) => ctx.set_classic(!classic.unwrap_or(false)),
-                    Some(ID_ABOUT) => ctx.open_about(mode),
-                    Some(ID_QUIT) => break,
-                    _ => {}
+                let items = current.items(s, &header);
+                let picked = h.modal(|| tray.popup_menu(&items, true, anchor));
+                if let Some(id) = picked
+                    && !on_pick(id, &current, &mut h)
+                {
+                    break;
                 }
             }
+            TrayEvent::Menu(id) => {
+                if !on_pick(id, &published, &mut h) {
+                    break;
+                }
+            }
+            TrayEvent::MenuOpening => ctx.refresh_prefs(),
             TrayEvent::Wake => {
                 loop {
                     // Pop first so the lock is not held during the UI call.
@@ -822,6 +908,10 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             },
             TrayEvent::Reopen => tray.balloon("Hoppy", s.already_running, false, true),
             _ => {}
+        }
+        if !ui::NATIVE_POPUPS {
+            published = menu();
+            tray.set_menu(&published.items(s, &header));
         }
     }
     // Locals drop in reverse order: the tray icon goes first, then discovery says "bye".
@@ -921,7 +1011,7 @@ fn start_firewall_fix(ctx: &Ctx, fw: &Arc<Mutex<FirewallState>>) {
     thread::spawn(move || {
         let child = std::env::current_exe()
             .map_err(anyhow::Error::from)
-            .and_then(|exe| win::run_elevated(Some(&ctx.waker), &exe, "firewall --apply"));
+            .and_then(|exe| ui::run_elevated(Some(&ctx.waker), &exe, "firewall --apply"));
         let child = match child {
             Ok(child) => child,
             Err(e) => {
@@ -1014,6 +1104,9 @@ fn update_mode() -> UpdateMode {
     if cfg!(debug_assertions) || update::is_dev_version(update::CURRENT_VERSION) {
         return UpdateMode::Off;
     }
+    if !cfg!(windows) {
+        return UpdateMode::Portal; // Linux: notify + portal link, never self-install
+    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.to_string_lossy().into_owned()));
@@ -1036,11 +1129,12 @@ struct Updates {
     finished: Option<Result<PathBuf, String>>,
 }
 
-struct WinHttp;
+/// WinHTTP on Windows, curl/wget on Linux.
+struct NativeHttp;
 
-impl update::Http for WinHttp {
+impl update::Http for NativeHttp {
     fn get(&self, url: &str, sink: &mut HttpSink<'_>) -> Result<()> {
-        win::http_get(url, update::USER_AGENT, sink)
+        ui::http_get(url, update::USER_AGENT, sink)
     }
 }
 
@@ -1051,7 +1145,7 @@ fn spawn_update_checker(updates: &Arc<Mutex<Updates>>, waker: Waker) {
     thread::spawn(move || {
         thread::sleep(update::FIRST_CHECK);
         loop {
-            match update::check(&WinHttp, update::CURRENT_VERSION) {
+            match update::check(&NativeHttp, update::CURRENT_VERSION) {
                 Ok(Some(release)) => {
                     diag::log(format!("update: {} is available", release.version));
                     let mut u = lock(&updates);
@@ -1119,7 +1213,7 @@ fn start_update(
     let updates = Arc::clone(updates);
     thread::spawn(move || {
         let temp = std::env::temp_dir();
-        let result = update::download_fresh(&WinHttp, &release, &temp, &mut |pct| {
+        let result = update::download_fresh(&NativeHttp, &release, &temp, &mut |pct| {
             let mut u = lock(&updates);
             if u.downloading != Some(pct) {
                 u.downloading = Some(pct);
@@ -1228,7 +1322,7 @@ impl Jingle {
     /// Plays the jingle unless muted. Returns whether it plays.
     fn play(&mut self) -> bool {
         if self.enabled {
-            win::play_done_jingle();
+            ui::play_done_jingle();
             self.playing = true;
         }
         self.enabled
@@ -1238,7 +1332,7 @@ impl Jingle {
 impl Drop for Jingle {
     fn drop(&mut self) {
         if self.playing {
-            win::stop_sound();
+            ui::stop_sound();
         }
     }
 }
@@ -1273,7 +1367,7 @@ const ID_PEER: u32 = 100;
 fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let files = if files.is_empty() {
         // Desktop shortcut double-clicked (dropping files on it passes them as arguments).
-        match win::pick_files_unowned(s.pick_title) {
+        match ui::pick_files_unowned(s.pick_title) {
             Ok(files) if files.is_empty() => return Ok(()),
             Ok(files) => files,
             Err(TooManyFiles) => bail!("{}", s.too_many_files),
@@ -1305,6 +1399,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let discovery = Arc::new(start_discovery(&me, 0, &[])?);
 
     let tray = Tray::new(SEND_WINDOW, s.searching)?;
+    // Linux: a Cancel button on the "Looking for devices…" notification.
+    tray.set_menu(&[MenuItem::Action(ID_CANCEL, s.cancel)]);
     // Declared after `tray`, so it is dropped (jingle stopped) before the icon goes.
     let mut jingle = Jingle::new(identity.music);
     let state = Arc::new(Mutex::new(SendState::default()));
@@ -1333,11 +1429,10 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                 for (i, label) in labels.iter().enumerate() {
                     items.push(MenuItem::Action(ID_PEER + i as u32, label));
                 }
-                items.extend([
-                    MenuItem::Separator,
-                    MenuItem::Action(ID_RETRY, s.retry),
-                    MenuItem::Action(ID_CANCEL, s.cancel),
-                ]);
+                items.extend([MenuItem::Separator, MenuItem::Action(ID_RETRY, s.retry)]);
+                if ui::NATIVE_POPUPS {
+                    items.push(MenuItem::Action(ID_CANCEL, s.cancel)); // dialogs have their own
+                }
                 diag::log(format!("send: {} device(s) found", peers.len()));
                 match h.modal(|| tray.popup_menu(&items, false, None)) {
                     Some(ID_RETRY) => {
@@ -1350,6 +1445,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                             break;
                         };
                         let name = display_name(&peer.device.name);
+                        // Linux: a "Cancel sending" button on the progress notification.
+                        tray.set_menu(&[MenuItem::Action(ID_CANCEL, s.cancel_send)]);
                         tray.set_tip(&fill(s.waiting, &[("name", &name)]));
                         let files = files.take().unwrap_or_default();
                         spawn_send(&discovery, peer, files, &state, tray.waker());
@@ -1409,6 +1506,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     break;
                 }
             }
+            (TrayEvent::Menu(ID_CANCEL), _) => break,
             (TrayEvent::Timer(EXIT_TIMER), _) => {
                 tray.kill_timer(EXIT_TIMER);
                 break;

@@ -5,7 +5,7 @@ then **only** the skill/doc the router points you to. Humans: see `README.md`.
 
 Hoppy sends files between nearby devices (Windows, macOS, Linux, Android, iPhone)
 as simply as possible: "Send to → Hoppy", tap a device, done. Current stage:
-**PoC — Windows CLI + Android app, LAN only, protocol v0 (unencrypted)**.
+**PoC — Windows + Ubuntu desktop app + Android app, LAN only, protocol v0 (unencrypted)**.
 
 ## 1. Task router
 
@@ -16,6 +16,7 @@ Match the request to a row, load the skill, follow it. One request may hit sever
 | Wire format, discovery messages, limits, file-name rules | `.claude/skills/hoppy-protocol-change/SKILL.md` | `docs/protocol.md`, `docs/test-vectors.json` | `python3 tools/dev.py all` |
 | Rust core (discovery, transfer, sanitizing) | `.claude/skills/hoppy-rust-core/SKILL.md` | `crates/hoppy-core/src/` | `python3 tools/dev.py check` |
 | Desktop CLI, Windows "Send to", installer | `.claude/skills/hoppy-windows/SKILL.md` | `crates/hoppy-cli/src/`, `apps/windows/` | `python3 tools/dev.py check` |
+| Ubuntu/Linux desktop (tray, notifications, right-click entries, .deb) | `.claude/skills/hoppy-linux/SKILL.md` | `crates/hoppy-cli/src/linux/`, `crates/hoppy-cli/src/gui.rs`, `apps/linux/` | `python3 tools/dev.py check` (+ `cargo deb -p hoppy`) |
 | Android app (UI, service, share target, storage) | `.claude/skills/hoppy-android/SKILL.md` | `apps/android/` | `python3 tools/dev.py android-test` (+ CI build) |
 | Themes, theme picker, animations, mascots, music, fonts, app icon | `.claude/skills/hoppy-themes/SKILL.md` | `apps/android/app/src/main/java/app/hoppy/ui/theme/`, `tools/gen_mascots.py`, `tools/gen_music.py`, `tools/fonts.py`, `docs/design/themes.md` | `python3 tools/dev.py mascots` / `music` (+ CI build) |
 | Cross-implementation bugs ("works Rust→Rust, not with Android") | `.claude/skills/hoppy-interop-test/SKILL.md` | `tools/hoppy_ref.py`, `tools/interop.sh` | `python3 tools/dev.py interop` |
@@ -32,10 +33,11 @@ touches bytes on the wire or files written to disk.
 
 ```
 crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, sanitize.rs
-crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` Windows tray/Send To GUI
+crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` tray/Send GUI (Windows + Linux)
 apps/android/core/     Pure-JVM Kotlin: same protocol for Android (unit + interop tested)
 apps/android/app/      Android UI shell: share target, receive service, themes
 apps/windows/          Windows installer (Inno Setup) and install script
+apps/linux/            Linux app launcher (.desktop) shipped in the .deb
 site/                  Download portal (GitHub Pages), built by tools/site.py
 tools/dev.py           ONE command runner for everything (see `--help`)
 tools/hoppy_ref.py     Python reference implementation + debugging CLI (stdlib only)

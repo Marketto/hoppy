@@ -1,11 +1,11 @@
 //! OS integration. Windows: "Send to" + startup shortcuts, the "Send with Hoppy" Explorer
 //! verb (+ optional classic Windows 11 context menu), native dialogs and the
-//! notification-area (tray) icon used by `hoppyw`. Other desktops: stdin prompt; shell
-//! integration is documented in docs/platforms/.
+//! notification-area (tray) icon used by `hoppyw`. Linux: the same UI on freedesktop
+//! pieces (`crate::linux`), per-user right-click entries and autostart.
 //!
 //! All Win32 FFI lives in `win` below behind `#[cfg(windows)]`; only the windows-latest CI
-//! job compiles it. Non-Windows builds get a stub `win` with the same safe API whose
-//! `Tray::new` fails, so `gui.rs` is compiled and linted on every OS.
+//! job compiles it. `ui` is what `gui.rs` uses: `win` on Windows, `crate::linux::ui` (same
+//! safe API) elsewhere, so `gui.rs` is compiled, linted and partly run on Linux too.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-/// Asks the user whether to accept an incoming transfer.
+#[cfg(windows)]
+pub use win as ui;
+
+#[cfg(not(windows))]
+pub use crate::linux::ui;
+
+/// Asks the user whether to accept an incoming transfer (the `hoppy` CLI: a dialog on
+/// Windows, a terminal prompt elsewhere).
 pub fn ask_accept(title: &str, body: &str) -> bool {
     #[cfg(windows)]
     {
@@ -34,7 +41,8 @@ pub fn ask_accept(title: &str, body: &str) -> bool {
     }
 }
 
-/// UI language for `hoppyw` strings: the Windows display language (LANG elsewhere).
+/// UI language for `hoppyw` strings: the Windows display language (the message locale
+/// elsewhere).
 pub fn ui_is_italian() -> bool {
     #[cfg(windows)]
     {
@@ -42,10 +50,12 @@ pub fn ui_is_italian() -> bool {
     }
     #[cfg(not(windows))]
     {
-        std::env::var("LANG").is_ok_and(|l| l.starts_with("it"))
+        crate::linux::ui_is_italian()
     }
 }
 
+/// Windows: Send To + verb + startup shortcut. Linux: right-click entries (Nautilus, Nemo,
+/// Dolphin), launcher and autostart for this user (`linux::integration`).
 pub fn install() -> Result<()> {
     #[cfg(windows)]
     {
@@ -53,7 +63,15 @@ pub fn install() -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        anyhow::bail!("`hoppy install` is Windows-only for now; see docs/platforms/linux.md")
+        let (written, skipped) = crate::linux::integration::install_for_user(true)?;
+        crate::config::set_desktop_integration(crate::update::CURRENT_VERSION)?;
+        for path in written {
+            println!("✓ {}", path.display());
+        }
+        for path in skipped {
+            println!("- {} (yours, left unchanged)", path.display());
+        }
+        Ok(())
     }
 }
 
@@ -64,7 +82,25 @@ pub fn uninstall() -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        anyhow::bail!("`hoppy uninstall` is Windows-only for now")
+        for path in crate::linux::integration::uninstall_for_user()? {
+            println!("✓ removed {}", path.display());
+        }
+        // The tray must not add them back by itself.
+        crate::config::set_desktop_integration(crate::linux::integration::OFF)?;
+        Ok(())
+    }
+}
+
+/// Tray start: the per-user desktop integration, once per version (Linux; nothing to do
+/// on Windows, where the installer does it). Returns the settings as saved.
+pub fn first_run_integration() -> Result<crate::config::Identity> {
+    #[cfg(windows)]
+    {
+        crate::config::load_or_create()
+    }
+    #[cfg(not(windows))]
+    {
+        crate::linux::integration::first_run()
     }
 }
 
@@ -257,6 +293,11 @@ pub enum TrayEvent {
     Reopen,
     /// A timer set with `Tray::set_timer` fired.
     Timer(usize),
+    /// An item of the persistent tray menu (`Tray::set_menu`, Linux) or a notification
+    /// button was picked.
+    Menu(u32),
+    /// The persistent tray menu is about to open (Linux): refresh what it shows.
+    MenuOpening,
 }
 
 /// `Tray::pick_files`: the selection did not fit the dialog's buffer; `gather_send_files`:
@@ -409,6 +450,9 @@ pub mod win {
     // The only sound `hoppyw send` plays (on delivery). 'static, so the buffer outlives the
     // asynchronous SND_MEMORY playback.
     static DONE_JINGLE: &[u8] = include_bytes!("../../../assets/music/desktop_done.wav");
+
+    /// Tray menus are built on each click and shown at the cursor (`popup_menu`).
+    pub const NATIVE_POPUPS: bool = true;
 
     const WM_TRAY: u32 = WM_APP + 1;
     const WM_WAKE: u32 = WM_APP + 2;
@@ -898,6 +942,9 @@ pub mod win {
         pub fn waker(&self) -> Waker {
             Waker(self.hwnd as usize)
         }
+
+        /// Persistent menus are a Linux thing: Windows builds each menu on click.
+        pub fn set_menu(&self, _items: &[MenuItem<'_>]) {}
 
         pub fn set_timer(&self, id: usize, ms: u32) {
             // SAFETY: live window; no callback, so WM_TIMER is posted to `wndproc`.
@@ -1719,110 +1766,6 @@ pub mod win {
         }
         delete_tree(HOPPY_KEY)?;
         Ok(())
-    }
-}
-
-/// Same API as the Windows module; `Tray::new` fails, so nothing else is reachable.
-#[cfg(not(windows))]
-pub mod win {
-    use std::convert::Infallible;
-    use std::path::{Path, PathBuf};
-
-    use anyhow::{Result, bail};
-
-    use super::{HttpSink, MenuItem, TooManyFiles, TrayEvent};
-
-    pub struct Elevated(Infallible);
-
-    impl Elevated {
-        pub fn wait(self, _timeout_ms: u32) -> Option<u32> {
-            match self.0 {}
-        }
-    }
-
-    pub fn run_elevated(_owner: Option<&Waker>, _exe: &Path, _params: &str) -> Result<Elevated> {
-        bail!("elevation is Windows-only")
-    }
-
-    /// No sound off Windows (the jingle is not even embedded).
-    pub fn play_done_jingle() {}
-
-    pub fn stop_sound() {}
-
-    pub struct InstanceGuard;
-
-    pub fn single_instance(_name: &str) -> Option<InstanceGuard> {
-        Some(InstanceGuard)
-    }
-
-    pub fn signal_existing(_window_title: &str) -> bool {
-        false
-    }
-
-    pub fn message_box_error(title: &str, body: &str) {
-        eprintln!("{title}: {body}");
-    }
-
-    pub fn open_folder(_dir: &Path) -> bool {
-        false
-    }
-
-    pub fn open_url(_url: &str) -> bool {
-        false
-    }
-
-    pub fn pick_files_unowned(_title: &str) -> Result<Vec<PathBuf>, TooManyFiles> {
-        Ok(Vec::new())
-    }
-
-    pub fn http_get(_url: &str, _user_agent: &str, _sink: &mut HttpSink<'_>) -> Result<()> {
-        bail!("the update check is Windows-only")
-    }
-
-    #[derive(Clone)]
-    pub struct Waker(Infallible);
-
-    impl Waker {
-        pub fn wake(&self) {
-            match self.0 {}
-        }
-    }
-
-    pub struct Tray(Infallible);
-
-    impl Tray {
-        pub fn new(_window_title: &str, _tip: &str) -> Result<Tray> {
-            bail!("the Hoppy tray app is Windows-only; use the `hoppy` CLI here")
-        }
-        pub fn set_tip(&self, _tip: &str) {
-            match self.0 {}
-        }
-        pub fn balloon(&self, _title: &str, _text: &str, _error: bool, _sound: bool) {
-            match self.0 {}
-        }
-        pub fn waker(&self) -> Waker {
-            match self.0 {}
-        }
-        pub fn set_timer(&self, _id: usize, _ms: u32) {
-            match self.0 {}
-        }
-        pub fn kill_timer(&self, _id: usize) {
-            match self.0 {}
-        }
-        pub fn popup_menu(
-            &self,
-            _items: &[MenuItem<'_>],
-            _above: bool,
-            _anchor: Option<(i32, i32)>,
-        ) -> Option<u32> {
-            match self.0 {}
-        }
-        pub fn pick_files(&self, _title: &str) -> Result<Vec<PathBuf>, TooManyFiles> {
-            match self.0 {}
-        }
-        pub fn next_event(&self) -> Option<TrayEvent> {
-            match self.0 {}
-        }
     }
 }
 

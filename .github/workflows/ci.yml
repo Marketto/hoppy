@@ -12,8 +12,10 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux · check + interop + Kotlin core
+    name: Linux · check (incl. hoppyw desktop) + interop + Kotlin core
     runs-on: ubuntu-latest
+    # `dev.py all` → clippy --all-targets builds both binaries (hoppy, hoppyw) and runs the
+    # Linux desktop tests (crates/hoppy-cli/src/linux/). The .deb is built by release.yml.
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

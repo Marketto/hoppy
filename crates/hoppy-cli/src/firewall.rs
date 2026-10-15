@@ -309,6 +309,9 @@ pub fn check_code(status: Option<&Status>) -> i32 {
 
 /// Reads the firewall state for `programs` (no admin rights needed). `None` on any error.
 pub fn check(programs: &[PathBuf]) -> Option<Status> {
+    if !cfg!(windows) {
+        return None; // Windows Firewall only (no PowerShell elsewhere)
+    }
     let mut joined = OsString::new();
     for (i, p) in programs.iter().enumerate() {
         if i > 0 {
