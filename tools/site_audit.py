@@ -4,7 +4,8 @@
     python3 tools/site_audit.py            # builds the site, audits 4 views, exits 1 on violations
 
 Views: desktop/phone × light/dark, Italian, with animations frozen (reduced motion) and a
-fake release so every button is rendered. axe cannot compute contrast for text over the
+fake release so every button is rendered. In each view every "Come funziona" OS tab is
+selected in turn and its mockups audited as well. axe cannot compute contrast for text over the
 animated checkerboard; those "incomplete" items are re-checked here against BOTH tile
 colors, so the worst case must still pass.
 
@@ -116,6 +117,14 @@ def main() -> int:
                         for v in res["violations"] for n in v["nodes"]]
             problems += [("contrast-on-checkerboard", "serious", w["text"], f"{w['ratio']}:1 < {w['need']}:1")
                          for w in worst]
+            # "Come funziona": every OS tab draws different mockups; audit each one too.
+            for tab in page.eval_on_selector_all("#os-tabs [role=tab]", "els => els.map((e) => e.id)"):
+                page.click(f"#{tab}")
+                page.wait_for_timeout(50)
+                res = page.evaluate("""async () => axe.run('#come-funziona', {
+                    runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'] } })""")
+                problems += [(v["id"], v["impact"], f"{tab} {n['target']}", n.get("failureSummary", "").split("\n")[-1].strip())
+                             for v in res["violations"] for n in v["nodes"]]
             print(f"{'✓' if not problems else '✗'} {name}: {len(problems)} problem(s)")
             for pid, impact, target, why in problems:
                 print(f"   - [{impact}] {pid} {target} {why}")

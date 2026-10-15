@@ -14,16 +14,26 @@
 <link rel="icon" href="hoppy-512.png">
 <link rel="stylesheet" href="styles.css">
 <script>window.HOPPY = { repo: "__REPO__", baseUrl: "__BASE_URL__" };</script>
+<script src="howto.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
 <div class="sky" aria-hidden="true"></div>
+<!-- Shapes reused by the "Come funziona" mockups (site/howto.js). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="hb-glyph" viewBox="0 0 24 24"><g fill="currentColor"><ellipse cx="8.6" cy="7.4" rx="2.6" ry="6" transform="rotate(-10 8.6 7.4)"/><ellipse cx="15.6" cy="8" rx="2.6" ry="5" transform="rotate(12 15.6 8)"/><path d="M3.4 16.6C3.4 12.4 7 10.6 12 10.6s8.6 1.8 8.6 6c0 3.4-3.6 5-8.6 5s-8.6-1.6-8.6-5z"/></g></symbol>
+  <symbol id="hb-bunny" viewBox="0 0 200 200"><path d="M61,72 a15,36 0 1,0 30,0 a15,36 0 1,0 -30,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="4" transform="rotate(-10 76 108)"/><path d="M69.5,76 a6.5,24 0 1,0 13,0 a6.5,24 0 1,0 -13,0 Z" fill="#FFD3DC" transform="rotate(-10 76 108)"/><path d="M109,80 a15,28 0 1,0 30,0 a15,28 0 1,0 -30,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="4" transform="rotate(12 124 108)"/><path d="M117.5,84 a6.5,17 0 1,0 13,0 a6.5,17 0 1,0 -13,0 Z" fill="#FFD3DC" transform="rotate(12 124 108)"/><path d="M30,136 C30,98 62,84 100,84 C138,84 170,98 170,136 C170,166 142,180 100,180 C58,180 30,166 30,136 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="4"/><path d="M49,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z M129,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z" fill="#FFB3C1"/><path d="M68.8,131 a5.2,5.2 0 1,0 10.4,0 a5.2,5.2 0 1,0 -10.4,0 Z M120.8,131 a5.2,5.2 0 1,0 10.4,0 a5.2,5.2 0 1,0 -10.4,0 Z" fill="#3A2A26"/><path d="M93,145 Q98,143 100,137 Q102,143 107,145" fill="none" stroke="#6B4E45" stroke-width="3" stroke-linecap="round"/></symbol>
+  <symbol id="hb-happy" viewBox="0 0 200 200"><path d="M61,72 a15,36 0 1,0 30,0 a15,36 0 1,0 -30,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="4" transform="rotate(-22 76 108)"/><path d="M69.5,76 a6.5,24 0 1,0 13,0 a6.5,24 0 1,0 -13,0 Z" fill="#FFD3DC" transform="rotate(-22 76 108)"/><path d="M109,72 a15,36 0 1,0 30,0 a15,36 0 1,0 -30,0 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="4" transform="rotate(20 124 108)"/><path d="M117.5,76 a6.5,24 0 1,0 13,0 a6.5,24 0 1,0 -13,0 Z" fill="#FFD3DC" transform="rotate(20 124 108)"/><path d="M30,136 C30,98 62,84 100,84 C138,84 170,98 170,136 C170,166 142,180 100,180 C58,180 30,166 30,136 Z" fill="#FFFDF8" stroke="#6B4E45" stroke-width="4"/><path d="M49,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z M129,144 a11,6 0 1,0 22,0 a11,6 0 1,0 -22,0 Z" fill="#FFB3C1"/><path d="M66,134 Q74,124 82,134 M118,134 Q126,124 134,134" fill="none" stroke="#3A2A26" stroke-width="4" stroke-linecap="round"/><path d="M92,141 Q100,141 108,141 Q106,153 100,153 Q94,153 92,141 Z" fill="#E8758D" stroke="#6B4E45" stroke-width="2.6" stroke-linejoin="round"/><path d="M22,96 l6,-4 M18,110 l8,0 M178,96 l-6,-4 M182,110 l-8,0" stroke="#F0859A" stroke-width="4" stroke-linecap="round"/></symbol>
+</svg>
 
 <header class="top">
   <a class="logo" href="./" aria-label="Hoppy">
     <span class="logo-word">Hoppy</span><span class="logo-jp">ホッピー</span>
   </a>
-  <button class="lang" type="button" id="lang" aria-label="Change language">EN</button>
+  <div class="top-end">
+    <a class="top-link" href="#come-funziona" data-i18n="howTitle">Come funziona</a>
+    <button class="lang" type="button" id="lang" aria-label="Change language">EN</button>
+  </div>
 </header>
 
 <main>
@@ -69,20 +79,21 @@
     </aside>
   </section>
 
+  <section class="howto" id="come-funziona" aria-labelledby="how-title">
+    <div class="howto-head">
+      <h2 id="how-title" data-i18n="howTitle">Come funziona</h2>
+      <p class="howto-lead" id="howto-lead"></p>
+    </div>
+    <div class="os-tabs" role="tablist" id="os-tabs"></div>
+    <div class="howto-panel" role="tabpanel" id="howto-panel" tabindex="0"></div>
+    <p class="warn" data-i18n="warn">Anteprima: in questa versione il trasferimento non è ancora cifrato. Usa Hoppy solo su reti di cui ti fidi.</p>
+  </section>
+
   <section class="platforms" id="platforms" aria-labelledby="platforms-title">
     <h2 id="platforms-title" data-i18n="allTitle">Tutte le versioni</h2>
     <ul class="grid" id="grid"></ul>
   </section>
 
-  <section class="how" aria-labelledby="how-title">
-    <h2 id="how-title" data-i18n="howTitle">Come funziona</h2>
-    <ol class="steps">
-      <li><span class="n">1</span><p data-i18n="step1">Installa Hoppy sui tuoi dispositivi.</p></li>
-      <li><span class="n">2</span><p data-i18n="step2">Su Windows: tasto destro → Invia a → Hoppy. Su Android: Condividi → Hoppy.</p></li>
-      <li><span class="n">3</span><p data-i18n="step3">Tocchi il dispositivo vicino. L'altro accetta e il file arriva.</p></li>
-    </ol>
-    <p class="warn" data-i18n="warn">Anteprima: in questa versione il trasferimento non è ancora cifrato. Usa Hoppy solo su reti di cui ti fidi.</p>
-  </section>
 </main>
 
 <button class="music" type="button" id="music" aria-pressed="false" aria-label="Attiva musica" title="Attiva musica">
