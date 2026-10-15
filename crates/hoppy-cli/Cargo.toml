@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-# `cargo run -p hoppy` keeps meaning the CLI; `hoppyw` is the Windows tray/GUI binary.
+# `cargo run -p hoppy` keeps meaning the CLI; `hoppyw` is the desktop tray/GUI binary.
 default-run = "hoppy"
 
 [lib]
@@ -55,10 +55,85 @@ windows-sys = { version = "0.61.2", features = [
 # Linux desktop (`hoppyw`, src/linux/): pure-Rust D-Bus (no libdbus), tray icon
 # (StatusNotifierItem), notifications, single instance. zbus runs its own background
 # executor thread; Hoppy's code stays blocking (no tokio).
-[target."cfg(not(windows))".dependencies]
+[target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
 png = "0.18.1"
 zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+
+# macOS desktop (`hoppyw` in Hoppy.app, src/macos/): AppKit, UserNotifications and
+# ServiceManagement through objc2 (no Swift/Xcode project). Only the header features in use
+# are enabled (the full crates take minutes to compile, twice for the universal binary).
+# Built for macOS 12+ (MACOSX_DEPLOYMENT_TARGET=12.0 in CI/release); APIs newer than 12
+# (SMAppService) are only called after a runtime version check.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "block2", "objc2"] }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSAlert",
+    "NSApplication",
+    "NSAttributedString",
+    "NSButton",
+    "NSCell",
+    "NSControl",
+    "NSEvent",
+    "NSFont",
+    "NSGraphicsContext",
+    "NSImage",
+    "NSMenu",
+    "NSMenuItem",
+    "NSOpenPanel",
+    "NSPanel",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSSavePanel",
+    "NSSound",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+    "NSWindow",
+    "objc2-core-foundation",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSAttributedString",
+    "NSBundle",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSError",
+    "NSGeometry",
+    "NSLocale",
+    "NSObject",
+    "NSProcessInfo",
+    "NSRunLoop",
+    "NSString",
+    "NSURL",
+] }
+objc2-service-management = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "SMAppService",
+    "objc2",
+    "objc2-foundation",
+] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "UNNotification",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationResponse",
+    "UNNotificationSettings",
+    "UNNotificationSound",
+    "UNNotificationTrigger",
+    "UNUserNotificationCenter",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Turns a failed cargo log into GitHub annotations: agents can read annotations but not CI
-# logs. Used by the Windows job in .github/workflows/ci.yml (Git Bash on windows-latest).
+# logs. Used by the Windows and macOS jobs in .github/workflows/ci.yml (Git Bash on
+# windows-latest, bash on macos-latest) and by release.yml.
 #
 #   bash tools/ci-annotate.sh LABEL LOGFILE
 #
@@ -18,17 +19,21 @@ max_blocks=5
 max_block_lines=40
 used=0
 
+# Patterns and replacements live in variables: bash 3.2 (macOS /bin/bash) keeps the quotes
+# of a quoted replacement literally.
+pct='%' pct_esc='%25' colon=':' colon_esc='%3A' comma=',' comma_esc='%2C' cr=$'\r'
+
 escape() { # workflow-command data escaping
-  local s=${1//'%'/'%25'}
-  s=${s//$'\r'/}
+  local s=${1//$pct/$pct_esc}
+  s=${s//$cr/}
   printf '%s' "$s"
 }
 
 prop() { # workflow-command property escaping (title=, file=)
   local s
   s=$(escape "$1")
-  s=${s//':'/'%3A'}
-  printf '%s' "${s//','/'%2C'}"
+  s=${s//$colon/$colon_esc}
+  printf '%s' "${s//$comma/$comma_esc}"
 }
 
 # "panicked at crates\x\y.rs:12:5:" or "path:12:5: error: …" → file line col (slashes fixed)

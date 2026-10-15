@@ -1,11 +1,13 @@
 //! OS integration. Windows: "Send to" + startup shortcuts, the "Send with Hoppy" Explorer
 //! verb (+ optional classic Windows 11 context menu), native dialogs and the
 //! notification-area (tray) icon used by `hoppyw`. Linux: the same UI on freedesktop
-//! pieces (`crate::linux`), per-user right-click entries and autostart.
+//! pieces (`crate::linux`), per-user right-click entries and autostart. macOS: the same UI
+//! on AppKit (`crate::macos`): menu-bar icon, Finder service, login item.
 //!
 //! All Win32 FFI lives in `win` below behind `#[cfg(windows)]`; only the windows-latest CI
-//! job compiles it. `ui` is what `gui.rs` uses: `win` on Windows, `crate::linux::ui` (same
-//! safe API) elsewhere, so `gui.rs` is compiled, linted and partly run on Linux too.
+//! job compiles it. `ui` is what `gui.rs` uses: `win` on Windows, `crate::linux::ui` or
+//! `crate::macos::ui` (same safe API) elsewhere, so `gui.rs` is compiled, linted and partly
+//! run on Linux too.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,8 +18,16 @@ use anyhow::Result;
 #[cfg(windows)]
 pub use win as ui;
 
+/// The non-Windows desktop backend: `install`, `uninstall`, `first_run_integration`,
+/// `ui_is_italian` and `ui` with the same names on Linux and macOS.
 #[cfg(not(windows))]
-pub use crate::linux::ui;
+#[cfg(not(target_os = "macos"))]
+use crate::linux as desktop;
+#[cfg(target_os = "macos")]
+use crate::macos as desktop;
+
+#[cfg(not(windows))]
+pub use desktop::ui;
 
 /// Asks the user whether to accept an incoming transfer (the `hoppy` CLI: a dialog on
 /// Windows, a terminal prompt elsewhere).
@@ -41,8 +51,8 @@ pub fn ask_accept(title: &str, body: &str) -> bool {
     }
 }
 
-/// UI language for `hoppyw` strings: the Windows display language (the message locale
-/// elsewhere).
+/// UI language for `hoppyw` strings: the Windows display language (Linux: the message
+/// locale; macOS: the first preferred language).
 pub fn ui_is_italian() -> bool {
     #[cfg(windows)]
     {
@@ -50,12 +60,13 @@ pub fn ui_is_italian() -> bool {
     }
     #[cfg(not(windows))]
     {
-        crate::linux::ui_is_italian()
+        desktop::ui_is_italian()
     }
 }
 
 /// Windows: Send To + verb + startup shortcut. Linux: right-click entries (Nautilus, Nemo,
-/// Dolphin), launcher and autostart for this user (`linux::integration`).
+/// Dolphin), launcher and autostart for this user (`linux::integration`). macOS: login
+/// item + Services refresh (the Finder service itself is declared in Info.plist).
 pub fn install() -> Result<()> {
     #[cfg(windows)]
     {
@@ -63,15 +74,7 @@ pub fn install() -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let (written, skipped) = crate::linux::integration::install_for_user(true)?;
-        crate::config::set_desktop_integration(crate::update::CURRENT_VERSION)?;
-        for path in written {
-            println!("✓ {}", path.display());
-        }
-        for path in skipped {
-            println!("- {} (yours, left unchanged)", path.display());
-        }
-        Ok(())
+        desktop::install()
     }
 }
 
@@ -82,17 +85,12 @@ pub fn uninstall() -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        for path in crate::linux::integration::uninstall_for_user()? {
-            println!("✓ removed {}", path.display());
-        }
-        // The tray must not add them back by itself.
-        crate::config::set_desktop_integration(crate::linux::integration::OFF)?;
-        Ok(())
+        desktop::uninstall()
     }
 }
 
-/// Tray start: the per-user desktop integration, once per version (Linux; nothing to do
-/// on Windows, where the installer does it). Returns the settings as saved.
+/// Tray start: the per-user desktop integration, once per version (Linux, macOS; nothing
+/// to do on Windows, where the installer does it). Returns the settings as saved.
 pub fn first_run_integration() -> Result<crate::config::Identity> {
     #[cfg(windows)]
     {
@@ -100,7 +98,34 @@ pub fn first_run_integration() -> Result<crate::config::Identity> {
     }
     #[cfg(not(windows))]
     {
-        crate::linux::integration::first_run()
+        desktop::first_run_integration()
+    }
+}
+
+/// "Open at login" (macOS login item): `Some(on)`, or `None` where the tray menu has no
+/// such switch (Windows and Linux use a startup shortcut / autostart file instead, and a
+/// macOS copy not running from an app bundle).
+pub fn login_item() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::login::enabled()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Turns "Open at login" on/off (macOS).
+pub fn set_login_item(on: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::login::set(on)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = on;
+        anyhow::bail!("\"Open at login\" is a macOS setting")
     }
 }
 

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hoppy.app (built by apps/macos/build-app.sh, which replaces @VERSION@ with the numeric
+     x.y.z part of the release version, as CFBundleVersion requires).
+     Kept in sync with crates/hoppy-cli/src/macos/mod.rs by a unit test. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Hoppy</string>
+	<key>CFBundleExecutable</key>
+	<string>hoppyw</string>
+	<key>CFBundleIconFile</key>
+	<string>Hoppy</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.hoppy.desktop</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>it</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>Hoppy</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Marco Ricupero</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Hoppy finds nearby devices and exchanges files with them on your local network.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Hoppy saves the files you accept in Downloads/Hoppy and sends the files you choose.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Hoppy reads the files you choose to send.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Hoppy reads the files you choose to send.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Hoppy reads the files you choose to send.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Hoppy reads the files you choose to send.</string>
+	<!-- Finder: right-click → Services → "Send with Hoppy" (it.lproj/ServicesMenu.strings
+	     translates the title). NSRequiredContext makes it enabled by default. -->
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Send with Hoppy</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>sendFiles</string>
+			<key>NSPortName</key>
+			<string>Hoppy</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Files dropped on the app icon and "Open With → Hoppy" (never the default app). -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

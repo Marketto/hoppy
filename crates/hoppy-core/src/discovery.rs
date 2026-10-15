@@ -705,6 +705,10 @@ mod tests {
             return;
         };
         let probe = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        // Fail instead of hanging if this OS hands the unicast to the listener (macOS CI).
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
         let mut buf = [0u8; 16];
         for i in 0..8u8 {
             probe

@@ -6,7 +6,7 @@ description: Use when working on the Rust crates (hoppy-core library or the hopp
 # Rust core
 
 `crates/hoppy-core` is the desktop engine; `crates/hoppy-cli` holds the `hoppy` CLI and the
-`hoppyw` tray/GUI binary (Windows + Linux), sharing `src/lib.rs`.
+`hoppyw` tray/GUI binary (Windows + Linux + macOS), sharing `src/lib.rs`.
 Design notes: `docs/architecture.md`. Wire rules: `docs/protocol.md`.
 
 ## Layout
@@ -29,9 +29,12 @@ Design notes: `docs/architecture.md`. Wire rules: `docs/protocol.md`.
 - No `unwrap()` on network or file data; map to `Error::{Io,Protocol,Input,Remote}`.
 - `#[cfg(windows)]` code lives only in `crates/hoppy-cli/src/platform.rs`. It cannot be
   compiled on Linux without the Windows target, so keep it tiny and let CI (windows-latest)
-  check it. The Linux desktop backend (`crates/hoppy-cli/src/linux/`, `#[cfg(not(windows))]`)
+  check it. The Linux desktop backend (`crates/hoppy-cli/src/linux/`, non-Windows non-macOS)
   has the same `platform::ui` API, so `gui.rs` is compiled, linted and tested on Linux;
   logic that can be pure (string table, buffer parsing, argv builders) is unit-tested there.
+  The macOS backend (`crates/hoppy-cli/src/macos/`, `.claude/skills/hoppy-macos/SKILL.md`)
+  keeps AppKit in `#[cfg(target_os = "macos")]` files that only the macos CI job compiles;
+  its pure helpers (`macos/mod.rs`) are tested on Linux too.
 - Every new behaviour gets a test in `tests/end_to_end.rs` (loopback, temp dirs).
 
 ## Verify

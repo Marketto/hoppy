@@ -3,9 +3,9 @@ name: Release
 # Builds the installable packages and publishes a GitHub Release.
 #   - push a tag:        git tag v0.2.0 && git push origin v0.2.0
 #   - or run manually:   Actions → Release → Run workflow (version: 0.2.0)
-# Windows, Android and Ubuntu are always built. macOS and iPhone/iPad are switched on
-# one at a time with repository variables (Settings → Secrets and variables → Actions →
-# Variables): ENABLE_MACOS, ENABLE_IOS = true. See docs/release.md.
+# Windows, Android, macOS and Ubuntu are always built. iPhone/iPad is switched on with a
+# repository variable (Settings → Secrets and variables → Actions → Variables):
+# ENABLE_IOS = true. See docs/release.md.
 
 on:
   push:
@@ -147,33 +147,91 @@ jobs:
           path: dist/*
 
   macos:
-    name: macOS · universal (Intel 2015+ and Apple silicon)
+    name: macOS · Hoppy.app universal (Intel 2015+ and Apple silicon)
     needs: meta
-    if: vars.ENABLE_MACOS == 'true'
     runs-on: macos-latest
     env:
-      # Macs from 2015 top out at macOS 12 Monterey; build for it and later.
+      # Macs from 2015 top out at macOS 12 Monterey; build for it and later (build-app.sh
+      # checks every architecture's minimum macOS).
       MACOSX_DEPLOYMENT_TARGET: "12.0"
+    # Optional Developer ID signing + notarization (docs/release.md "Signing"): skipped
+    # (ad-hoc signature, Gatekeeper "Open Anyway" on first launch) until the APPLE_* secrets
+    # exist. Secrets are only given to the steps that use them; `apple` publishes which
+    # ones exist as plain true/false outputs for the `if:` conditions.
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
       - name: Set version
         run: sed -i '' 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
-      - run: |
-          cargo build --release -p hoppy --target x86_64-apple-darwin
-          cargo build --release -p hoppy --target aarch64-apple-darwin
-          mkdir -p dist pkg
-          lipo -create -output pkg/hoppy target/x86_64-apple-darwin/release/hoppy target/aarch64-apple-darwin/release/hoppy
-          lipo -info pkg/hoppy
-          cp LICENSE pkg/
-          # TODO(macOS GUI): replace with a signed + notarized Hoppy.app in a .dmg (needs an Apple Developer ID).
-          hdiutil create -volname Hoppy -srcfolder pkg -ov -format UDZO dist/Hoppy-macos-universal.dmg
+      - name: Which Apple secrets exist
+        id: apple
+        env:
+          HAS_CERT: ${{ secrets.APPLE_CERT_P12_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' }}
+          HAS_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+        run: |
+          echo "has_cert=$HAS_CERT" >> "$GITHUB_OUTPUT"
+          echo "has_notary=$HAS_NOTARY" >> "$GITHUB_OUTPUT"
+      - name: Developer ID certificate (optional, from secrets)
+        if: steps.apple.outputs.has_cert == 'true'
+        shell: bash
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+        run: |
+          kc="$RUNNER_TEMP/hoppy-signing.keychain-db"
+          p12="$RUNNER_TEMP/cert.p12"
+          trap 'rm -f "$p12"' EXIT
+          kc_pass=$(uuidgen)
+          security create-keychain -p "$kc_pass" "$kc"
+          # Recorded at once, so the cleanup step deletes it even if a later command fails.
+          echo "HOPPY_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_CERT_P12_BASE64" | tr -d ' \t\r\n' | base64 -D > "$p12" ||
+            { echo "::error::APPLE_CERT_P12_BASE64 is not valid base64"; exit 1; }
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$p12" -k "$kc" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign ||
+            { echo "::error::The certificate could not be imported: check APPLE_CERT_PASSWORD"; exit 1; }
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity=${APPLE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning "$kc" |
+            sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -n 1)}
+          [ -n "$identity" ] || { echo "::error::No 'Developer ID Application' identity in the certificate"; exit 1; }
+          echo "::notice::Signing as: $identity"
+          echo "HOPPY_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: No Developer ID
+        if: steps.apple.outputs.has_cert != 'true'
+        run: echo "::warning::APPLE_CERT_P12_BASE64/APPLE_CERT_PASSWORD are not set — Hoppy.app is signed ad hoc and not notarized; users confirm it once in System Settings → Privacy & Security → Open Anyway (docs/release.md)."
+      - name: Build Hoppy.app + dmg
+        shell: bash
+        run: |
+          bash apps/macos/build-app.sh release "${{ needs.meta.outputs.version }}" dist 2>&1 | tee package.log ||
+            { bash tools/ci-annotate.sh "macOS package" package.log; exit 1; }
+      - name: Notarize (optional, from secrets)
+        if: env.HOPPY_SIGN_IDENTITY != '' && steps.apple.outputs.has_notary == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit dist/Hoppy-macos-universal.dmg --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait --timeout 30m 2>&1 | tee notary.log
+          grep -q 'status: Accepted' notary.log ||
+            { echo "::error::Notarization was not accepted: $(grep -m1 'status:' notary.log)"; exit 1; }
+          xcrun stapler staple dist/Hoppy-macos-universal.dmg
+          spctl --assess --type open --context context:primary-signature -v dist/Hoppy-macos-universal.dmg
+      - name: Remove the signing keychain
+        if: always() && env.HOPPY_KEYCHAIN != ''
+        run: security delete-keychain "$HOPPY_KEYCHAIN" || true
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-macos
-          path: dist/*
+          path: dist/Hoppy-macos-universal.dmg
 
   linux:
     name: Ubuntu · .deb (22.04+)
@@ -248,9 +306,11 @@ jobs:
           | Windows 10/11 (64-bit) | \`Hoppy-Setup-x64.exe\` (installer) · \`Hoppy-windows-x64.zip\` (portable) |
           | Android 10+ (phone and tablet) | \`Hoppy-android.apk\` |
           | Ubuntu 22.04+ (64-bit) | \`Hoppy-linux-amd64.deb\` (open it with App Center / Software Install) |
+          | macOS 12+ (Intel Macs from 2015 and Apple silicon) | \`Hoppy-macos-universal.dmg\` (drag Hoppy to Applications) |
 
           > Proof of concept: protocol v0 is **not encrypted**. Use Hoppy only on networks you trust.
           > Windows may show a SmartScreen warning (the installer is not code-signed yet): More info → Run anyway.
+          > macOS: unless notarized, the first launch is blocked once: System Settings → Privacy & Security → **Open Anyway** (macOS 12–14: right-click Hoppy → Open also works).
           EOF
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber

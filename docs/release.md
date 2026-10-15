@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | Windows 10/11 x64 | **live** | `Hoppy-Setup-x64.exe` (Inno Setup, per-user, adds Send To), `Hoppy-windows-x64.zip` (portable) | `release.yml` → `windows` |
 | Android 10+ (phone + tablet, one universal APK) | **live** | `Hoppy-android.apk` | `release.yml` → `android` |
-| macOS 12+ — Intel Macs from 2015 and Apple silicon | gated (`ENABLE_MACOS`) | `Hoppy-macos-universal.dmg` (x86_64 + arm64 via `lipo`) | `release.yml` → `macos` |
+| macOS 12+ — Intel Macs from 2015 and Apple silicon | **live** | `Hoppy-macos-universal.dmg` (`Hoppy.app` universal x86_64 + arm64 via `lipo`, ad-hoc signed; Developer ID + notarized once the `APPLE_*` secrets exist) | `release.yml` → `macos` (`apps/macos/build-app.sh`) |
 | Ubuntu 22.04+ x64 | **live** | `Hoppy-linux-amd64.deb` (`cargo-deb`, built on ubuntu-22.04: glibc 2.35) | `release.yml` → `linux` |
 | iPhone / iPad from 2021 | gated (`ENABLE_IOS`) | TestFlight / App Store link (no app yet) | `release.yml` → `ios` (placeholder) |
 
@@ -34,6 +34,9 @@ The **Linux tray** (docs/platforms/linux.md "How it works") reads the same `rele
 and offers a version only when `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached;
 it never downloads: it links to the portal, whose Ubuntu button points at
 `releases/latest/download/Hoppy-linux-amd64.deb` (`site/app.js`). **Never rename it.**
+The **Mac menu-bar app** (docs/platforms/macos-ios.md) does the same with
+`Hoppy-macos-universal.dmg`: notification + *Download Hoppy X…* → portal, no download (an
+unsigned app replaced in place would go through Gatekeeper again anyway). **Never rename it.**
 
 **Trust model of updates.** `SHA256SUMS.txt` comes from the same GitHub Release as the
 installer, so it proves *integrity* (no corrupted or truncated download), not *authenticity*:
@@ -61,10 +64,10 @@ publishing (they appear as workflow artifacts).
 
 ## Unlocking a platform
 
-1. Make the platform's build real (macOS: signed `.app` in the `.dmg`; iOS: Xcode project).
+1. Make the platform's build real (iOS: Xcode project).
 2. Set the repository variable (`Settings → Secrets and variables → Actions → Variables`):
-   `ENABLE_MACOS` or `ENABLE_IOS` = `true` (Ubuntu is always built; `ENABLE_LINUX` is no
-   longer read).
+   `ENABLE_IOS` = `true` (Ubuntu and macOS are always built; `ENABLE_LINUX` and
+   `ENABLE_MACOS` are no longer read).
 3. Cut a release. The portal shows a download as soon as the latest release contains the
    platform's asset; until then it says "Coming soon". For iOS, add the store link in
    `site/app.js` (`PLATFORMS`, `ios`).
@@ -85,8 +88,26 @@ publishing (they appear as workflow artifacts).
 - **Windows**: the installer is unsigned, so SmartScreen warns ("More info → Run anyway").
   A code-signing certificate (or Azure Trusted Signing) removes the warning; add a signing
   step after `ISCC.exe` when one exists.
-- **macOS / iOS**: need an Apple Developer Program membership (Developer ID signing +
-  notarization for macOS; TestFlight/App Store for iPhone/iPad).
+- **macOS**: today `Hoppy.app` is signed **ad hoc** (`codesign -s -`, no account needed; it
+  runs on Apple silicon) and not notarized, so the first launch needs System Settings →
+  Privacy & Security → **Open Anyway** (on macOS 12–14 also right-click → Open; macOS 15
+  removed that bypass). The release job prints a warning saying so. Upgrade path, with an
+  Apple Developer Program membership — **only secrets, no code change**:
+  1. Create a *Developer ID Application* certificate, export it with its key as `.p12`:
+     `base64 -i DeveloperID.p12 | pbcopy` → secret `APPLE_CERT_P12_BASE64`; its password →
+     `APPLE_CERT_PASSWORD`. Optional `APPLE_SIGN_IDENTITY` (exact name, e.g.
+     `Developer ID Application: Name (TEAMID)`) when the .p12 holds several identities.
+     `release.yml` imports it into a temporary keychain (deleted at the end) and
+     `apps/macos/build-app.sh` signs both executables, the app and the .dmg with the
+     hardened runtime and a secure timestamp.
+  2. For notarization add `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (an
+     app-specific password from account.apple.com): the job runs `xcrun notarytool submit
+     --wait`, fails unless the status is *Accepted*, staples the ticket to the .dmg and
+     checks it with `spctl`.
+  3. Afterwards: drop the Gatekeeper steps from the .dmg's `Primo avvio - First launch.txt`,
+     README and the portal hint (`dmgHint` in `site/app.js`); consider an in-app updater like
+     Windows (verify the Developer ID team before replacing the app).
+- **iOS**: needs an Apple Developer Program membership (TestFlight/App Store).
 
 ## Download portal
 

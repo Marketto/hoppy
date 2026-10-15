@@ -13,18 +13,46 @@
 //! - Done jingle: `pw-play`/`paplay`/`aplay` (`sound.rs`); update check: `curl`/`wget`
 //!   (`http.rs`).
 //!
-//! Compiled on every non-Windows target (macOS has no SNI/notification server, so `hoppyw`
-//! just fails to start there; the `hoppy` CLI is what macOS gets for now).
+//! Compiled on every Unix target except macOS (which has its own backend, `crate::macos`).
 
 pub mod dialog;
-pub mod http;
 pub mod integration;
 pub mod notify;
 mod sni;
 pub mod sound;
 pub mod ui;
 
-use std::path::{Path, PathBuf};
+pub use crate::unix::{http, which};
+
+use anyhow::Result;
+
+/// `hoppy install`: right-click entries (Nautilus, Nemo, Dolphin), launcher and autostart
+/// for this user (`integration`).
+pub fn install() -> Result<()> {
+    let (written, skipped) = integration::install_for_user(true)?;
+    crate::config::set_desktop_integration(crate::update::CURRENT_VERSION)?;
+    for path in written {
+        println!("✓ {}", path.display());
+    }
+    for path in skipped {
+        println!("- {} (yours, left unchanged)", path.display());
+    }
+    Ok(())
+}
+
+/// `hoppy uninstall`: removes them; the tray then never adds them back by itself.
+pub fn uninstall() -> Result<()> {
+    for path in integration::uninstall_for_user()? {
+        println!("✓ removed {}", path.display());
+    }
+    crate::config::set_desktop_integration(integration::OFF)?;
+    Ok(())
+}
+
+/// Tray start: the per-user integration, once per version.
+pub fn first_run_integration() -> Result<crate::config::Identity> {
+    integration::first_run()
+}
 
 /// UI language: Italian when the message locale is Italian (gettext order: `LANGUAGE`
 /// unless the locale is C/POSIX, then `LC_ALL`, `LC_MESSAGES`, `LANG`).
@@ -48,20 +76,6 @@ pub fn locale_is_italian(get: impl Fn(&str) -> Option<String>) -> bool {
         return first.starts_with("it");
     }
     messages.is_some_and(|m| m.starts_with("it"))
-}
-
-/// First executable called `name` on `PATH`.
-pub fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|p| is_executable(p))
-}
-
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.metadata()
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
@@ -100,11 +114,5 @@ mod tests {
         ])));
         assert!(!locale_is_italian(env(&[("LANGUAGE", "it")])));
         assert!(!locale_is_italian(env(&[])));
-    }
-
-    #[test]
-    fn which_finds_sh() {
-        assert!(which("sh").is_some());
-        assert!(which("surely-not-a-command-hoppy").is_none());
     }
 }

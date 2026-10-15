@@ -1,12 +1,16 @@
 //! `hoppyw`: the desktop tray receiver and the "Send with Hoppy" / "Send to → Hoppy" GUI,
-//! for Windows (`platform::win`) and Linux (`crate::linux::ui`), through `platform::ui`.
+//! for Windows (`platform::win`), Linux (`crate::linux::ui`) and macOS (`crate::macos::ui`),
+//! through `platform::ui`.
 //!
 //! - `hoppyw` (no args): single instance, notification-area icon, receives into
 //!   Downloads\Hoppy asking Yes/No for each offer, balloon when done. Linux: panel icon
 //!   (StatusNotifierItem) with a persistent menu (`Tray::set_menu`, picks arrive as
 //!   `TrayEvent::Menu`), notifications as balloons, Accept/Decline buttons on the offer
 //!   notification, and the per-user right-click entries + autostart written on the first
-//!   run of each version (`platform::first_run_integration`).
+//!   run of each version (`platform::first_run_integration`). macOS: menu-bar icon whose
+//!   menu pops at each click (like Windows), an "Open at login" switch
+//!   (`platform::login_item`), files from the Finder service / app icon handed to
+//!   `hoppyw send` by the backend.
 //! - `hoppyw open [FILE…]` (Linux launcher): files → `send`, none → the receiver.
 //! - `hoppyw send FILE…`: searches nearby devices, shows a popup menu at the cursor, sends
 //!   with progress in the tray tooltip, final balloon, then exits. Silent while searching
@@ -93,6 +97,7 @@ pub struct Strings {
     pub incoming_more: &'static str,
     pub searching: &'static str,
     pub send_header: &'static str,
+    pub send_header_more: &'static str,
     pub no_devices: &'static str,
     pub retry: &'static str,
     pub cancel: &'static str,
@@ -127,6 +132,8 @@ pub struct Strings {
     pub fw_failed: &'static str,
     pub fw_policy: &'static str,
     pub menu_classic: &'static str,
+    pub menu_login: &'static str,
+    pub login_failed: &'static str,
     pub menu_about: &'static str,
     pub restart_explorer: &'static str,
     pub classic_failed: &'static str,
@@ -152,7 +159,8 @@ pub const IT: Strings = Strings {
     incoming_body: "{name} ({platform}, {ip}) vuole inviarti {n} file, {size}:",
     incoming_more: "… e altri {n}",
     searching: "Cerco dispositivi…",
-    send_header: "Invia {n} file ({size}) a:",
+    send_header: "Invia «{file}» ({size}) a:",
+    send_header_more: "Invia «{file}» +{more} ({size}) a:",
     no_devices: "Nessun dispositivo trovato — apri Hoppy sull'altro dispositivo (stessa Wi-Fi)",
     retry: "Cerca di nuovo",
     cancel: "Annulla",
@@ -187,6 +195,8 @@ pub const IT: Strings = Strings {
     fw_failed: "Impossibile consentire Hoppy nel firewall",
     fw_policy: "Le regole sono state aggiunte ma non hanno effetto: probabilmente un criterio aziendale le ignora. Chiedi all'IT di consentire Hoppy (TCP 47471, UDP 47470).",
     menu_classic: "«Invia con Hoppy» direttamente nel tasto destro (menu classico)",
+    menu_login: "Apri all'accesso",
+    login_failed: "Impossibile cambiare «Apri all'accesso»",
     menu_about: "Informazioni e diagnostica…",
     restart_explorer: "Il nuovo menu del tasto destro compare dopo il riavvio di Esplora risorse (o al prossimo accesso).\n\nRiavviare Esplora risorse ora? Le finestre di Esplora file aperte verranno chiuse.",
     classic_failed: "Impossibile cambiare il menu del tasto destro",
@@ -212,7 +222,8 @@ pub const EN: Strings = Strings {
     incoming_body: "{name} ({platform}, {ip}) wants to send you {n} file(s), {size}:",
     incoming_more: "… and {n} more",
     searching: "Looking for devices…",
-    send_header: "Send {n} file(s) ({size}) to:",
+    send_header: "Send “{file}” ({size}) to:",
+    send_header_more: "Send “{file}” +{more} ({size}) to:",
     no_devices: "No devices found — open Hoppy on the other device (same Wi-Fi)",
     retry: "Search again",
     cancel: "Cancel",
@@ -247,6 +258,8 @@ pub const EN: Strings = Strings {
     fw_failed: "Could not allow Hoppy through the firewall",
     fw_policy: "The rules were added but have no effect: a company policy probably ignores them. Ask IT to allow Hoppy (TCP 47471, UDP 47470).",
     menu_classic: "\"Send with Hoppy\" directly on right-click (classic menu)",
+    menu_login: "Open at login",
+    login_failed: "Could not change \"Open at login\"",
     menu_about: "About & diagnostics…",
     restart_explorer: "The new right-click menu appears after File Explorer restarts (or at the next sign-in).\n\nRestart File Explorer now? Open File Explorer windows will close.",
     classic_failed: "Could not change the right-click menu",
@@ -298,6 +311,32 @@ pub fn peer_label(peer: &Peer) -> String {
         other => display_platform(other),
     };
     format!("{} · {platform}", display_name(&peer.device.name))
+}
+
+/// Longest file name shown in the send menu's header (characters).
+pub const HEADER_FILE_MAX: usize = 40;
+
+/// Header of the device menu: the first file's name (cleaned and cut like network text, so
+/// a long or odd name cannot stretch or garble the menu), "+N" for the others, total size.
+pub fn send_header(s: &Strings, files: &[PathBuf], total: u64) -> String {
+    let first = files
+        .first()
+        .and_then(|f| f.file_name())
+        .map(|n| display_text(&n.to_string_lossy(), HEADER_FILE_MAX))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "?".to_owned());
+    let size = human(total);
+    match files.len().saturating_sub(1) {
+        0 => fill(s.send_header, &[("file", &first), ("size", &size)]),
+        more => fill(
+            s.send_header_more,
+            &[
+                ("file", &first),
+                ("more", &more.to_string()),
+                ("size", &size),
+            ],
+        ),
+    }
 }
 
 /// Waits up to `max` for peers, returning early `settle` after the first one appears.
@@ -488,6 +527,7 @@ const ID_UPDATE: u32 = 5;
 const ID_FIREWALL: u32 = 6;
 const ID_CLASSIC: u32 = 7;
 const ID_ABOUT: u32 = 8;
+const ID_LOGIN: u32 = 9;
 
 /// What clicking the last balloon does.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -512,6 +552,8 @@ struct Prefs {
     refreshing: bool,
     /// A classic-menu change (with its "restart Explorer?" question) is in progress.
     classic_busy: bool,
+    /// macOS "Open at login"; `None` = no such switch here.
+    login: Option<bool>,
 }
 
 /// Serialises the workers' device.json reads/writes (and their cache updates). Never taken
@@ -554,6 +596,7 @@ impl Ctx {
         thread::spawn(move || {
             let started = Instant::now();
             let classic = platform::classic_menu();
+            let login = platform::login_item();
             let io = lock(&CONFIG_IO);
             let identity = config::load_or_create();
             let mut p = lock(&ctx.prefs);
@@ -564,6 +607,7 @@ impl Ctx {
             if !p.classic_busy {
                 p.classic = classic; // else `set_classic` reports the new state itself
             }
+            p.login = login;
             p.refreshing = false;
             drop((p, io));
             if !ui::NATIVE_POPUPS {
@@ -630,7 +674,22 @@ impl Ctx {
         });
     }
 
-    /// Writes a summary line, then opens the log in Notepad (the default editor on Linux).
+    /// Turns "Open at login" on/off (worker: launchd/ServiceManagement calls), then
+    /// re-reads the real state for the menu.
+    fn set_login(&self, on: bool) {
+        lock(&self.prefs).login = Some(on);
+        let ctx = self.clone();
+        thread::spawn(move || {
+            let result = platform::set_login_item(on);
+            lock(&ctx.prefs).login = platform::login_item();
+            if let Err(e) = result {
+                ctx.notify_error(ctx.s.login_failed, &format!("{e:#}"));
+            }
+        });
+    }
+
+    /// Writes a summary line, then opens the log in Notepad (TextEdit on macOS, the default
+    /// editor on Linux).
     fn open_about(&self, mode: UpdateMode) {
         let (music, classic) = {
             let p = lock(&self.prefs);
@@ -649,21 +708,30 @@ impl Ctx {
         thread::spawn(move || {
             diag::flush(Duration::from_secs(2));
             let opened = match diag::log_path() {
-                Some(path) => Command::new(if cfg!(windows) {
-                    "notepad.exe"
-                } else {
-                    "xdg-open"
-                })
-                .arg(path)
-                .spawn()
-                .map(|_| ())
-                .map_err(anyhow::Error::from),
+                Some(path) => log_viewer()
+                    .arg(path)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
                 None => Err(anyhow::anyhow!("LOCALAPPDATA is not set")),
             };
             if let Err(e) = opened {
                 ctx.notify_error(ctx.s.about_failed, &format!("{e:#}"));
             }
         });
+    }
+}
+
+/// The program that shows the diagnostic log (the path is appended).
+fn log_viewer() -> Command {
+    if cfg!(windows) {
+        Command::new("notepad.exe")
+    } else if cfg!(target_os = "macos") {
+        let mut open = Command::new("/usr/bin/open");
+        open.arg("-t"); // the default text editor
+        open
+    } else {
+        Command::new("xdg-open")
     }
 }
 
@@ -706,6 +774,7 @@ struct TrayMenu {
     firewall: Option<&'static str>,
     music: bool,
     classic: Option<bool>,
+    login: Option<bool>,
 }
 
 impl TrayMenu {
@@ -727,6 +796,9 @@ impl TrayMenu {
         ]);
         if let Some(on) = self.classic {
             items.push(MenuItem::Check(ID_CLASSIC, s.menu_classic, on));
+        }
+        if let Some(on) = self.login {
+            items.push(MenuItem::Check(ID_LOGIN, s.menu_login, on));
         }
         if let Some(text) = self.firewall {
             items.push(MenuItem::Action(ID_FIREWALL, text));
@@ -763,6 +835,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             classic: None,
             refreshing: false,
             classic_busy: false,
+            login: None,
         })),
         notices: Arc::clone(&notices),
     };
@@ -791,8 +864,9 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     let fw = Arc::new(Mutex::new(FirewallState::default()));
     spawn_firewall_check(&fw, tray.waker());
 
-    // Linux: right-click entries, launcher and autostart, once per version (release
-    // builds only: a dev build must not point the user's desktop at target/).
+    // Linux: right-click entries, launcher and autostart; macOS: services refresh and
+    // "Open at login"; once per version (release builds only: a dev build must not point
+    // the user's desktop at target/).
     if !cfg!(windows) && mode != UpdateMode::Off {
         ctx.config_job("desktop integration", platform::first_run_integration);
     }
@@ -802,15 +876,16 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     // The tray menu as of now; on Windows built at each click, on Linux kept up to date
     // after every event (`Tray::set_menu`).
     let menu = || {
-        let (music, classic) = {
+        let (music, classic, login) = {
             let p = lock(&ctx.prefs);
-            (p.identity.music, p.classic)
+            (p.identity.music, p.classic, p.login)
         };
         TrayMenu {
             update: update_menu_text(s, &lock(&updates), mode),
             firewall: firewall_menu_text(s, &fw, &tray),
             music,
             classic,
+            login,
         }
     };
     // Runs a menu pick; false = quit. `shown`: the menu the user picked from (toggles flip
@@ -832,6 +907,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             },
             ID_MUSIC => ctx.set_music(!shown.music),
             ID_CLASSIC => ctx.set_classic(!shown.classic.unwrap_or(false)),
+            ID_LOGIN => ctx.set_login(!shown.login.unwrap_or(false)),
             ID_ABOUT => ctx.open_about(mode),
             ID_QUIT => return false,
             _ => {}
@@ -1105,7 +1181,7 @@ fn update_mode() -> UpdateMode {
         return UpdateMode::Off;
     }
     if !cfg!(windows) {
-        return UpdateMode::Portal; // Linux: notify + portal link, never self-install
+        return UpdateMode::Portal; // Linux, macOS: notify + portal link, never self-install
     }
     let exe_dir = std::env::current_exe()
         .ok()
@@ -1406,10 +1482,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let state = Arc::new(Mutex::new(SendState::default()));
     spawn_search(&discovery, &state, tray.waker());
 
-    let header = fill(
-        s.send_header,
-        &[("n", &files.len().to_string()), ("size", &human(total))],
-    );
+    let header = send_header(s, &files, total);
     diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
     let mut phase = Phase::Searching;
     let mut files = Some(files);
@@ -1596,6 +1669,7 @@ mod tests {
                 s.incoming_body,
                 s.incoming_more,
                 s.send_header,
+                s.send_header_more,
                 s.waiting,
                 s.sending,
                 s.delivered,
@@ -1615,6 +1689,36 @@ mod tests {
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
             assert_eq!(placeholders(it), placeholders(en), "{it} / {en}");
         }
+    }
+
+    #[test]
+    fn send_header_names_the_first_file() {
+        let one = [PathBuf::from("/x/foto-mare.jpg")];
+        assert_eq!(
+            send_header(&IT, &one, 1536),
+            "Invia «foto-mare.jpg» (1.5 KB) a:"
+        );
+        let three = [
+            PathBuf::from("/x/foto-mare.jpg"),
+            PathBuf::from("/x/b.txt"),
+            PathBuf::from("/x/c.txt"),
+        ];
+        assert_eq!(
+            send_header(&EN, &three, 5 * 1024 * 1024),
+            "Send “foto-mare.jpg” +2 (5.0 MB) to:"
+        );
+        // Long, bidi-spoofed or control-character names are cleaned and cut.
+        let odd = [PathBuf::from(format!(
+            "/x/{}\u{202E}gpj.exe\n",
+            "a".repeat(100)
+        ))];
+        let h = send_header(&EN, &odd, 1);
+        assert!(!h.contains('\u{202E}') && !h.contains('\n'), "{h}");
+        assert!(
+            h.contains(&format!("{}…", "a".repeat(HEADER_FILE_MAX - 1))),
+            "{h}"
+        );
+        assert_eq!(send_header(&EN, &[], 0), "Send “?” (0 B) to:");
     }
 
     #[test]

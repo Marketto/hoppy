@@ -1,18 +1,27 @@
 //! Code shared by the two desktop binaries:
-//! - `hoppy` (`src/main.rs`): the CLI, also used by scripts, tests and Linux/macOS;
+//! - `hoppy` (`src/main.rs`): the CLI, also used by scripts and tests;
 //! - `hoppyw` (`src/bin/hoppyw.rs`): the desktop tray receiver + "Send with Hoppy" GUI
-//!   (Windows and Linux).
+//!   (Windows, Linux and macOS).
 //!
-//! Win32 FFI lives only in `platform.rs`; the Linux desktop backend in `linux/`; `gui.rs`
+//! Win32 FFI lives only in `platform.rs`; the Linux desktop backend in `linux/`, the macOS
+//! one in `macos/` (AppKit FFI only in its `#[cfg(target_os = "macos")]` modules); `gui.rs`
 //! is safe, platform-neutral Rust on top of `platform::ui`.
 
 pub mod config;
 pub mod diag;
 pub mod firewall;
 pub mod gui;
+// Two attributes on purpose: tools that flip `cfg(not(windows))` to type-check the Windows
+// code on Linux drop these modules entirely.
 #[cfg(not(windows))]
+#[cfg(not(target_os = "macos"))]
 pub mod linux;
+/// Pure parts are compiled (and tested) on Linux too; the AppKit backend only on macOS.
+#[cfg(not(windows))]
+pub mod macos;
 pub mod platform;
+#[cfg(not(windows))]
+pub mod unix;
 pub mod update;
 
 use std::net::{IpAddr, SocketAddr, TcpListener};

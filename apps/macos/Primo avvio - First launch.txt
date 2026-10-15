@@ -1,0 +1,36 @@
+HOPPY PER MAC — PRIMO AVVIO
+
+1. Trascina Hoppy nella cartella Applicazioni (la freccia accanto).
+2. Apri Applicazioni e fai doppio clic su Hoppy.
+   macOS dice che non può verificare lo sviluppatore: Hoppy non è ancora
+   firmato da Apple. Scegli «Fine» (non «Sposta nel Cestino»).
+3. Apri Impostazioni di Sistema → Privacy e sicurezza, scorri fino a
+   «Hoppy è stato bloccato…» e scegli «Apri comunque», poi conferma con
+   la password. Serve solo la prima volta (e dopo ogni aggiornamento).
+   Su macOS 12–14 basta anche: tasto destro su Hoppy → Apri → Apri.
+4. Consenti le notifiche e l'accesso alla rete locale quando macOS lo chiede.
+
+Il coniglietto compare nella barra dei menu, in alto a destra.
+Per inviare: nel Finder seleziona i file → tasto destro → Servizi →
+«Invia con Hoppy» (oppure trascinali sull'icona di Hoppy).
+
+----------------------------------------------------------------------
+
+HOPPY FOR MAC — FIRST LAUNCH
+
+1. Drag Hoppy into the Applications folder (the arrow next to it).
+2. Open Applications and double-click Hoppy.
+   macOS says it cannot verify the developer: Hoppy is not signed by
+   Apple yet. Choose "Done" (not "Move to Trash").
+3. Open System Settings → Privacy & Security, scroll to
+   "Hoppy was blocked…" and choose "Open Anyway", then confirm with your
+   password. Needed only the first time (and after each update).
+   On macOS 12–14, right-click Hoppy → Open → Open also works.
+4. Allow notifications and local network access when macOS asks.
+
+The bunny appears in the menu bar, at the top right.
+To send: in the Finder select the files → right-click → Services →
+"Send with Hoppy" (or drag them onto Hoppy's icon).
+
+Proof of concept: transfers are not encrypted yet. Use Hoppy only on
+networks you trust.
