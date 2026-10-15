@@ -506,10 +506,11 @@ mod tests {
 
     fn fake(tag: &str, installer: &[u8], listed_hash: &str) -> Fake {
         let base = format!("{DOWNLOAD_BASE}/{tag}");
+        // Every platform's package, so `check` (PLATFORM_ASSET) offers it on any OS.
         let mut m = HashMap::new();
         m.insert(
             LATEST_API.to_owned(),
-            release_json(tag, &[INSTALLER_ASSET, DEB_ASSET, SUMS_ASSET]),
+            release_json(tag, &[INSTALLER_ASSET, DEB_ASSET, MACOS_ASSET, SUMS_ASSET]),
         );
         m.insert(format!("{base}/{INSTALLER_ASSET}"), installer.to_vec());
         m.insert(
