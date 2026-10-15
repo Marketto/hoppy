@@ -17,7 +17,7 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 | Notifications (zbus) | `crates/hoppy-cli/src/linux/notify.rs` |
 | zenity/kdialog argv builders | `crates/hoppy-cli/src/linux/dialog.rs` |
 | Per-user right-click entries, launcher, autostart | `crates/hoppy-cli/src/linux/integration.rs` |
-| Jingle players / curl+wget | `crates/hoppy-cli/src/linux/sound.rs`, `crates/hoppy-cli/src/linux/http.rs` |
+| Jingle players / curl+wget | `crates/hoppy-cli/src/linux/sound.rs`, `crates/hoppy-cli/src/unix/http.rs` (shared with macOS) |
 | Package launcher (kept equal to `integration::launcher_entry` by a test) | `apps/linux/hoppy.desktop` |
 | Icons (generated: `python3 tools/gen_icons.py --linux`) | `assets/brand/linux/` |
 | .deb metadata | `crates/hoppy-cli/Cargo.toml` (`[package.metadata.deb]`) |
@@ -27,10 +27,13 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 
 - `gui.rs` stays platform-neutral: no `cfg` attributes there. Differences go behind the
   `platform::ui` API (`NATIVE_POPUPS`, `Tray::set_menu`, `TrayEvent::Menu`/`MenuOpening`);
-  a new `ui` function needs a Windows twin in `platform::win` (keep it tiny) or a
-  runtime `cfg!(windows)` check.
-- `crate::linux` is compiled on every non-Windows target (`#[cfg(not(windows))]` in
-  `lib.rs`); Linux-only crates go in `[target."cfg(not(windows))".dependencies]`.
+  a new `ui` function needs a Windows twin in `platform::win` (keep it tiny) and a macOS
+  twin in `crate::macos::ui` (`.claude/skills/hoppy-macos/SKILL.md`), or a runtime
+  `cfg!(…)` check.
+- `crate::linux` is compiled on every non-Windows, non-macOS target (two `cfg` attributes in
+  `lib.rs`); Linux-only crates go in
+  `[target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]`. Code shared
+  with macOS (`which`, curl/wget) lives in `crate::unix`.
 - No tokio: zbus/ksni use `async-io` (their own thread); our code is blocking.
 - Network text in notifications: `display_*` first; `notify.rs` escapes markup; zenity gets
   `--no-markup`, kdialog look-alikes for `<`/`>`; dialog list entries never start with `-`

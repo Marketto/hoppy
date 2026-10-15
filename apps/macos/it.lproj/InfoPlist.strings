@@ -1,0 +1,7 @@
+/* Italian texts of the permission prompts (keys of Info.plist). */
+"NSLocalNetworkUsageDescription" = "Hoppy trova i dispositivi vicini e scambia file con loro sulla rete locale.";
+"NSDownloadsFolderUsageDescription" = "Hoppy salva i file che accetti in Download/Hoppy e invia i file che scegli.";
+"NSDesktopFolderUsageDescription" = "Hoppy legge i file che scegli di inviare.";
+"NSDocumentsFolderUsageDescription" = "Hoppy legge i file che scegli di inviare.";
+"NSRemovableVolumesUsageDescription" = "Hoppy legge i file che scegli di inviare.";
+"NSNetworkVolumesUsageDescription" = "Hoppy legge i file che scegli di inviare.";

@@ -1,0 +1,2 @@
+/* Finder service title (Info.plist NSServices → NSMenuItem → default). */
+"Send with Hoppy" = "Send with Hoppy";

@@ -70,6 +70,64 @@ jobs:
           name: hoppy-windows
           path: dist/
 
+  macos:
+    name: macOS · tests + universal Hoppy.app (Intel 2015+ and Apple silicon)
+    runs-on: macos-latest
+    # A hung GUI/socket test must not hold a macOS runner for hours.
+    timeout-minutes: 60
+    env:
+      # Macs from 2015 top out at macOS 12 Monterey: build for it (checked by build-app.sh).
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    # Only place where src/macos/{ui,login}.rs is compiled. Failures become annotations
+    # (tools/ci-annotate.sh): agents can read those, not the logs.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        shell: bash
+        run: |
+          cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log ||
+            { bash tools/ci-annotate.sh "clippy (macOS)" clippy.log; exit 1; }
+      - name: Clippy (Intel)
+        shell: bash
+        run: |
+          cargo clippy -p hoppy --target x86_64-apple-darwin --message-format=short -- -D warnings 2>&1 | tee clippy-x86.log ||
+            { bash tools/ci-annotate.sh "clippy (macOS x86_64)" clippy-x86.log; exit 1; }
+      # perl's alarm turns a hanging test into a failure with annotations (cargo prints
+      # "has been running for over 60 seconds" for the culprit).
+      - name: Test
+        shell: bash
+        run: |
+          perl -e 'alarm 1200; exec @ARGV' cargo test --workspace --message-format=short 2>&1 | tee test.log ||
+            { bash tools/ci-annotate.sh "cargo test (macOS)" test.log; exit 1; }
+      # Debug build: objc2 checks every Objective-C message against the runtime's types.
+      # Runs the AppKit backend headless (`hoppyw --smoke-test`), bare and inside a bundle.
+      - name: AppKit smoke test
+        shell: bash
+        run: |
+          cargo build -p hoppy --message-format=short 2>&1 | tee smoke.log ||
+            { bash tools/ci-annotate.sh "cargo build (macOS debug)" smoke.log; exit 1; }
+          bash apps/macos/build-app.sh bundle target/debug/hoppyw target/debug/hoppy target/smoke/Hoppy.app 2>&1 | tee -a smoke.log ||
+            { bash tools/ci-annotate.sh "smoke bundle (macOS)" smoke.log; exit 1; }
+          for exe in target/debug/hoppyw target/smoke/Hoppy.app/Contents/MacOS/hoppyw; do
+            echo "== $exe" | tee -a smoke.log
+            RUST_BACKTRACE=1 perl -e 'alarm 120; exec @ARGV' "$exe" --smoke-test 2>&1 | tee -a smoke.log ||
+              { bash tools/ci-annotate.sh "AppKit smoke test ($exe)" smoke.log; exit 1; }
+          done
+      - name: Universal Hoppy.app + dmg
+        shell: bash
+        run: |
+          bash apps/macos/build-app.sh release "" dist 2>&1 | tee package.log ||
+            { bash tools/ci-annotate.sh "macOS package" package.log; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hoppy-macos
+          path: dist/Hoppy-macos-universal.dmg
+
   android:
     name: Android · APK
     runs-on: ubuntu-latest

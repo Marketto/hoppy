@@ -22,9 +22,10 @@ pub struct Identity {
     /// per version; the menu item stays while the problem does).
     #[serde(default)]
     pub firewall_hint: String,
-    /// Linux desktop integration (right-click entries, launcher, autostart): the version
-    /// that last wrote them, or `"off"` after `hoppy uninstall` (the tray then never adds
-    /// them again by itself; `hoppy install` does).
+    /// Linux desktop integration (right-click entries, launcher, autostart; macOS: services
+    /// refresh + "Open at login"): the version that last wrote them, or `"off"` after
+    /// `hoppy uninstall` (the tray then never adds them again by itself; `hoppy install`
+    /// does).
     #[serde(default)]
     pub desktop_integration: String,
 }
@@ -89,7 +90,7 @@ pub fn set_firewall_hint(version: &str) -> Result<Identity> {
     Ok(identity)
 }
 
-/// Records the Linux desktop integration state (re-reads the file first, like `set_music`).
+/// Records the Linux/macOS desktop integration state (re-reads the file first, like `set_music`).
 pub fn set_desktop_integration(state: &str) -> Result<Identity> {
     let mut identity = load_or_create()?;
     identity.desktop_integration = state.to_owned();
@@ -107,6 +108,8 @@ pub fn device_info(identity: &Identity) -> DeviceInfo {
 
 fn default_name() -> String {
     let host = gethostname::gethostname().to_string_lossy().into_owned();
+    // macOS host names end in the Bonjour suffix ("Marcos-MacBook-Air.local").
+    let host = host.strip_suffix(".local").unwrap_or(&host);
     let name: String = host.chars().take(64).collect();
     if name.is_empty() {
         "Hoppy device".into()

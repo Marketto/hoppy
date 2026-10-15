@@ -1,5 +1,6 @@
 //! HTTPS GET for the update check, through `curl` or `wget` (one of them is on every
-//! desktop distribution; no TLS stack in Hoppy itself). https only: curl may follow
+//! desktop distribution, and macOS ships `/usr/bin/curl`; no TLS stack in Hoppy itself).
+//! https only: curl may follow
 //! redirects to https URLs only, wget follows none (`--max-redirect=0`).
 //! The URL is a separate argv entry, never shell text.
 

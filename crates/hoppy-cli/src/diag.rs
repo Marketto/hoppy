@@ -1,5 +1,5 @@
 //! Lightweight diagnostic log for `hoppyw` (Windows: `%LOCALAPPDATA%\Hoppy\hoppy.log`,
-//! elsewhere `<data dir>/hoppy/hoppy.log`). Tray events, menus, slow UI handlers and worker
+//! macOS: `~/Library/Logs/Hoppy/hoppy.log`, elsewhere `<data dir>/hoppy/hoppy.log`). Tray events, menus, slow UI handlers and worker
 //! errors go here, so "nothing happens when I click" can be diagnosed on a user's PC
 //! (`hoppy log`, tray menu "About & diagnostics…").
 //!
@@ -42,8 +42,12 @@ struct Sink {
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 
-/// `%LOCALAPPDATA%\Hoppy\hoppy.log` (local, never a roaming/redirected folder).
+/// `%LOCALAPPDATA%\Hoppy\hoppy.log` (local, never a roaming/redirected folder); macOS:
+/// `~/Library/Logs/Hoppy/hoppy.log` (shown by Console.app).
 pub fn log_path() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return Some(dirs::home_dir()?.join("Library/Logs/Hoppy/hoppy.log"));
+    }
     let base = dirs::data_local_dir()?;
     let dir = if cfg!(windows) { "Hoppy" } else { "hoppy" };
     Some(base.join(dir).join("hoppy.log"))

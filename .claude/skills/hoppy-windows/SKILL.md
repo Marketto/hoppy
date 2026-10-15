@@ -30,7 +30,8 @@ PoC UX (no console windows):
   before `config::load_or_create`; for `firewall` the elevated copy may be another user). The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
   fallback (`send --pause` when `hoppyw.exe` is missing).
 - `crates/hoppy-cli/src/bin/hoppyw.rs` — GUI-subsystem binary; calls `hoppy::gui::run`
-  (also on Linux: `.claude/skills/hoppy-linux/SKILL.md`; elsewhere exits 1).
+  (also on Linux: `.claude/skills/hoppy-linux/SKILL.md`, and macOS:
+  `.claude/skills/hoppy-macos/SKILL.md`; elsewhere exits 1).
 - `crates/hoppy-cli/src/lib.rs` — shared helpers (`start_discovery`, `bind_receiver`,
   `default_receive_dir`, `human`, `parse_direct`, …).
 - `crates/hoppy-cli/src/gui.rs` — tray receiver + send flow, IT/EN string table
@@ -86,8 +87,9 @@ PoC UX (no console windows):
   `Win32_System_Registry` feature for `SHELLEXECUTEINFOW`), `no_window` (CREATE_NO_WINDOW
   for netsh/powershell children of the GUI exe), and `play_done_jingle`/`stop_sound` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`;
   only `assets/music/desktop_done.wav` is embedded, with `include_bytes!`, only in Windows
-  builds). On Linux `crate::linux::ui` has the same API, so `gui.rs` compiles, lints and runs
-  there; a new `win` function used by `gui.rs` needs its Linux twin (and vice versa).
+  builds). On Linux `crate::linux::ui` and on macOS `crate::macos::ui` have the same API, so
+  `gui.rs` compiles, lints and runs there; a new `win` function used by `gui.rs` needs its
+  Linux and macOS twins (and vice versa).
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
   string-interpolated): `%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk` → `hoppyw.exe send`
   and `...\Startup\Hoppy receiver.lnk` → `hoppyw.exe`.

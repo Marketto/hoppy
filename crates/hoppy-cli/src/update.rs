@@ -3,12 +3,14 @@
 //! Pure logic only, unit-tested on every OS: version comparison, release JSON and
 //! `SHA256SUMS.txt` parsing, install-location check, and a download that hashes while it
 //! writes. The HTTP transport is the `Http` trait (WinHTTP in `platform::win::http_get`,
-//! curl/wget on Linux). The release workflow must keep the asset names
-//! `Hoppy-Setup-x64.exe`, `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` stable
-//! (docs/release.md).
+//! curl/wget on Linux and macOS). The release workflow must keep the asset names
+//! `Hoppy-Setup-x64.exe`, `Hoppy-linux-amd64.deb`, `Hoppy-macos-universal.dmg` and
+//! `SHA256SUMS.txt` stable (docs/release.md).
 //!
-//! Linux only announces a new version and links to the download portal (the .deb is
-//! installed by the system's software installer, with the user's password): no download.
+//! Linux and macOS only announce a new version and link to the download portal (the .deb
+//! is installed by the system's software installer, with the user's password; the Mac app
+//! is not notarized, so each new copy goes through Gatekeeper's first-launch steps): no
+//! download.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -29,9 +31,13 @@ pub const PORTAL_URL: &str = "https://marketto.github.io/hoppy/";
 pub const INSTALLER_ASSET: &str = "Hoppy-Setup-x64.exe";
 /// Ubuntu/Debian package (release.yml `linux` job).
 pub const DEB_ASSET: &str = "Hoppy-linux-amd64.deb";
+/// macOS universal disk image (release.yml `macos` job).
+pub const MACOS_ASSET: &str = "Hoppy-macos-universal.dmg";
 /// A release is offered only once this platform's package is attached.
 pub const PLATFORM_ASSET: &str = if cfg!(windows) {
     INSTALLER_ASSET
+} else if cfg!(target_os = "macos") {
+    MACOS_ASSET
 } else {
     DEB_ASSET
 };
@@ -456,6 +462,10 @@ mod tests {
         assert!(parse_latest_for(&release_json("v0.2.0", &deb), DEB_ASSET).is_some());
         assert!(parse_latest_for(&release_json("v0.2.0", &both), DEB_ASSET).is_none());
         assert!(parse_latest(&release_json("v0.2.0", &deb)).is_none());
+        // macOS waits for the disk image.
+        let dmg = [MACOS_ASSET, SUMS_ASSET];
+        assert!(parse_latest_for(&release_json("v0.2.0", &dmg), MACOS_ASSET).is_some());
+        assert!(parse_latest_for(&release_json("v0.2.0", &deb), MACOS_ASSET).is_none());
     }
 
     const H: &str = "00112233445566778899aabbccddeeff00112233445566778899AABBCCDDEEFF";

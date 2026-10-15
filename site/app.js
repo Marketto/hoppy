@@ -50,6 +50,7 @@
       },
       apkHint: "Apri il file scaricato e consenti l'installazione da questa fonte se il telefono lo chiede.",
       exeHint: "Se Windows mostra un avviso: «Ulteriori informazioni» → «Esegui comunque».",
+      dmgHint: "Trascina Hoppy in Applicazioni. Al primo avvio: Impostazioni di Sistema → Privacy e sicurezza → «Apri comunque».",
       musicOn: "Attiva musica",
       musicOff: "Disattiva musica",
     },
@@ -87,6 +88,7 @@
       },
       apkHint: "Open the downloaded file and allow installs from this source if your phone asks.",
       exeHint: "If Windows shows a warning: “More info” → “Run anyway”.",
+      dmgHint: "Drag Hoppy to Applications. On first launch: System Settings → Privacy & Security → “Open Anyway”.",
       musicOn: "Play music",
       musicOff: "Pause music",
     },
@@ -285,7 +287,7 @@
     if (p && available(p)) {
       label.textContent = fmt(t.download, { name: t.names[p.id] });
       btn.href = downloadUrl(p.asset);
-      const hint = p.id === "android" ? t.apkHint : p.id === "windows" ? t.exeHint : "";
+      const hint = { android: t.apkHint, windows: t.exeHint, macos: t.dmgHint }[p.id] || "";
       note.textContent = (state.env.os === "chromeos" ? t.chromeos + " " : "") + fmt(t.detected, { name: t.names[p.id], req: t.reqs[p.id] }) + (hint ? " " + hint : "");
     } else if (p) {
       label.textContent = t.soon + " · " + t.names[p.id];

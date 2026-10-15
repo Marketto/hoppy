@@ -4,8 +4,8 @@ The same experience as on Windows (ADR 0007): a panel icon that receives, "Send 
 on right-click, a device list, notifications, the delivery jingle and an update check.
 Target: **Ubuntu 22.04+ x64** (GNOME with the preinstalled AppIndicator extension); also
 works on Kubuntu/KDE Plasma, Linux Mint (Cinnamon), and any desktop with a
-StatusNotifierItem host and a notification server. macOS gets only the `hoppy` CLI for now
-(Share extension + menu bar app: v1).
+StatusNotifierItem host and a notification server. macOS has its own backend with the same
+UX (`docs/platforms/macos-ios.md`, ADR 0008).
 
 ## Install
 
@@ -53,7 +53,7 @@ two places where the UIs differ). Everything is pure Rust; no C libraries beyond
 | Dialogs | `crates/hoppy-cli/src/linux/dialog.rs` | `zenity` (default) or `kdialog` (KDE). argv only, values in `--opt=value` form, list entries never start with `-`, `--no-markup` for zenity text, `<`/`>` swapped for look-alikes for kdialog (rich-text guess). |
 | Single instance | `crates/hoppy-cli/src/linux/ui.rs` | session-bus name `app.hoppy.Tray`; a second `hoppyw` calls its `Reopen` method → "already running" notification. |
 | Jingle | `crates/hoppy-cli/src/linux/sound.rs` | `assets/music/desktop_done.wav` embedded, written to `$XDG_RUNTIME_DIR/hoppy-done-<pid>.wav`, played by `pw-play` → `paplay` → `aplay`. |
-| Update check | `crates/hoppy-cli/src/linux/http.rs`, `crates/hoppy-cli/src/update.rs` | `curl` (redirects to https only) / `wget` (no redirects); 30 s after start, then daily. A release counts only once `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached. Linux **never downloads or installs**: the tray shows *Download Hoppy X…* and a notification that open the portal. Installing a .deb needs the user's password and the system installer, which already verifies the package; a silent self-update would need root. |
+| Update check | `crates/hoppy-cli/src/unix/http.rs` (shared with macOS), `crates/hoppy-cli/src/update.rs` | `curl` (redirects to https only) / `wget` (no redirects); 30 s after start, then daily. A release counts only once `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached. Linux **never downloads or installs**: the tray shows *Download Hoppy X…* and a notification that open the portal. Installing a .deb needs the user's password and the system installer, which already verifies the package; a silent self-update would need root. |
 | Right-click, launcher, autostart | `crates/hoppy-cli/src/linux/integration.rs` | see below |
 | Log | `crates/hoppy-cli/src/diag.rs` | `~/.local/share/hoppy/hoppy.log` (`hoppy log`). Same privacy rules as Windows. |
 

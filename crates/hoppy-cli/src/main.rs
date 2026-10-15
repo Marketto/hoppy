@@ -85,10 +85,11 @@ enum Command {
     /// the files are delivered (`hoppy send` is always silent).
     Music { state: Option<OnOff> },
     /// Add the "Send with Hoppy" right-click entry and start the receiver at login
-    /// (Windows: also "Send to → Hoppy"; Linux: Nautilus, Nemo and Dolphin, for this user).
+    /// (Windows: also "Send to → Hoppy"; Linux: Nautilus, Nemo and Dolphin, for this user;
+    /// macOS: "Open at login" for Hoppy.app, whose Finder service is always there).
     Install,
     /// Remove what `install` added (Windows: also the classic menu, if Hoppy turned it on;
-    /// Linux: the tray then stops adding it back).
+    /// Linux, macOS: the tray then stops adding it back).
     Uninstall,
     /// Windows 11: show or change whether right-click opens the classic menu, where
     /// "Send with Hoppy" is visible at once (per user; applies after Explorer restarts).
@@ -235,6 +236,13 @@ fn cmd_classic_menu(state: Option<OnOff>, restart_explorer: bool) -> Result<()> 
 }
 
 fn cmd_firewall(fix: bool, apply: bool, remove: bool) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        bail!(
+            "`hoppy firewall` is Windows-only. On a Mac the firewall is off by default; if it is \
+             on, allow Hoppy in System Settings → Network → Firewall → Options (incoming \
+             connections), or answer \"Allow\" when macOS asks"
+        );
+    }
     if !cfg!(windows) {
         bail!(
             "`hoppy firewall` is Windows-only; elsewhere allow TCP 47471 and UDP 47470 by hand \
