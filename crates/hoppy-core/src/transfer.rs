@@ -47,6 +47,9 @@ pub enum Progress {
         index: usize,
         path: Option<PathBuf>,
     },
+    /// Sender only: the direct connection failed; asking the peer to connect back
+    /// (spec §6), which can take up to `CALLBACK_WINDOW`.
+    Fallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +85,10 @@ pub fn send_to_peer(
     let stream = match TcpStream::connect_timeout(&peer.addr, DIRECT_CONNECT_TIMEOUT) {
         Ok(stream) => stream,
         Err(e) => match discovery {
-            Some(d) => connect_via_callback(peer, d)?,
+            Some(d) => {
+                progress(Progress::Fallback);
+                connect_via_callback(peer, d)?
+            }
             None => return Err(Error::Unreachable(format!("{}: {e}", peer.addr))),
         },
     };
@@ -98,6 +104,7 @@ pub fn send_via_callback(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<SendOutcome, Error> {
     let offer = build_offer(me, paths)?;
+    progress(Progress::Fallback);
     let stream = connect_via_callback(peer, discovery)?;
     send_over(stream, &offer, paths, progress)
 }

@@ -38,7 +38,9 @@ publish only verified files.
 
 If the direct connect fails (receiver behind an inbound-blocking firewall), the sender
 asks the receiver over UDP to connect back to an ephemeral port and runs the same session
-on that socket (spec §6, ADR 0006).
+on that socket (spec §6, ADR 0006). While that request is pending, a desktop send-only
+node also listens to the multicast group on 47470 (reuse-bound, listen-only) so it can
+answer the receiver's announces inside the firewall's response window.
 
 ## Transport selection (target design, v1+)
 

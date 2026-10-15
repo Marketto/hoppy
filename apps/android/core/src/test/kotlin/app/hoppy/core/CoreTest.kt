@@ -155,8 +155,14 @@ class CoreTest {
         val deadline = System.currentTimeMillis() + 3_000
         while (tx.peers().isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(50)
         val peer = tx.peers().single()
-        val outcome = TransferClient.sendToPeer(peer, me, listOf(FileSource(File(src, "cb.bin"))), tx)
+        var fallbacks = 0
+        var bytesBeforeFallback = false
+        val outcome = TransferClient.sendToPeer(
+            peer, me, listOf(FileSource(File(src, "cb.bin"))), tx, onFallback = { fallbacks++ },
+        ) { _, _ -> if (fallbacks == 0) bytesBeforeFallback = true }
         assertEquals(SendOutcome.Delivered, outcome)
+        assertEquals(1, fallbacks, "fallback signalled once when direct TCP failed")
+        assertFalse(bytesBeforeFallback)
         val end = System.currentTimeMillis() + 3_000
         while (rec.saved == null && System.currentTimeMillis() < end) Thread.sleep(20)
         assertNull(rec.error)
@@ -195,12 +201,15 @@ class CoreTest {
         val rec = Recorder(accept = true)
         val (port, t) = serveOnce(dst, rec)
         var last = 0L
-        val outcome = TransferClient.send(
-            InetAddress.getLoopbackAddress(), port, me,
-            listOf(FileSource(File(src, "big.bin")), FileSource(File(src, "empty.txt"))),
+        var fallbacks = 0
+        val peer = Peer(DeviceInfo("rx", "Receiver", "windows"), InetAddress.getLoopbackAddress(), port)
+        val outcome = TransferClient.sendToPeer(
+            peer, me, listOf(FileSource(File(src, "big.bin")), FileSource(File(src, "empty.txt"))),
+            node = null, onFallback = { fallbacks++ },
         ) { done, _ -> last = done }
         t.join(5_000)
         assertEquals(SendOutcome.Delivered, outcome)
+        assertEquals(0, fallbacks, "no fallback signal on a direct send")
         assertEquals(big.size.toLong(), last)
         assertNull(rec.error)
         assertContentEquals(big, File(dst, "big (1).bin").readBytes())

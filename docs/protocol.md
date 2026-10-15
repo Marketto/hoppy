@@ -189,10 +189,14 @@ JSON: `{"id":"<receiver id>","token":"<token>"}` (Rust/Kotlin/Python write `id` 
 
 **Limits of the scheme.** The token only proves the connector saw the datagram; v0 has no
 authentication (ADR 0003) and anyone on the LAN can sniff it. A send-only node bound to
-an ephemeral UDP port does not receive the receiver's multicast announces, so it relies on
-its own re-sends: these pass a firewall that only allows replies to multicast if the
-firewall also accepts unsolicited UDP (they will not on a strict Windows default). See
-ADR 0006.
+an ephemeral UDP port does not receive the receiver's multicast announces on that socket.
+It MAY, while a callback is pending, also listen to the group on a second socket bound to
+47470 with address reuse (the Rust desktop does; on platforms that allow it, bind that
+socket to the group address so it never takes unicast meant for a receiver on the same
+host); datagrams still leave from the discovery socket. Without it, the sender relies on
+its 2 s re-sends: with the 5 s announce period and a ~3 s response window, one of them
+falls inside a window within about 10 s. Hearing the announces also needs the sender's
+own firewall to let inbound multicast in. See ADR 0006.
 
 ## 7. Planned for v1 (not in v0)
 

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # Cross-implementation test: Rust CLI <-> Python reference, both directions,
-# plus discovery and the callback fallback (spec §6; Rust side via the hoppy-core
-# example `interop_node`). Run from the repo root: tools/interop.sh
+# plus discovery and the callback fallback (spec §6). Run from the repo root: tools/interop.sh
 set -euo pipefail
 export LC_ALL=C.UTF-8  # JVM needs a UTF-8 locale for non-ASCII file names
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REF="python3 $ROOT/tools/hoppy_ref.py"
 cargo build -q --manifest-path "$ROOT/Cargo.toml" -p hoppy
-cargo build -q --manifest-path "$ROOT/Cargo.toml" -p hoppy-core --example interop_node
 BIN="$ROOT/target/debug/hoppy"
-NODE="$ROOT/target/debug/examples/interop_node"
 WORK="$(mktemp -d)"
 PIDS=()
 cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$WORK"; }
@@ -46,11 +43,12 @@ fi
 # Callback (spec §6): the sender skips or fails the direct TCP connect and the receiver
 # connects back after a `callback` datagram on its discovery port.
 echo "4/5 callback: Rust sender → Python receiver connects back"
-$REF receive "$WORK/py-cb" --port 47581 --udp-port 47590 >/dev/null &
+$REF receive "$WORK/py-cb" --port 47581 --udp-port 47590 --name InteropPy >/dev/null &
 PIDS+=($!)
-"$NODE" receive "$WORK/rs-cb" 47584 47591 >/dev/null &
+"$BIN" receive --yes --port 47584 --udp-port 47591 --dir "$WORK/rs-cb" >/dev/null &
 PIDS+=($!); sleep 0.7
-"$NODE" send 127.0.0.1:47590 --no-direct "$WORK/blob.bin" "$WORK/nota 🐰.txt" >/dev/null
+"$BIN" send --seed 127.0.0.1:47590 --to InteropPy --no-direct \
+  "$WORK/blob.bin" "$WORK/nota 🐰.txt" >/dev/null
 cmp "$WORK/blob.bin" "$WORK/py-cb/blob.bin"
 cmp "$WORK/nota 🐰.txt" "$WORK/py-cb/nota 🐰.txt"
 
@@ -78,7 +76,7 @@ if [[ -n "${HOPPY_KT_CP:-}" ]]; then
   sleep 0.3
   cmp "$WORK/nota 🐰.txt" "$WORK/rs-cb/nota 🐰.txt"
   echo "K5/6 callback: Rust sender → Kotlin receiver connects back"
-  "$NODE" send 127.0.0.1:47592 --no-direct "$WORK/nota 🐰.txt" >/dev/null
+  "$BIN" send --seed 127.0.0.1:47592 --to InteropKotlin --no-direct "$WORK/nota 🐰.txt" >/dev/null
   sleep 0.3
   cmp "$WORK/nota 🐰.txt" "$WORK/kt-in/nota 🐰.txt"
   echo "K6/6 callback: Python sender (direct refused) → Kotlin receiver connects back"

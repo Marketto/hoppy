@@ -76,12 +76,15 @@ object TransferClient {
      * Sends to a discovered [peer]: direct TCP first (3 s); if that cannot connect and [node]
      * is given, asks the peer to connect back (spec §6, for receivers behind an inbound
      * firewall). Blocks up to ~23 s before [PeerUnreachableException]. Not on the main thread.
+     * [onFallback] runs (on this thread) exactly when the direct attempt failed and callback
+     * mode starts, like Rust's `Progress::Fallback`; never for a direct send.
      */
     fun sendToPeer(
         peer: Peer,
         me: DeviceInfo,
         sources: List<Source>,
         node: DiscoveryNode?,
+        onFallback: () -> Unit = {},
         progress: ProgressListener = ProgressListener { _, _ -> },
     ): SendOutcome {
         require(sources.isNotEmpty()) { "nothing to send" }
@@ -91,20 +94,25 @@ object TransferClient {
         } catch (e: IOException) {
             direct.close()
             if (node == null) throw PeerUnreachableException(e)
-            return sendViaCallback(peer, me, sources, node, progress)
+            return sendViaCallback(peer, me, sources, node, onFallback, progress)
         }
         direct.use { return sendOver(it, me, sources, progress) }
     }
 
-    /** Callback only (spec §6); [sendToPeer] calls this when the direct connect fails. */
+    /**
+     * Callback only (spec §6); [sendToPeer] calls this when the direct connect fails.
+     * [onFallback] runs first, before the callback request goes out.
+     */
     fun sendViaCallback(
         peer: Peer,
         me: DeviceInfo,
         sources: List<Source>,
         node: DiscoveryNode,
+        onFallback: () -> Unit = {},
         progress: ProgressListener = ProgressListener { _, _ -> },
     ): SendOutcome {
         require(sources.isNotEmpty()) { "nothing to send" }
+        onFallback()
         connectViaCallback(peer, node).use { return sendOver(it, me, sources, progress) }
     }
 

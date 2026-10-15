@@ -127,6 +127,14 @@ PoC UX (no console windows):
   `apply` deletes all inbound rules for our paths first. Values never go into a UAC command
   line or script: the elevated process derives paths from its own `current_exe`.
   Environment variables do not survive UAC elevation.
+- **Callback (spec §6)**: receivers (`hoppy receive`, tray) call `accept_callbacks` with
+  the same dir/handler as `serve` (`lib::receive_forever` for the CLI), so the
+  one-dialog guard covers both paths. Senders use `send_to_peer` (keep the `Discovery`
+  alive during the send); `Progress::Fallback` drives the "trying another way" tip/line,
+  `Error::Unreachable` the "Can't reach" balloon. Senders stay on an ephemeral UDP port: two
+  processes sharing 47470 with SO_REUSEADDR all get multicast but unicast reaches only
+  one, which would starve the tray. hoppy-core opens a listen-only 47470 socket just while
+  a callback is pending. Bare-IP targets have no device id: direct only.
 - `PlaySoundW` is one sound per process: a new call replaces the current one, a null name
   stops it. `SND_MEMORY` + `SND_ASYNC` needs the buffer alive during playback ('static).
 - `device.json` fields added later need `#[serde(default)]`; `config::set_music` re-reads
@@ -151,4 +159,6 @@ Hoppy on 1 and 20 files (one menu), classic-menu task/toggle + Explorer restart,
 shortcut drop/double-click, accept dialog, balloon click, Send to menu,
 send music (idle → transfer → done, mute toggle), installer music + checkbox, update flow
 (balloon → download % → silent install → tray back; portable → portal), firewall task
-(UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`.
+(UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`,
+callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while the tray
+runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon.

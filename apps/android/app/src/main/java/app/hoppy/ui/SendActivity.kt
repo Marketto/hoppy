@@ -182,21 +182,34 @@ class SendActivity : ThemedActivity() {
         b.status.isVisible = true
         b.status.text = getString(R.string.waiting_accept, SafeText.label(peer.device.name))
         val me = Prefs.device(this)
+        // Keep the discovery node (UDP 47470) alive for the callback even if this screen stops.
+        Node.acquire(applicationContext)
+        val node = Node.node()
         var lastUi = 0L
         thread(name = "hoppy-send") {
-            val result = runCatching {
-                TransferClient.send(peer.address, peer.port, me, list) { done, total ->
-                    val now = System.currentTimeMillis()
-                    if (now - lastUi > 150 || done == total) {
-                        lastUi = now
-                        val pct = if (total == 0L) 100 else (done * 100 / total).toInt()
+            val result = try {
+                runCatching {
+                    // Direct TCP failed, asking the peer to connect back (spec §6): say so.
+                    val onFallback = {
                         runOnUiThread {
-                            b.progress.isIndeterminate = false
-                            b.progress.setProgressCompat(pct, true)
-                            b.status.text = getString(R.string.sending_progress, SafeText.label(peer.device.name), pct)
+                            if (sending) b.status.text = getString(R.string.send_trying_callback, SafeText.label(peer.device.name))
+                        }
+                    }
+                    TransferClient.sendToPeer(peer, me, list, node, onFallback) { done, total ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastUi > 150 || done == total) {
+                            lastUi = now
+                            val pct = if (total == 0L) 100 else (done * 100 / total).toInt()
+                            runOnUiThread {
+                                b.progress.isIndeterminate = false
+                                b.progress.setProgressCompat(pct, true)
+                                b.status.text = getString(R.string.sending_progress, SafeText.label(peer.device.name), pct)
+                            }
                         }
                     }
                 }
+            } finally {
+                Node.release()
             }
             if (result.getOrNull() == SendOutcome.Delivered || isFinishing || isDestroyed) list.forEach { it.cleanup() }
             runOnUiThread { onSendResult(peer, result) }

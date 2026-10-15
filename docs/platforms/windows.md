@@ -134,6 +134,23 @@ the transfer fails with a connect timeout to port 47471.
   (ours and the prompt's) are then ignored. The tray reports "the rules were added but have
   no effect"; IT must allow `hoppyw.exe` (TCP 47471, UDP 47470) by policy. Third-party
   security suites with their own firewall are not detected.
+- **Without rules: callback.** If the direct connection to TCP 47471 fails within 3 s, the
+  sender asks this PC over UDP to connect back to it (spec §6, ADR 0006), so a PC whose
+  inbound is blocked (company PC, UAC declined, no admin) can still receive, as long as
+  outbound TCP to the LAN is allowed and Windows' "allow unicast response to
+  multicast/broadcast" window (~3 s after each of our announces) is on, which it is by
+  default. The accept dialog is the same (one offer at a time across both paths). It
+  fails if a GPO sets `DisableUnicastResponsesToMulticastBroadcast` (Group Policy
+  "Allow unicast response: No"), if both PCs block inbound, or across subnets. Sending
+  side: `hoppy send` / `hoppyw send` say "… is not answering, trying another way…" and
+  wait up to 20 s; then "Can't reach …" with the firewall hint. `hoppy send --no-direct`
+  forces the callback (debugging).
+  Senders keep their discovery socket on an ephemeral port (unicast replies must reach
+  them, and the tray must keep getting the unicast sent to 47470); only while a callback
+  is pending they open a second, listen-only socket on UDP 47470 (address reuse, joined to
+  the group) to hear the receiver's announces and reply at once. On Windows that socket
+  cannot be bound to the group address, so for those ≤ 20 s a unicast datagram meant for
+  the tray on the same PC could land in the sender instead (the remote side re-sends).
 - By hand (admin terminal):
   `netsh advfirewall firewall add rule name="Hoppy (hoppyw)" dir=in action=allow program="<path>\hoppyw.exe" profile=private,domain protocol=TCP localport=47471`
   (and the same with `protocol=UDP localport=47470`).

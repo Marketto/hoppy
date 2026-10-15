@@ -40,7 +40,8 @@ use anyhow::{Result, bail};
 use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
 use hoppy_core::{
-    DeviceInfo, Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, send_files,
+    Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, accept_callbacks,
+    send_to_peer,
 };
 
 use crate::firewall::{self, Verdict};
@@ -91,6 +92,9 @@ pub struct Strings {
     pub delivered: &'static str,
     pub declined: &'static str,
     pub send_failed: &'static str,
+    pub fallback: &'static str,
+    pub unreachable_title: &'static str,
+    pub unreachable_text: &'static str,
     pub cancel_send: &'static str,
     pub close: &'static str,
     pub not_a_file: &'static str,
@@ -145,6 +149,9 @@ pub const IT: Strings = Strings {
     delivered: "Consegnato a {name} ✓",
     declined: "{name} ha rifiutato",
     send_failed: "Invio a {name} non riuscito",
+    fallback: "{name} non risponde, provo un'altra strada…",
+    unreachable_title: "Non riesco a raggiungere «{name}»",
+    unreachable_text: "Controlla che Hoppy sia aperto sull'altro dispositivo e che siate sulla stessa rete. Se è un PC Windows: lì clic sull'icona di Hoppy → «Consenti nel firewall…» (su un PC aziendale chiedi all'IT).",
     cancel_send: "Annulla invio",
     close: "Chiudi",
     not_a_file: "«{path}» non è un file: le cartelle arriveranno in una versione futura.",
@@ -199,6 +206,9 @@ pub const EN: Strings = Strings {
     delivered: "Delivered to {name} ✓",
     declined: "{name} declined",
     send_failed: "Sending to {name} failed",
+    fallback: "{name} is not answering, trying another way…",
+    unreachable_title: "Can't reach \"{name}\"",
+    unreachable_text: "Check that Hoppy is open on the other device and that you are on the same network. If it is a Windows PC: click the Hoppy icon there → \"Allow through firewall…\" (on a company PC, ask IT).",
     cancel_send: "Cancel sending",
     close: "Close",
     not_a_file: "\"{path}\" is not a file: folders arrive in a later version.",
@@ -663,7 +673,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     let me = config::device_info(&identity);
     let dir = default_receive_dir()?;
     let listener = bind_receiver(TRANSFER_PORT)?;
-    let _discovery = start_discovery(&me, listener.local_addr()?.port(), &[])?;
+    let discovery = start_discovery(&me, listener.local_addr()?.port(), &[])?;
 
     let tray = Tray::new(TRAY_WINDOW, &fill(s.tip_ready, &[("name", &me.name)]))?;
     let notices = Arc::new(Mutex::new(VecDeque::new()));
@@ -686,6 +696,8 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
         names: Mutex::new(HashMap::new()),
         asking: AtomicBool::new(false),
     });
+    // Same folder and handler for both paths, so `GuiReceiver::asking` covers callbacks too.
+    accept_callbacks(&discovery, dir.clone(), handler.clone());
     let serve_dir = dir.clone();
     thread::spawn(move || serve(listener, serve_dir, handler));
 
@@ -1235,7 +1247,15 @@ struct SendState {
     /// The receiver said yes (first `Progress::FileStarted`).
     accepted: bool,
     pct: Option<u64>,
-    outcome: Option<Result<SendOutcome, String>>,
+    /// The direct connection failed; waiting for a callback (spec §6).
+    fallback: bool,
+    outcome: Option<Result<SendOutcome, SendError>>,
+}
+
+enum SendError {
+    /// Neither direct nor callback reached the peer: show the firewall hint.
+    Unreachable(String),
+    Other(String),
 }
 
 enum Phase {
@@ -1330,16 +1350,16 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         let name = display_name(&peer.device.name);
                         tray.set_tip(&fill(s.waiting, &[("name", &name)]));
                         let files = files.take().unwrap_or_default();
-                        spawn_send(me.clone(), peer, files, &state, tray.waker());
+                        spawn_send(&discovery, peer, files, &state, tray.waker());
                         phase = Phase::Sending(name);
                     }
                     _ => break, // "Cancel" or menu dismissed
                 }
             }
             (TrayEvent::Wake, Phase::Sending(name)) => {
-                let (accepted, pct, outcome) = {
+                let (accepted, pct, fallback, outcome) = {
                     let mut st = lock(&state);
-                    (st.accepted, st.pct, st.outcome.take())
+                    (st.accepted, st.pct, st.fallback, st.outcome.take())
                 };
                 if let Some(outcome) = outcome {
                     let delivered = matches!(outcome, Ok(SendOutcome::Delivered));
@@ -1350,8 +1370,12 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     }
                     // Our jingle is the sound of success; skip the system one on top of it.
                     let sound = !(delivered && music.enabled);
-                    if let Err(e) = &outcome {
-                        diag::log(format!("send: failed: {e}"));
+                    match &outcome {
+                        Err(SendError::Unreachable(e)) => {
+                            diag::log(format!("send: unreachable: {e}"))
+                        }
+                        Err(SendError::Other(e)) => diag::log(format!("send: failed: {e}")),
+                        Ok(_) => diag::log(format!("send: done (callback: {fallback})")),
                     }
                     let (title, text, error) = match outcome {
                         Ok(SendOutcome::Delivered) => (s.delivered, String::new(), false),
@@ -1360,7 +1384,12 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                             let reason = reason.filter(|r| r != "declined").unwrap_or_default();
                             (s.declined, display_text(&reason, SHOW_TEXT_MAX), true)
                         }
-                        Err(e) => (s.send_failed, display_text(&e, SHOW_TEXT_MAX), true),
+                        Err(SendError::Unreachable(_)) => {
+                            (s.unreachable_title, s.unreachable_text.to_owned(), true)
+                        }
+                        Err(SendError::Other(e)) => {
+                            (s.send_failed, display_text(&e, SHOW_TEXT_MAX), true)
+                        }
                     };
                     let title = fill(title, &[("name", name)]);
                     tray.set_tip(&title);
@@ -1374,6 +1403,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     if let Some(pct) = pct {
                         let pct = pct.to_string();
                         tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
+                    } else if fallback && !accepted {
+                        tray.set_tip(&fill(s.fallback, &[("name", name)]));
                     }
                 }
             }
@@ -1409,16 +1440,23 @@ fn spawn_search(discovery: &Arc<Discovery>, state: &Arc<Mutex<SendState>>, waker
 }
 
 fn spawn_send(
-    me: DeviceInfo,
+    discovery: &Arc<Discovery>,
     peer: Peer,
     files: Vec<PathBuf>,
     state: &Arc<Mutex<SendState>>,
     waker: Waker,
 ) {
-    let state = Arc::clone(state);
+    let (discovery, state) = (Arc::clone(discovery), Arc::clone(state));
     thread::spawn(move || {
         let mut last = None;
-        let result = send_files(peer.addr, &me, &files, &mut |p| match p {
+        let me = discovery.me().clone();
+        let result = send_to_peer(&peer, &me, Some(&discovery), &files, &mut |p| match p {
+            // Direct connect failed (firewalled receiver?): asking it to connect back.
+            Progress::Fallback => {
+                diag::log("send: direct connection failed, trying a callback");
+                lock(&state).fallback = true;
+                waker.wake();
+            }
             // Only sent after the receiver accepted: switch to the transfer music.
             Progress::FileStarted { index: 0, .. } => {
                 lock(&state).accepted = true;
@@ -1434,7 +1472,10 @@ fn spawn_send(
             }
             _ => {}
         });
-        lock(&state).outcome = Some(result.map_err(|e| e.to_string()));
+        lock(&state).outcome = Some(result.map_err(|e| match e {
+            Error::Unreachable(detail) => SendError::Unreachable(detail),
+            e => SendError::Other(e.to_string()),
+        }));
         waker.wake();
     });
 }
@@ -1442,7 +1483,7 @@ fn spawn_send(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoppy_core::DiscoveryConfig;
+    use hoppy_core::{DeviceInfo, DiscoveryConfig};
 
     fn placeholders(t: &str) -> Vec<&str> {
         let mut keys: Vec<&str> = t
@@ -1470,6 +1511,9 @@ mod tests {
                 s.delivered,
                 s.declined,
                 s.send_failed,
+                s.fallback,
+                s.unreachable_title,
+                s.unreachable_text,
                 s.not_a_file,
                 s.update_ready,
                 s.update_portal,

@@ -20,6 +20,11 @@ Two modules in `apps/android/`:
     "Received files"; tap opens the single file or Downloads).
   - `service/MediaStoreSink.kt` — saves to `Download/Hoppy`, `IS_PENDING` until hash OK;
     `takeUri(location)` maps a committed file to its MediaStore item.
+    Callback (protocol §6): `ReceiveService` sets `Node.callbackHandler` →
+    `CallbackReceiver.answer` through the same `serve { }` path as TCP connections;
+    `SendActivity` uses `TransferClient.sendToPeer(…, Node.node())` (blocks up to ~23 s,
+    holds a `Node` reference meanwhile; its `onFallback` shows `send_trying_callback`). Never
+    send with the bare `TransferClient.send`. One Accept/Decline prompt at a time (`deciding`).
   - `audio/Music.kt` — theme music (main thread): visible-activity counter, audio focus,
     idle/transfer/done; `audio/MusicTiming.kt` (pure, + test vs `assets/music/manifest.json`)
     holds bar lengths and fade curves. Hooks: `SendActivity` (`transferStarted/Ended`),

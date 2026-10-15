@@ -18,6 +18,7 @@
     <string name="delivered">Delivered to %1$s ✓</string>
     <string name="declined">%1$s said no.</string>
     <string name="send_failed">Could not send: %1$s</string>
+    <string name="send_trying_callback">%1$s isn\'t answering right away, trying another way…</string>
     <string name="send_unreachable">Can\'t reach “%1$s”. On Windows, allow Hoppy in the firewall (Private networks) and check that both devices are on the same Wi-Fi.</string>
     <!-- One-tap confirm for a preselected device: name, then its IP address. -->
     <string name="send_to_device">Send to %1$s\n%2$s</string>

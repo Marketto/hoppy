@@ -95,6 +95,8 @@ struct Inner {
     pending: Mutex<HashMap<u64, Pending>>,
     next_ticket: AtomicU64,
     limiter: Mutex<CallbackLimiter>,
+    /// Stop flag of the announce listener (see [`Discovery::request_callback`]), if running.
+    announce_listener: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 /// Running discovery. Dropping it sends `bye` and stops the background threads.
@@ -115,6 +117,7 @@ impl Discovery {
             pending: Mutex::new(HashMap::new()),
             next_ticket: AtomicU64::new(1),
             limiter: Mutex::new(CallbackLimiter::default()),
+            announce_listener: Mutex::new(None),
         });
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -122,7 +125,7 @@ impl Discovery {
             let (inner, stop) = (inner.clone(), stop.clone());
             thread::Builder::new()
                 .name("hoppy-discovery-rx".into())
-                .spawn(move || receive_loop(&inner, &stop))?
+                .spawn(move || receive_loop(&inner, &inner.socket, &stop))?
         };
         let tx = {
             let (inner, stop) = (inner.clone(), stop.clone());
@@ -179,6 +182,11 @@ impl Discovery {
     /// Sender side (spec §6): asks `peer` to connect back to our TCP `port`, proving itself
     /// with `token`. Sends one datagram now, and one more each time `peer` announces or
     /// queries while the ticket lives; call [`CallbackTicket::resend`] periodically too.
+    ///
+    /// A multicast node bound to another port than [`DISCOVERY_PORT`] (send-only nodes)
+    /// cannot hear the peer's multicast announces, so while tickets live it also listens on
+    /// a second socket bound to `DISCOVERY_PORT` with address reuse (see
+    /// [`bind_announce_listener`]). Replies still leave from the main socket.
     pub fn request_callback(&self, peer: &Peer, port: u16, token: &str) -> CallbackTicket {
         let key = self.inner.next_ticket.fetch_add(1, Ordering::Relaxed);
         self.inner.pending.lock().expect("pending poisoned").insert(
@@ -189,6 +197,10 @@ impl Discovery {
                 token: token.to_string(),
             },
         );
+        // After the insert, so a concurrent last-ticket drop cannot stop our listener.
+        if self.inner.config.use_multicast && self.local_port() != DISCOVERY_PORT {
+            start_announce_listener(&self.inner);
+        }
         let ticket = CallbackTicket {
             inner: self.inner.clone(),
             key,
@@ -270,10 +282,72 @@ impl CallbackTicket {
 
 impl Drop for CallbackTicket {
     fn drop(&mut self) {
-        if let Ok(mut p) = self.inner.pending.lock() {
-            p.remove(&self.key);
+        let Ok(mut pending) = self.inner.pending.lock() else {
+            return;
+        };
+        pending.remove(&self.key);
+        if pending.is_empty()
+            && let Ok(mut listener) = self.inner.announce_listener.lock()
+            && let Some(stop) = listener.take()
+        {
+            stop.store(true, Ordering::Relaxed); // the thread exits within one read timeout
         }
     }
+}
+
+/// Starts the announce listener thread unless it already runs. Best effort: without it the
+/// periodic [`CallbackTicket::resend`] still lands in the peer's response window sometimes.
+fn start_announce_listener(inner: &Arc<Inner>) {
+    let mut slot = inner
+        .announce_listener
+        .lock()
+        .expect("listener slot poisoned");
+    if slot.is_some() {
+        return;
+    }
+    let Ok(socket) = bind_announce_listener() else {
+        return;
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let (inner2, stop2) = (inner.clone(), stop.clone());
+    if thread::Builder::new()
+        .name("hoppy-discovery-listen".into())
+        .spawn(move || receive_loop(&inner2, &socket, &stop2))
+        .is_ok()
+    {
+        *slot = Some(stop);
+    }
+}
+
+/// Listen-only socket on [`DISCOVERY_PORT`], shared (address reuse) with a receiver that may
+/// run on the same machine (e.g. the Windows tray while `hoppyw send` runs).
+///
+/// Unicast datagrams to a shared UDP port reach only one of the sockets (Linux: hashed per
+/// source with `SO_REUSEPORT`; Windows: unspecified), so this socket must not take the
+/// receiver's unicast (query answers, `callback` datagrams). Where the OS allows it, it is
+/// bound to the multicast group address, which filters unicast out; Windows cannot bind to
+/// a multicast address, so there it binds to 0.0.0.0 and the window is kept short: it lives
+/// only while a callback request is outstanding (at most `CALLBACK_WINDOW`).
+fn bind_announce_listener() -> io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
+    socket.set_reuse_port(true)?;
+    let local = if cfg!(windows) {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        MULTICAST_ADDR
+    };
+    socket.bind(&SocketAddrV4::new(local, DISCOVERY_PORT).into())?;
+    let mut joined = false;
+    for ip in local_ipv4s() {
+        joined |= socket.join_multicast_v4(&MULTICAST_ADDR, &ip).is_ok();
+    }
+    if !joined {
+        socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
+    }
+    socket.set_read_timeout(Some(Duration::from_millis(500)))?;
+    Ok(socket.into())
 }
 
 /// Receiver-side admission control for callbacks (spec §6 "Limits").
@@ -404,11 +478,13 @@ fn send_all(socket: &UdpSocket, config: &DiscoveryConfig, kind: MessageKind) {
     );
 }
 
-fn receive_loop(inner: &Arc<Inner>, stop: &AtomicBool) {
+/// Reads datagrams from `rx` (the main socket or the announce listener) until `stop`.
+/// Replies always leave from the main socket.
+fn receive_loop(inner: &Arc<Inner>, rx: &UdpSocket, stop: &AtomicBool) {
     let (socket, config) = (&inner.socket, &inner.config);
     let mut buf = [0u8; 2048];
     while !stop.load(Ordering::Relaxed) {
-        let (len, from) = match socket.recv_from(&mut buf) {
+        let (len, from) = match rx.recv_from(&mut buf) {
             Ok(v) => v,
             Err(_) => continue, // timeout or transient error; re-check stop flag
         };
@@ -551,6 +627,50 @@ mod tests {
             "224.0.0.1",
         ] {
             assert!(!is_local_address(ip(bad)), "{bad}");
+        }
+    }
+
+    /// The send-side announce listener shares DISCOVERY_PORT with a receiver on the same
+    /// machine and must leave unicast to it (Windows is checked by hand: no group bind).
+    #[cfg(unix)]
+    #[test]
+    fn announce_listener_leaves_unicast_to_the_receiver() {
+        let Ok(receiver) = bind_socket(DISCOVERY_PORT, false) else {
+            eprintln!("skipped: UDP {DISCOVERY_PORT} not available here");
+            return;
+        };
+        let Ok(listener) = bind_announce_listener() else {
+            eprintln!("skipped: no multicast-capable interface here");
+            return;
+        };
+        let probe = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut buf = [0u8; 16];
+        for i in 0..8u8 {
+            probe
+                .send_to(&[i], (Ipv4Addr::LOCALHOST, DISCOVERY_PORT))
+                .unwrap();
+            let (n, _) = receiver
+                .recv_from(&mut buf)
+                .expect("receiver got the unicast");
+            assert_eq!(&buf[..n], &[i]);
+        }
+        listener
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        assert!(
+            listener.recv_from(&mut buf).is_err(),
+            "listener took unicast"
+        );
+        // ...while it does hear the group (when this host can loop multicast back).
+        let mcast = bind_socket(0, true).unwrap();
+        if mcast
+            .send_to(b"m", SocketAddrV4::new(MULTICAST_ADDR, DISCOVERY_PORT))
+            .is_ok()
+        {
+            let (n, _) = listener
+                .recv_from(&mut buf)
+                .expect("listener heard the group");
+            assert_eq!(&buf[..n], b"m");
         }
     }
 
