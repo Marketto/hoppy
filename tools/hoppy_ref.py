@@ -8,16 +8,21 @@ Independent second implementation of docs/protocol.md, used to:
 Usage:
   hoppy_ref.py selftest                    run docs/test-vectors.json
   hoppy_ref.py peers [--wait 3]            list nearby devices
-  hoppy_ref.py receive DIR [--port P]      accept everything into DIR (trusted LAN only)
-  hoppy_ref.py send HOST[:PORT] FILE...    send files
+  hoppy_ref.py receive DIR [--port P]      accept everything into DIR (trusted LAN only);
+                                           also answers callback requests (spec §6)
+  hoppy_ref.py send HOST[:PORT] FILE...    send files; falls back to a callback if the
+                                           TCP connect fails (--no-direct: callback only)
   hoppy_ref.py vectors                     print the byte-level example of spec §5
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
+import ipaddress
 import json
 import os
+import select
 import socket
 import struct
 import sys
@@ -27,6 +32,7 @@ import uuid
 from pathlib import Path
 
 MAGIC = b"HOPY"
+CALLBACK_MAGIC = b"HOPC"
 VERSION = 0
 DISCOVERY_PORT = 47470
 TRANSFER_PORT = 47471
@@ -34,6 +40,14 @@ MCAST = "239.255.72.80"
 MAX_FRAME = 1 << 20
 MAX_FILES = 10_000
 CHUNK = 256 * 1024
+# Callback (spec §6); same values as Rust/Kotlin.
+DIRECT_CONNECT_TIMEOUT = 3.0
+CALLBACK_WINDOW = 20.0
+CALLBACK_RESEND = 2.0
+CALLBACK_CONNECT_TIMEOUT = 3.0
+CALLBACK_HELLO_TIMEOUT = 3.0
+MAX_CALLBACKS_PER_MINUTE = 10
+TOKEN_MEMORY = 120.0
 ROOT = Path(__file__).resolve().parent.parent
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
@@ -101,23 +115,163 @@ def me(name: str | None = None) -> dict:
 
 # ---------------------------------------------------------------- send
 def send(host: str, port: int, paths: list[Path], sender: dict) -> dict:
-    files = [{"name": p.name, "size": p.stat().st_size} for p in paths]
+    """Direct connection only (spec §3)."""
     with socket.create_connection((host, port), timeout=10) as s:
-        s.sendall(MAGIC + bytes([VERSION]))
-        write_json(s, {"sender": sender, "files": files})
-        s.settimeout(120)
-        decision = read_json(s)
-        if not decision.get("accept"):
-            return {"declined": decision.get("reason")}
-        s.settimeout(30)
-        for p in paths:
-            h = hashlib.sha256()
-            with p.open("rb") as f:
-                while chunk := f.read(CHUNK):
-                    h.update(chunk)
-                    s.sendall(chunk)
-            s.sendall(h.digest())
-        return read_json(s)
+        return send_over(s, paths, sender)
+
+
+def send_to(host: str, port: int, paths: list[Path], sender: dict, peer_udp: tuple[str, int],
+            udp_port: int = 0, direct: bool = True) -> dict:
+    """Direct first (3 s); if the connect fails, ask the receiver to connect back (spec §6)."""
+    if direct:
+        try:
+            s = socket.create_connection((host, port), timeout=DIRECT_CONNECT_TIMEOUT)
+        except OSError as e:
+            print(f"direct connect failed ({e}); asking {host} to connect back", file=sys.stderr)
+        else:
+            with s:
+                s.settimeout(10)
+                return send_over(s, paths, sender)
+    with callback_connect(peer_udp, sender, udp_port) as s:
+        return send_over(s, paths, sender)
+
+
+def send_over(s: socket.socket, paths: list[Path], sender: dict) -> dict:
+    files = [{"name": p.name, "size": p.stat().st_size} for p in paths]
+    s.sendall(MAGIC + bytes([VERSION]))
+    write_json(s, {"sender": sender, "files": files})
+    s.settimeout(120)
+    decision = read_json(s)
+    if not decision.get("accept"):
+        return {"declined": decision.get("reason")}
+    s.settimeout(30)
+    for p in paths:
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            while chunk := f.read(CHUNK):
+                h.update(chunk)
+                s.sendall(chunk)
+        s.sendall(h.digest())
+    return read_json(s)
+
+
+# ---------------------------------------------------------------- callback (spec §6)
+def valid_token(t) -> bool:
+    return isinstance(t, str) and len(t) == 32 and all(c in "0123456789abcdef" for c in t)
+
+
+def is_local_address(ip: str) -> bool:
+    a = ipaddress.ip_address(ip)
+    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    if isinstance(a, ipaddress.IPv4Address):
+        return a.is_loopback or a.is_link_local or any(
+            a in ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+    return a.is_loopback or any(a in ipaddress.ip_network(n) for n in ("fc00::/7", "fe80::/10"))
+
+
+def callback_hello(receiver_id: str, token: str) -> bytes:
+    body = json.dumps({"id": receiver_id, "token": token}, separators=(",", ":"), ensure_ascii=False).encode()
+    return CALLBACK_MAGIC + bytes([VERSION]) + struct.pack(">I", len(body)) + body
+
+
+class CallbackLimiter:
+    """Receiver-side limits: 1 outstanding per IP, tokens deduped for 2 min, 10/min overall."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.tokens: dict[str, float] = {}
+        self.outstanding: set[str] = set()
+        self.started: list[float] = []
+
+    def admit(self, ip: str, token: str, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            self.tokens = {t: at for t, at in self.tokens.items() if now - at <= TOKEN_MEMORY}
+            self.started = [t for t in self.started if now - t < 60]
+            if token in self.tokens or ip in self.outstanding or len(self.started) >= MAX_CALLBACKS_PER_MINUTE:
+                return False
+            self.tokens[token] = now
+            self.outstanding.add(ip)
+            self.started.append(now)
+            return True
+
+    def release(self, ip: str) -> None:
+        with self.lock:
+            self.outstanding.discard(ip)
+
+
+def answer_callback(ip: str, port: int, token: str, device: dict, out: Path, limiter: CallbackLimiter) -> None:
+    try:
+        conn = socket.create_connection((ip, port), timeout=CALLBACK_CONNECT_TIMEOUT)
+        conn.sendall(callback_hello(device["id"], token))
+        handle(conn, out)
+    except (OSError, ValueError) as e:
+        print(f"callback to {ip}:{port} failed: {e}", file=sys.stderr)
+    finally:
+        limiter.release(ip)
+
+
+class callback_connect:
+    """Sender side: context manager yielding the verified socket the receiver opened."""
+
+    def __init__(self, peer_udp: tuple[str, int], sender: dict, udp_port: int = 0) -> None:
+        self.peer_udp, self.sender, self.udp_port = peer_udp, sender, udp_port
+        self.conn: socket.socket | None = None
+
+    def __enter__(self) -> socket.socket:
+        udp = udp_socket(self.udp_port)
+        srv = socket.create_server(("0.0.0.0", 0))
+        try:
+            self.conn = self._run(udp, srv)
+            return self.conn
+        finally:
+            udp.close()
+            srv.close()
+
+    def __exit__(self, *exc) -> None:
+        if self.conn:
+            self.conn.close()
+
+    def _run(self, udp: socket.socket, srv: socket.socket) -> socket.socket:
+        token = os.urandom(16).hex()
+        port = srv.getsockname()[1]
+        # Learn the receiver's id (needed for "to") from its answer to a unicast query.
+        peer_ip = socket.gethostbyname(self.peer_udp[0])
+        peer_id, target = None, (peer_ip, self.peer_udp[1])
+        udp.sendto(msg("query", self.sender, 0), target)
+        end = time.monotonic() + CALLBACK_WINDOW
+        next_resend = 0.0
+        while time.monotonic() < end:
+            now = time.monotonic()
+            if peer_id and now >= next_resend:
+                udp.sendto(msg("callback", self.sender, port, token=token, to=peer_id), target)
+                next_resend = now + CALLBACK_RESEND
+            ready, _, _ = select.select([udp, srv], [], [], 0.2)
+            if udp in ready:
+                data, addr = udp.recvfrom(2048)
+                m = decode(data)
+                if m and m["type"] in ("announce", "query") and m["port"] and addr[0] == peer_ip:
+                    if peer_id is None:
+                        peer_id = m["id"]
+                    if m["id"] == peer_id:  # reply inside the firewall's response window
+                        target = addr
+                        udp.sendto(msg("callback", self.sender, port, token=token, to=peer_id), addr)
+                        next_resend = time.monotonic() + CALLBACK_RESEND
+            if srv in ready:
+                conn, _ = srv.accept()
+                try:
+                    conn.settimeout(CALLBACK_HELLO_TIMEOUT)
+                    if read_exact(conn, 5) != CALLBACK_MAGIC + bytes([VERSION]):
+                        raise ValueError("bad callback magic")
+                    hello = read_json(conn)
+                    if hmac.compare_digest(str(hello.get("token", "")).encode(), token.encode()) and hello.get("id") == peer_id:
+                        conn.settimeout(10)
+                        return conn
+                    raise ValueError("callback token mismatch")
+                except (OSError, ValueError):
+                    conn.close()
+        raise ConnectionError(f"{self.peer_udp[0]} did not connect directly or back within {CALLBACK_WINDOW:.0f} s")
 
 
 # ---------------------------------------------------------------- receive
@@ -161,11 +315,11 @@ def handle(conn: socket.socket, out: Path, log=print) -> None:
         log(f"received {len(files) - len(failed)}/{len(files)} file(s) from {offer['sender'].get('name')}")
 
 
-def receive(out: Path, port: int, device: dict, announce: bool = True) -> None:
+def receive(out: Path, port: int, device: dict, announce: bool = True, udp_port: int = DISCOVERY_PORT) -> None:
     srv = socket.create_server(("0.0.0.0", port), reuse_port=hasattr(socket, "SO_REUSEPORT"))
     port = srv.getsockname()[1]
     if announce:
-        threading.Thread(target=announcer, args=(device, port), daemon=True).start()
+        threading.Thread(target=announcer, args=(device, port, out, udp_port), daemon=True).start()
     print(f"receiving as {device['name']!r} on port {port} into {out}", flush=True)
     while True:
         conn, _ = srv.accept()
@@ -173,8 +327,26 @@ def receive(out: Path, port: int, device: dict, announce: bool = True) -> None:
 
 
 # ---------------------------------------------------------------- discovery
-def msg(kind: str, device: dict, port: int) -> bytes:
-    return json.dumps({"hoppy": VERSION, "type": kind, **device, "port": port}).encode()
+def msg(kind: str, device: dict, port: int, **extra: str) -> bytes:
+    return json.dumps({"hoppy": VERSION, "type": kind, **device, "port": port, **extra}).encode()
+
+
+def decode(data: bytes) -> dict | None:
+    """Valid v0 discovery datagram or None (spec §2 rule 5, §6)."""
+    try:
+        m = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(m, dict) or m.get("hoppy") != VERSION or m.get("type") not in ("announce", "query", "bye", "callback"):
+        return None
+    port, ident = m.get("port"), m.get("id")
+    if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535 or not isinstance(ident, str) or not ident:
+        return None
+    if m["type"] == "callback":
+        to = m.get("to")
+        if port == 0 or not valid_token(m.get("token")) or not isinstance(to, str) or not to:
+            return None
+    return m
 
 
 def udp_socket(bind_port: int) -> socket.socket:
@@ -198,9 +370,10 @@ def broadcast(s: socket.socket, payload: bytes) -> None:
             pass
 
 
-def announcer(device: dict, port: int) -> None:
-    s = udp_socket(DISCOVERY_PORT)
+def announcer(device: dict, port: int, out: Path | None = None, udp_port: int = DISCOVERY_PORT) -> None:
+    s = udp_socket(udp_port)
     s.settimeout(0.5)
+    limiter = CallbackLimiter()
     broadcast(s, msg("query", device, port))
     next_announce = 0.0
     while True:
@@ -209,11 +382,18 @@ def announcer(device: dict, port: int) -> None:
             next_announce = time.monotonic() + 5
         try:
             data, addr = s.recvfrom(2048)
-            m = json.loads(data)
-            if m.get("hoppy") == VERSION and m.get("type") == "query" and m.get("id") != device["id"]:
-                s.sendto(msg("announce", device, port), addr)
-        except (socket.timeout, ValueError):
-            pass
+        except socket.timeout:
+            continue
+        m = decode(data)
+        if not m or m["id"] == device["id"]:
+            continue
+        if m["type"] == "query":
+            s.sendto(msg("announce", device, port), addr)
+        elif (m["type"] == "callback" and out is not None and port and m["to"] == device["id"]
+              and is_local_address(addr[0]) and limiter.admit(addr[0], m["token"])):
+            # Connect to the datagram's source IP, never to an address from the JSON.
+            threading.Thread(target=answer_callback, daemon=True,
+                             args=(addr[0], m["port"], m["token"], device, out, limiter)).start()
 
 
 def peers(wait: float, seeds: list[str]) -> dict:
@@ -232,11 +412,8 @@ def peers(wait: float, seeds: list[str]) -> dict:
             data, addr = s.recvfrom(2048)
         except socket.timeout:
             continue
-        try:
-            m = json.loads(data)
-        except ValueError:
-            continue
-        if m.get("hoppy") == VERSION and m.get("type") in ("announce", "query") and m.get("port"):
+        m = decode(data)
+        if m and m["type"] in ("announce", "query") and m["port"]:
             found[m["id"]] = {**m, "ip": addr[0]}
     return found
 
@@ -255,6 +432,38 @@ def selftest() -> int:
         if hashlib.sha256(content.encode()).hexdigest() != ex["sha256_hex"][name]:
             bad += 1
             print(f"FAIL sha256 vector for {name}")
+    cb = vectors["callback_example"]
+    m = decode(cb["datagram_json"].encode())
+    if not m or m["type"] != "callback":
+        bad += 1
+        print("FAIL callback datagram vector rejected")
+    else:
+        dev = {k: m[k] for k in ("id", "name", "platform")}
+        if json.loads(msg("callback", dev, m["port"], token=m["token"], to=m["to"])) != json.loads(cb["datagram_json"]):
+            bad += 1
+            print("FAIL callback datagram encoding")
+    for raw in cb["invalid_datagrams"]:
+        if decode(raw.encode()) is not None:
+            bad += 1
+            print(f"FAIL accepted invalid callback datagram {raw}")
+    h = json.loads(cb["hello_json"])
+    if callback_hello(h["id"], h["token"]).hex() != cb["hello_hex"]:
+        bad += 1
+        print("FAIL callback hello bytes")
+    if decode(msg("callback", me(), 1, token="ab" * 16, to="x")) is None or valid_token("AB" * 16):
+        bad += 1
+        print("FAIL token validation")
+    lim = CallbackLimiter()
+    checks = [lim.admit("10.0.0.1", "t1", 0), not lim.admit("10.0.0.1", "t2", 0)]
+    lim.release("10.0.0.1")
+    checks += [not lim.admit("10.0.0.1", "t1", 0), lim.admit("10.0.0.1", "t2", 0)]
+    checks += [lim.admit(f"10.0.1.{i}", f"u{i}", 0) for i in range(MAX_CALLBACKS_PER_MINUTE - 2)]
+    checks += [not lim.admit("10.0.2.1", "v", 0), lim.admit("10.0.2.1", "v", 61)]
+    checks += [is_local_address(a) for a in ("127.0.0.1", "192.168.1.2", "100.64.0.1", "fe80::1", "fd00::1")]
+    checks += [not is_local_address(a) for a in ("8.8.8.8", "100.128.0.1", "2001:db8::1")]
+    if not all(checks):
+        bad += 1
+        print(f"FAIL callback limits/addresses: {checks}")
     print("selftest:", "OK" if not bad else f"{bad} failure(s)")
     return 1 if bad else 0
 
@@ -282,9 +491,14 @@ def main() -> int:
     r.add_argument("--port", type=int, default=TRANSFER_PORT)
     r.add_argument("--name")
     r.add_argument("--no-announce", action="store_true")
+    r.add_argument("--udp-port", type=int, default=DISCOVERY_PORT, help="discovery port to bind (tests)")
     s = sub.add_parser("send")
     s.add_argument("target")
     s.add_argument("files", nargs="+", type=Path)
+    s.add_argument("--no-direct", action="store_true", help="skip the TCP connect, use a callback (spec §6)")
+    s.add_argument("--peer-udp", help="receiver discovery address HOST:PORT (default HOST:47470)")
+    s.add_argument("--udp-port", type=int, default=0,
+                   help="local discovery port for the callback; 47470 also catches the receiver's multicast announces")
     a = ap.parse_args()
 
     if a.cmd == "selftest":
@@ -297,10 +511,17 @@ def main() -> int:
             print(f"{m['name']:<24} {m['platform']:<8} {m['ip']}:{m['port']}  {m['id']}")
         return 0
     if a.cmd == "receive":
-        receive(a.dir, a.port, me(a.name), announce=not a.no_announce)
+        receive(a.dir, a.port, me(a.name), announce=not a.no_announce, udp_port=a.udp_port)
         return 0
     host, _, port = a.target.rpartition(":") if a.target.count(":") == 1 else (a.target, "", "")
-    result = send(host or a.target, int(port or TRANSFER_PORT), a.files, me())
+    host = host or a.target
+    uhost, _, uport = (a.peer_udp or host).rpartition(":") if a.peer_udp else (host, "", "")
+    try:
+        result = send_to(host, int(port or TRANSFER_PORT), a.files, me(), (uhost or host, int(uport or DISCOVERY_PORT)),
+                         udp_port=a.udp_port, direct=not a.no_direct)
+    except (OSError, ConnectionError) as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        return 1
     print(json.dumps(result))
     return 0 if result.get("ok") else 1
 

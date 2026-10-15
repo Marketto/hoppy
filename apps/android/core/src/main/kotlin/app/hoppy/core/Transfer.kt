@@ -9,7 +9,9 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.security.MessageDigest
 
 /** Something to send: Android wraps content URIs, tests wrap files. */
@@ -42,6 +44,9 @@ fun interface ProgressListener {
 
 object TransferClient {
     private const val CONNECT_TIMEOUT_MS = 5_000
+    /** Direct attempt before falling back to a callback (spec §6). */
+    const val DIRECT_CONNECT_TIMEOUT_MS = 3_000
+    private const val CALLBACK_HELLO_TIMEOUT_MS = 3_000
     private const val DECISION_TIMEOUT_MS = 120_000 // a human may be deciding
     private const val IO_TIMEOUT_MS = 30_000
 
@@ -57,15 +62,94 @@ object TransferClient {
         progress: ProgressListener = ProgressListener { _, _ -> },
     ): SendOutcome {
         require(sources.isNotEmpty()) { "nothing to send" }
-        val offer = Offer(me, sources.map { FileEntry(it.name, it.size) })
-        val total = offer.totalSize
         Socket().use { socket ->
-            socket.tcpNoDelay = true
             try {
                 socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             } catch (e: IOException) {
                 throw PeerUnreachableException(e)
             }
+            return sendOver(socket, me, sources, progress)
+        }
+    }
+
+    /**
+     * Sends to a discovered [peer]: direct TCP first (3 s); if that cannot connect and [node]
+     * is given, asks the peer to connect back (spec §6, for receivers behind an inbound
+     * firewall). Blocks up to ~23 s before [PeerUnreachableException]. Not on the main thread.
+     */
+    fun sendToPeer(
+        peer: Peer,
+        me: DeviceInfo,
+        sources: List<Source>,
+        node: DiscoveryNode?,
+        progress: ProgressListener = ProgressListener { _, _ -> },
+    ): SendOutcome {
+        require(sources.isNotEmpty()) { "nothing to send" }
+        val direct = Socket()
+        try {
+            direct.connect(InetSocketAddress(peer.address, peer.port), DIRECT_CONNECT_TIMEOUT_MS)
+        } catch (e: IOException) {
+            direct.close()
+            if (node == null) throw PeerUnreachableException(e)
+            return sendViaCallback(peer, me, sources, node, progress)
+        }
+        direct.use { return sendOver(it, me, sources, progress) }
+    }
+
+    /** Callback only (spec §6); [sendToPeer] calls this when the direct connect fails. */
+    fun sendViaCallback(
+        peer: Peer,
+        me: DeviceInfo,
+        sources: List<Source>,
+        node: DiscoveryNode,
+        progress: ProgressListener = ProgressListener { _, _ -> },
+    ): SendOutcome {
+        require(sources.isNotEmpty()) { "nothing to send" }
+        connectViaCallback(peer, node).use { return sendOver(it, me, sources, progress) }
+    }
+
+    private fun connectViaCallback(peer: Peer, node: DiscoveryNode): Socket {
+        ServerSocket(0).use { server ->
+            server.soTimeout = 250
+            val token = Protocol.newToken()
+            node.requestCallback(peer, server.localPort, token).use { ticket ->
+                val deadline = System.currentTimeMillis() + DiscoveryNode.CALLBACK_WINDOW_MS
+                var nextResend = System.currentTimeMillis() + DiscoveryNode.CALLBACK_RESEND_MS
+                while (System.currentTimeMillis() < deadline) {
+                    val client = try {
+                        server.accept()
+                    } catch (e: SocketTimeoutException) {
+                        null
+                    }
+                    if (client != null) {
+                        // A wrong or silent client is dropped; keep waiting for the real one.
+                        try {
+                            client.soTimeout = CALLBACK_HELLO_TIMEOUT_MS
+                            val (id, got) = Protocol.readCallbackHello(client.getInputStream()) // unbuffered: no read-ahead
+                            if (Protocol.tokensEqual(got, token) && id == peer.device.id) return client
+                        } catch (e: IOException) {
+                            // fall through
+                        }
+                        client.close()
+                    }
+                    if (System.currentTimeMillis() >= nextResend) {
+                        ticket.resend()
+                        nextResend = System.currentTimeMillis() + DiscoveryNode.CALLBACK_RESEND_MS
+                    }
+                }
+            }
+        }
+        throw PeerUnreachableException(
+            IOException("${peer.device.name} did not connect directly or back within ${DiscoveryNode.CALLBACK_WINDOW_MS / 1000} s"),
+        )
+    }
+
+    /** Spec §3 from the sender's side over an open connection (direct or callback). */
+    private fun sendOver(socket: Socket, me: DeviceInfo, sources: List<Source>, progress: ProgressListener): SendOutcome {
+        val offer = Offer(me, sources.map { FileEntry(it.name, it.size) })
+        val total = offer.totalSize
+        socket.use {
+            socket.tcpNoDelay = true
             val input = BufferedInputStream(socket.getInputStream())
             val out = BufferedOutputStream(socket.getOutputStream(), Protocol.CHUNK)
 
@@ -102,6 +186,33 @@ object TransferClient {
             if (result.bool("ok")) return SendOutcome.Delivered
             throw IOException("receiver error: ${result["error"] as? String ?: "unknown"}")
         }
+    }
+}
+
+/** Receiver side of spec §6: connect back to a sender that asked for it. */
+object CallbackReceiver {
+    /**
+     * Makes [node] answer callback requests: each runs on its own background thread,
+     * connects back, then behaves exactly like [TransferServer.handle] (the handler still
+     * decides). Call once after creating the node; set `node.callbackHandler = null` to stop.
+     */
+    fun install(node: DiscoveryNode, sink: FileSink, handler: ReceiveHandler) {
+        node.callbackHandler = { request -> answer(request, node.me, sink, handler) }
+    }
+
+    /** Connects to the requester, sends the callback hello, then serves the transfer. Never throws. */
+    fun answer(request: CallbackRequest, me: DeviceInfo, sink: FileSink, handler: ReceiveHandler) {
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress(request.address, request.port), DiscoveryNode.CALLBACK_CONNECT_TIMEOUT_MS)
+            val out = socket.getOutputStream()
+            Protocol.writeCallbackHello(out, me.id, request.token)
+            out.flush()
+        } catch (e: IOException) {
+            socket.close()
+            return
+        }
+        TransferServer.handle(socket, sink, handler)
     }
 }
 

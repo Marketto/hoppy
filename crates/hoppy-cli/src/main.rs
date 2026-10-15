@@ -1,6 +1,7 @@
-//! `hoppy` desktop CLI (PoC). On Windows, `hoppy install` adds "Send to → Hoppy" and a
-//! login item, both pointing at the `hoppyw` tray/GUI binary when it sits next to this one
-//! (fallback: `hoppy send --pause` / `hoppy receive`). Shared code: `src/lib.rs`.
+//! `hoppy` desktop CLI (PoC). On Windows, `hoppy install` adds "Send to → Hoppy", the
+//! "Send with Hoppy" right-click verb and a login item, pointing at the `hoppyw` tray/GUI
+//! binary when it sits next to this one (fallback: `hoppy send --pause` / `hoppy receive`,
+//! no verb). Shared code: `src/lib.rs`.
 
 use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
@@ -12,7 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use hoppy::{
-    DialogGuard, bind_receiver, config, default_receive_dir, display_file_name, display_name,
+    DialogGuard, bind_receiver, config, default_receive_dir, diag, display_file_name, display_name,
     display_platform, firewall, human, parse_direct, parse_seeds, platform, start_discovery,
 };
 use hoppy_core::protocol::TRANSFER_PORT;
@@ -73,10 +74,24 @@ enum Command {
     /// Show or change whether the Windows "Send to → Hoppy" window plays music.
     /// (`hoppy send` is always silent.)
     Music { state: Option<OnOff> },
-    /// Windows: add "Send to → Hoppy" and start the receiver at login.
+    /// Windows: add "Send to → Hoppy", the "Send with Hoppy" right-click entry and start
+    /// the receiver at login.
     Install,
-    /// Windows: remove the shortcuts created by `install`.
+    /// Windows: remove what `install` added (and the classic menu, if Hoppy turned it on).
     Uninstall,
+    /// Windows 11: show or change whether right-click opens the classic menu, where
+    /// "Send with Hoppy" is visible at once (per user; applies after Explorer restarts).
+    ClassicMenu {
+        state: Option<OnOff>,
+        /// Restart Explorer now so the change is visible (closes File Explorer windows).
+        #[arg(long)]
+        restart_explorer: bool,
+    },
+    /// Print where the `hoppyw` diagnostic log is, and its last lines.
+    Log {
+        #[arg(long, default_value_t = 40)]
+        lines: usize,
+    },
     /// Windows: can other devices reach this PC through the firewall? `--fix` adds the
     /// Hoppy rules (asks for administrator permission).
     Firewall {
@@ -112,6 +127,15 @@ fn run(cli: Cli) -> Result<()> {
     // profile must not get a device.json.
     if let Command::Firewall { fix, apply, remove } = cli.command {
         return cmd_firewall(fix, apply, remove);
+    }
+    // No device.json needed for these.
+    match cli.command {
+        Command::Log { lines } => return cmd_log(lines),
+        Command::ClassicMenu {
+            state,
+            restart_explorer,
+        } => return cmd_classic_menu(state, restart_explorer),
+        _ => {}
     }
     let identity = config::load_or_create()?;
     let me = config::device_info(&identity);
@@ -154,8 +178,40 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Install => platform::install(),
         Command::Uninstall => platform::uninstall(),
-        Command::Firewall { .. } => unreachable!("handled above"),
+        Command::Firewall { .. } | Command::Log { .. } | Command::ClassicMenu { .. } => {
+            unreachable!("handled above")
+        }
     }
+}
+
+fn cmd_log(lines: usize) -> Result<()> {
+    let path = diag::log_path().context("no local data folder on this system")?;
+    println!("{}", path.display());
+    match diag::tail(&path, lines) {
+        Ok(text) => println!("{text}"),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            println!("(empty: hoppyw has not written anything yet)");
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+    Ok(())
+}
+
+fn cmd_classic_menu(state: Option<OnOff>, restart_explorer: bool) -> Result<()> {
+    if let Some(state) = state {
+        let changed = platform::set_classic_menu(matches!(state, OnOff::On))?;
+        if changed && !restart_explorer {
+            println!("Takes effect after File Explorer restarts (or at the next sign-in).");
+        }
+    }
+    match platform::classic_menu() {
+        Some(on) => println!("{}", if on { "on" } else { "off" }),
+        None => println!("not applicable (Windows 11 only)"),
+    }
+    if restart_explorer {
+        platform::restart_explorer()?;
+    }
+    Ok(())
 }
 
 fn cmd_firewall(fix: bool, apply: bool, remove: bool) -> Result<()> {

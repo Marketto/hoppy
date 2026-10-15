@@ -288,6 +288,7 @@ dependencies = [
 name = "hoppy-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "if-addrs",
  "serde",
  "serde_json",

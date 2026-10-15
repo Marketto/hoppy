@@ -15,8 +15,8 @@ if (Test-Path $srcGui) { Copy-Item $srcGui (Join-Path $dir 'hoppyw.exe') -Force 
 $exe = Join-Path $dir 'hoppy.exe'
 $gui = Join-Path $dir 'hoppyw.exe'
 
-# Adds "Send to -> Hoppy" and the receiver at login (tray icon with hoppyw.exe,
-# minimized console without it).
+# Adds "Send to -> Hoppy", the right-click verb "Send with Hoppy" (with hoppyw.exe) and the
+# receiver at login (tray icon with hoppyw.exe, minimized console without it).
 & $exe install
 if ($LASTEXITCODE -ne 0) { throw "hoppy install failed" }
 
@@ -28,5 +28,5 @@ if (Test-Path $gui) {
     Start-Process -FilePath $exe -ArgumentList 'receive' -WindowStyle Minimized
     Write-Host "Hoppy installed in $dir (console mode: hoppyw.exe was not next to this script)."
 }
-Write-Host "Send: right-click files -> Show more options -> Send to -> Hoppy (or Shift+right-click)."
+Write-Host "Send: right-click files -> Send with Hoppy (Windows 11: under Show more options, or run 'hoppy classic-menu on --restart-explorer')."
 Write-Host "If Windows asks about the firewall, allow Private networks."

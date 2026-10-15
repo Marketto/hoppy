@@ -3,8 +3,9 @@
 ## PoC experience
 - Install: `Hoppy-Setup-x64.exe` (per user, no admin; only the optional firewall rules ask
   for administrator approval), or `apps/windows/install.ps1` next to
-  `hoppy.exe` + `hoppyw.exe` from the portable zip, or `hoppy install`. It adds
-  **Send to → Hoppy** and starts the Hoppy icon in the notification area at login.
+  `hoppy.exe` + `hoppyw.exe` from the portable zip, or `hoppy install`. It adds the
+  right-click entry **Send with Hoppy** (see [Right-click send](#right-click-send)),
+  **Send to → Hoppy**, and starts the Hoppy icon in the notification area at login.
 - Two binaries: `hoppyw.exe` (GUI, never opens a console) is what users see; `hoppy.exe` is
   the CLI for scripts and tests. Without `hoppyw.exe`, `hoppy install` falls back to the
   console flow (`hoppy send --pause`, `hoppy receive` minimized).
@@ -14,9 +15,15 @@
   will be saved (§4 sanitizer) and strips control/bidi characters from names. Files go to
   `Downloads\Hoppy`; a notification says what arrived and opens the folder when clicked.
   `hoppy receive --yes` (CLI) skips the question (trusted networks only).
-- Tray menu (left or right click): *Send files…*, *Open received folder*, *♪ Music while
-  sending* (check mark = on), *Quit*. When an update is available, a bold *Update to X.Y.Z…*
+- Tray menu (left or right click; it opens at the point Windows reports for the click):
+  *Send files…*, *Open received folder*, *♪ Music while sending* (check mark = on), on
+  Windows 11 *"Send with Hoppy" directly on right-click (classic menu)* (check mark = on),
+  *About & diagnostics…*, *Quit*. When an update is available, a bold *Update to X.Y.Z…*
   comes first.
+- The tray's UI thread never does file, registry or network I/O: `device.json` (roaming
+  AppData, often redirected to a network share on company PCs) is cached and re-read by a
+  worker whenever the menu opens; opening folders, starting processes, UAC prompts and
+  settings writes run on worker threads. See [Diagnostics](#diagnostics).
 - Updates (tray only, `crates/hoppy-cli/src/update.rs`): 30 s after the tray starts and then
   once a day it asks `api.github.com/repos/Marketto/hoppy/releases/latest` (WinHTTP, system
   proxy, User-Agent `Hoppy/<version>`); network errors are silent. If the release is newer
@@ -33,9 +40,10 @@
   download portal. Dev builds (debug, or a `-dev` version) never check.
 - Installer upgrades/uninstalls stop only the `hoppy.exe`/`hoppyw.exe` running from the
   install folder (PowerShell, path-filtered), not same-named programs elsewhere.
-- Send: right click files → *Send to* → *Hoppy* (Windows 11: *Show more options* first, or
-  Shift+right-click) → a menu at the mouse lists nearby devices → click one. Progress is in
-  the tray icon tooltip; a notification confirms delivery (or the refusal).
+- Send: right-click one or more files → *Send with Hoppy* (or *Send to* → *Hoppy*, or drop
+  them on the desktop icon) → a menu at the mouse lists nearby devices → click one.
+  Progress is in the tray icon tooltip; a notification confirms delivery (or the refusal).
+  Folders are refused with a message (not supported yet).
 - Music (only on the sender): the *Send to* flow plays a short 16-bit loop while you pick
   a device, a faster one once the other side accepts, and a jingle when delivered. Turn it
   off from the tray menu (*♪ Music while sending*) or with `hoppy music off`
@@ -44,6 +52,52 @@
   *♪ Music* bottom-left; silent installs stay silent).
 - Strings follow the Windows display language: Italian, otherwise English.
 - Firewall: see [Firewall](#firewall) below.
+
+## Right-click send
+
+All per user (HKCU, no admin), no Store/MSIX:
+
+- **Verb** (`hoppy install`, run by the installer on every install and update; removed by
+  `hoppy uninstall`): `HKCU\Software\Classes\*\shell\Hoppy`, default value *Invia con
+  Hoppy* / *Send with Hoppy* (display language at install time), `Icon` = `hoppyw.exe`,
+  `MultiSelectModel` = `Player`, `command` = `"<install dir>\hoppyw.exe" send "%1"`. Only
+  added when `hoppyw.exe` is present. Files only (`*`), not folders.
+- **Many files**: Explorer starts one `hoppyw send FILE` per selected file. The first
+  instance takes the named mutex `Local\HoppySendCollector`, opens a hidden window of class
+  `HoppySendCollector` and waits 500 ms after the last file arrived (3 s at most); the
+  others find the window, pass their paths with `WM_COPYDATA` (tag `HOPP`, NUL-separated
+  UTF-16), allow it to take the foreground and exit. Late arrivals (after 3 s) start a
+  second send. Same flow for Send to / drag & drop (one process with every file).
+- **Windows 11 classic menu** (opt-in): the new context menu shows classic verbs only under
+  *Show more options* (or Shift+right-click). An empty default value in
+  `HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32`
+  brings back the full classic menu for this user, so *Send with Hoppy* is one click away.
+  Set by the installer task (checked by default, Windows 11 only, not on tray updates), the
+  tray menu toggle, or `hoppy classic-menu on|off`. Explorer reads it at start: the
+  installer and the tray ask (Yes/No, default No) before restarting Explorer (`taskkill /f
+  /im explorer.exe`; started again if Windows does not do it within ~6 s); otherwise it
+  applies at the next sign-in. When Hoppy created the key it sets
+  `HKCU\Software\Hoppy\ClassicMenuCreated` = 1, and uninstall removes the key only then.
+- **Desktop shortcut** *Hoppy* (installer task, checked by default) → `hoppyw.exe send`:
+  drop files on it, or double-click to choose them in the Open dialog.
+- *Send to → Hoppy* stays (`%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk`).
+
+## Diagnostics
+
+`hoppyw` writes `%LOCALAPPDATA%\Hoppy\hoppy.log` (local, never roamed; one backup
+`hoppy.log.1` once it reaches 256 KB). Lines carry a UTC timestamp, the process id and role
+(`tray`, `send`); no file names or contents. Logged: start/exit, tray callbacks (event,
+`wParam`/`lParam`, delivery = posted/sent/notify; mouse moves skipped), events handled
+≥ 200 ms after they arrived, menus shown (position, anchor or cursor, foreground) and their
+result, UI handlers taking ≥ 200 ms, a watchdog line when one runs > 2 s, and worker errors
+(update check/download, firewall check/fix, receive, send, settings, classic menu). Open it
+from the tray (*About & diagnostics…* → Notepad) or print it with `hoppy log [--lines N]`.
+
+Tray clicks answered minutes late (up to 0.2.1): Explorer delivers tray callbacks with
+`SendNotifyMessage`. `GetMessageW` runs the window procedure for such *sent* messages
+internally and keeps waiting for a *posted* one, so an event only queued by the window
+procedure waited for some unrelated message; the menu then opened wherever the mouse was.
+The window procedure now posts itself a message whenever it queues an event.
 
 ## Firewall
 
@@ -85,8 +139,9 @@ the transfer fails with a connect timeout to port 47471.
   (and the same with `protocol=UDP localport=47470`).
 
 ## Known limits
-- Windows 11 hides "Send to" under "Show more options". A top-level entry needs an
-  `IExplorerCommand` shell extension registered by a signed MSIX package (roadmap).
+- Windows 11's new (compact) context menu only lists `IExplorerCommand` handlers from a
+  signed MSIX package (roadmap); until then *Send with Hoppy* is there only with the
+  classic-menu option, otherwise under "Show more options".
 - The Windows 11 **Share** sheet ("Condividi") only lists packaged apps with a share
   target, so Hoppy needs an MSIX package to appear there (roadmap).
 - Accept dialog is a plain `MessageBoxW`; a themed picker/accept window is planned.

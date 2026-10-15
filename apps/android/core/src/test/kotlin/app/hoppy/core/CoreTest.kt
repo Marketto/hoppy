@@ -89,6 +89,85 @@ class CoreTest {
         assertNull(DiscoveryMessage.decode("garbage".toByteArray()))
     }
 
+    @Test
+    fun callbackVectors() {
+        @Suppress("UNCHECKED_CAST")
+        val v = vectors()["callback_example"] as Map<String, Any?>
+        val raw = v["datagram_json"] as String
+        val msg = DiscoveryMessage.decode(raw.toByteArray())!!
+        assertEquals(DiscoveryMessage.CALLBACK, msg.type)
+        assertEquals(50123, msg.port)
+        assertEquals(raw, String(msg.encode(), Charsets.UTF_8))
+        @Suppress("UNCHECKED_CAST")
+        for (bad in v["invalid_datagrams"] as List<String>) assertNull(DiscoveryMessage.decode(bad.toByteArray()), bad)
+        val hello = Json.decodeObject(v["hello_json"] as String)
+        val out = ByteArrayOutputStream()
+        Protocol.writeCallbackHello(out, hello["id"] as String, hello["token"] as String)
+        assertEquals(v["hello_hex"], out.toByteArray().joinToString("") { "%02x".format(it) })
+        assertEquals(hello["id"] to hello["token"], Protocol.readCallbackHello(ByteArrayInputStream(out.toByteArray())))
+        assertFailsWith<ProtocolException> { Protocol.readCallbackHello(ByteArrayInputStream("HOPY\u0000".toByteArray())) }
+        // Announces stay unchanged on the wire.
+        assertFalse(String(DiscoveryMessage(DiscoveryMessage.ANNOUNCE, me, 1).encode()).contains("token"))
+    }
+
+    @Test
+    fun callbackTokensLimitsAndAddresses() {
+        val t = Protocol.newToken()
+        assertTrue(Protocol.isValidToken(t))
+        assertFalse(Protocol.isValidToken(t.uppercase().replace('0', 'A')))
+        assertTrue(Protocol.tokensEqual(t, String(t.toCharArray())))
+        assertFalse(Protocol.tokensEqual(t, Protocol.newToken()))
+        val l = CallbackLimiter()
+        assertTrue(l.admit("192.168.1.2", "t1", 0))
+        assertFalse(l.admit("192.168.1.2", "t2", 0), "one outstanding per IP")
+        l.release("192.168.1.2")
+        assertFalse(l.admit("192.168.1.2", "t1", 0), "duplicate token")
+        assertTrue(l.admit("192.168.1.2", "t2", 0))
+        for (i in 3..DiscoveryNode.MAX_CALLBACKS_PER_MINUTE) assertTrue(l.admit("10.0.0.$i", "t$i", 0))
+        assertFalse(l.admit("10.0.1.1", "fresh", 0), "per-minute cap")
+        assertTrue(l.admit("10.0.1.1", "fresh", 61_000))
+        for (ok in listOf("127.0.0.1", "10.1.2.3", "172.31.0.1", "192.168.0.9", "100.64.0.1", "169.254.1.1", "::1", "fd00::1", "fe80::1")) {
+            assertTrue(DiscoveryNode.isLocalAddress(InetAddress.getByName(ok)), ok)
+        }
+        for (bad in listOf("8.8.8.8", "172.32.0.1", "100.128.0.1", "2001:db8::1")) {
+            assertFalse(DiscoveryNode.isLocalAddress(InetAddress.getByName(bad)), bad)
+        }
+    }
+
+    /** Spec §6: the receiver's TCP port is unreachable, so it connects back to the sender. */
+    @Test
+    fun callbackDeliversWhenDirectConnectFails() {
+        val src = Files.createTempDirectory("src").toFile()
+        val dst = Files.createTempDirectory("dst").toFile()
+        val data = ByteArray(700_000) { (it % 247).toByte() }
+        File(src, "cb.bin").writeBytes(data)
+        val closed = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
+        val rx = DiscoveryNode(DeviceInfo("rx", "Receiver", "windows"), bindPort = 0, useMulticast = false)
+        rx.transferPort = closed // announced, but nothing listens: stands in for a firewall
+        rx.start()
+        val rec = Recorder(accept = true)
+        CallbackReceiver.install(rx, DirectorySink(dst), rec)
+        val tx = DiscoveryNode(
+            me, bindPort = 0, useMulticast = false,
+            seeds = listOf(InetSocketAddress(InetAddress.getLoopbackAddress(), rx.localPort)),
+        )
+        tx.start()
+        val deadline = System.currentTimeMillis() + 3_000
+        while (tx.peers().isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        val peer = tx.peers().single()
+        val outcome = TransferClient.sendToPeer(peer, me, listOf(FileSource(File(src, "cb.bin"))), tx)
+        assertEquals(SendOutcome.Delivered, outcome)
+        val end = System.currentTimeMillis() + 3_000
+        while (rec.saved == null && System.currentTimeMillis() < end) Thread.sleep(20)
+        assertNull(rec.error)
+        assertContentEquals(data, File(dst, "cb.bin").readBytes())
+        assertFailsWith<PeerUnreachableException> {
+            TransferClient.sendToPeer(peer, me, listOf(FileSource(File(src, "cb.bin"))), node = null)
+        }
+        tx.stop()
+        rx.stop()
+    }
+
     private class Recorder(val accept: Boolean) : ReceiveHandler {
         @Volatile var saved: List<String>? = null
         @Volatile var error: String? = null

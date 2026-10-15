@@ -1,23 +1,32 @@
 //! TCP file transfer (spec §3). Blocking I/O with one thread per connection.
+//! Also the callback ("reverse connect") fallback of spec §6.
 
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
 use crate::Error;
+use crate::discovery::{
+    CALLBACK_CONNECT_TIMEOUT, CALLBACK_RESEND, CALLBACK_WINDOW, CallbackRequest, Discovery, Peer,
+};
 use crate::protocol::{
-    self, Decision, DeviceInfo, FileEntry, HASH_LEN, MAX_FILES, Offer, TransferResult,
+    self, CallbackHello, Decision, DeviceInfo, FileEntry, HASH_LEN, MAX_FILES, Offer,
+    TransferResult,
 };
 use crate::sanitize::{sanitize_file_name, unique_path};
 
 const CHUNK: usize = 256 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Direct connect timeout before `send_to_peer` falls back to a callback (spec §6).
+pub const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the sender waits for the callback hello on an accepted connection.
+const CALLBACK_HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// The receiver may be waiting for a human to press "Accept".
 const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -47,12 +56,101 @@ pub enum SendOutcome {
 }
 
 /// Sends regular files to a receiver. Directories are rejected (v0 has no folders).
+/// Direct connection only; see [`send_to_peer`] for the callback fallback.
 pub fn send_files(
     to: SocketAddr,
     me: &DeviceInfo,
     paths: &[PathBuf],
     progress: &mut dyn FnMut(Progress),
 ) -> Result<SendOutcome, Error> {
+    let offer = build_offer(me, paths)?;
+    let stream = TcpStream::connect_timeout(&to, CONNECT_TIMEOUT)?;
+    send_over(stream, &offer, paths, progress)
+}
+
+/// Sends to a discovered peer: direct TCP first (3 s timeout); if that cannot connect and
+/// `discovery` is given, asks the peer to connect back (spec §6). Fails with
+/// [`Error::Unreachable`] if neither works. `me` should equal `discovery.me()`.
+pub fn send_to_peer(
+    peer: &Peer,
+    me: &DeviceInfo,
+    discovery: Option<&Discovery>,
+    paths: &[PathBuf],
+    progress: &mut dyn FnMut(Progress),
+) -> Result<SendOutcome, Error> {
+    let offer = build_offer(me, paths)?;
+    let stream = match TcpStream::connect_timeout(&peer.addr, DIRECT_CONNECT_TIMEOUT) {
+        Ok(stream) => stream,
+        Err(e) => match discovery {
+            Some(d) => connect_via_callback(peer, d)?,
+            None => return Err(Error::Unreachable(format!("{}: {e}", peer.addr))),
+        },
+    };
+    send_over(stream, &offer, paths, progress)
+}
+
+/// Like [`send_to_peer`] but skips the direct attempt (tests, `--no-direct` debugging).
+pub fn send_via_callback(
+    peer: &Peer,
+    me: &DeviceInfo,
+    discovery: &Discovery,
+    paths: &[PathBuf],
+    progress: &mut dyn FnMut(Progress),
+) -> Result<SendOutcome, Error> {
+    let offer = build_offer(me, paths)?;
+    let stream = connect_via_callback(peer, discovery)?;
+    send_over(stream, &offer, paths, progress)
+}
+
+/// Sender side of spec §6: listen on an ephemeral port, send `callback` datagrams for up to
+/// [`CALLBACK_WINDOW`], and return the first connection that proves the token.
+fn connect_via_callback(peer: &Peer, discovery: &Discovery) -> Result<TcpStream, Error> {
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    listener.set_nonblocking(true)?;
+    let port = listener.local_addr()?.port();
+    let token = protocol::new_token();
+    let ticket = discovery.request_callback(peer, port, &token);
+    let start = Instant::now();
+    let mut next_resend = start + CALLBACK_RESEND;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // A wrong or silent client is dropped; keep waiting for the real one.
+                if let Ok(stream) = check_callback_hello(stream, &token, &peer.device.id) {
+                    return Ok(stream);
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(_) => {} // e.g. ECONNABORTED: transient, retry until the window closes
+        }
+        let now = Instant::now();
+        if now.duration_since(start) >= CALLBACK_WINDOW {
+            return Err(Error::Unreachable(format!(
+                "{} did not connect directly or back within {} s",
+                peer.device.name,
+                CALLBACK_WINDOW.as_secs()
+            )));
+        }
+        if now >= next_resend {
+            ticket.resend();
+            next_resend = now + CALLBACK_RESEND;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn check_callback_hello(stream: TcpStream, token: &str, peer_id: &str) -> Result<TcpStream, Error> {
+    stream.set_nonblocking(false)?; // accepted sockets may inherit non-blocking mode
+    stream.set_read_timeout(Some(CALLBACK_HELLO_TIMEOUT))?;
+    let hello = protocol::read_callback_hello(&mut &stream)?;
+    if protocol::tokens_equal(&hello.token, token) && hello.id == peer_id {
+        Ok(stream)
+    } else {
+        Err(Error::Protocol("callback token mismatch".into()))
+    }
+}
+
+fn build_offer(me: &DeviceInfo, paths: &[PathBuf]) -> Result<Offer, Error> {
     if paths.is_empty() {
         return Err(Error::Input("no files to send".into()));
     }
@@ -74,20 +172,27 @@ pub fn send_files(
             size: meta.len(),
         });
     }
-    let offer = Offer {
+    Ok(Offer {
         sender: me.clone(),
         files,
-    };
-    let total = offer.total_size();
+    })
+}
 
-    let stream = TcpStream::connect_timeout(&to, CONNECT_TIMEOUT)?;
+/// Spec §3 from the sender's side, over an already-open connection (direct or callback).
+fn send_over(
+    stream: TcpStream,
+    offer: &Offer,
+    paths: &[PathBuf],
+    progress: &mut dyn FnMut(Progress),
+) -> Result<SendOutcome, Error> {
+    let total = offer.total_size();
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::with_capacity(CHUNK, stream.try_clone()?);
 
     protocol::write_hello(&mut writer)?;
-    protocol::write_json(&mut writer, &offer)?;
+    protocol::write_json(&mut writer, offer)?;
     writer.flush()?;
 
     stream.set_read_timeout(Some(DECISION_TIMEOUT))?;
@@ -165,6 +270,34 @@ pub fn serve(listener: TcpListener, dir: PathBuf, handler: Arc<dyn ReceiveHandle
             Err(_) => thread::sleep(Duration::from_millis(100)),
         }
     }
+}
+
+/// Receiver side of spec §6: makes `discovery` answer callback requests by connecting
+/// back and receiving into `dir` with `handler` (which still decides: invariant 3).
+pub fn accept_callbacks(discovery: &Discovery, dir: PathBuf, handler: Arc<dyn ReceiveHandler>) {
+    let me = discovery.me().clone();
+    discovery.on_callback(Arc::new(move |request: CallbackRequest| {
+        if let Some(result) = answer_callback(&request, &me, &dir, handler.as_ref()) {
+            handler.finished(request.addr, &result);
+        }
+    }));
+}
+
+/// Connects to `request.addr`, sends the callback hello, then behaves like [`receive_one`].
+pub fn answer_callback(
+    request: &CallbackRequest,
+    me: &DeviceInfo,
+    dir: &Path,
+    handler: &dyn ReceiveHandler,
+) -> Option<Result<Vec<PathBuf>, Error>> {
+    let stream = TcpStream::connect_timeout(&request.addr, CALLBACK_CONNECT_TIMEOUT).ok()?;
+    stream.set_write_timeout(Some(IO_TIMEOUT)).ok()?;
+    let hello = CallbackHello {
+        id: me.id.clone(),
+        token: request.token.clone(),
+    };
+    protocol::write_callback_hello(&mut &stream, &hello).ok()?;
+    receive_one(stream, request.addr, dir, handler)
 }
 
 /// Handles a single connection. Returns `None` if the offer was declined or invalid.

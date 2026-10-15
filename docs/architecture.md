@@ -36,6 +36,10 @@ TCP 47471: hello → offer → human decision → (bytes + SHA-256) per file →
 Receivers write to a pending location (`.hoppy-part` / MediaStore `IS_PENDING`) and
 publish only verified files.
 
+If the direct connect fails (receiver behind an inbound-blocking firewall), the sender
+asks the receiver over UDP to connect back to an ephemeral port and runs the same session
+on that socket (spec §6, ADR 0006).
+
 ## Transport selection (target design, v1+)
 
 A peer carries ranked endpoints; the engine tries them in order and may upgrade mid-session:

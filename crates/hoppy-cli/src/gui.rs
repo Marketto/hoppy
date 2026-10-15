@@ -1,11 +1,13 @@
-//! `hoppyw`: the Windows tray receiver and the "Send to → Hoppy" GUI.
+//! `hoppyw`: the Windows tray receiver and the "Send with Hoppy" / "Send to → Hoppy" GUI.
 //!
 //! - `hoppyw` (no args): single instance, notification-area icon, receives into
 //!   Downloads\Hoppy asking Yes/No for each offer, balloon when done.
 //! - `hoppyw send FILE…`: searches nearby devices, shows a popup menu at the cursor, sends
 //!   with progress in the tray tooltip, final balloon, then exits. Plays music unless muted
 //!   (`music` in device.json): idle loop → transfer loop once accepted → done jingle.
-//!   The receiver never plays music.
+//!   The receiver never plays music. Explorer's "Send with Hoppy" verb starts one instance
+//!   per selected file: the first collects the others' files (`platform::gather_send_files`).
+//!   Without files (desktop shortcut double-clicked) it opens the file picker first.
 //! - Updates: the tray checks GitHub Releases 30 s after start and then daily (`update.rs`);
 //!   "Update to X…" downloads the installer, verifies SHA256SUMS.txt, runs it silently and
 //!   exits (the installer restarts the tray). Portable copies only link to the portal.
@@ -18,6 +20,11 @@
 //! Safe Rust only: every Win32 call goes through `platform::win` (a stub off Windows, so
 //! this module is compiled and linted everywhere). Worker threads never touch the UI; they
 //! update shared state and call `Waker::wake`, which the UI thread sees as `TrayEvent::Wake`.
+//!
+//! The UI thread never does file, registry or network I/O and never waits on a lock that
+//! is held across I/O: device.json is cached in `Prefs` (re-read by a worker on each menu
+//! open), and opening folders, starting processes, UAC prompts and config writes all run on
+//! workers. Handlers are timed (`diag::UiWatch`); see `diag.rs` for the log.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
@@ -40,8 +47,9 @@ use crate::firewall::{self, Verdict};
 use crate::platform::win::{self, Tray, Waker};
 use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
 use crate::{
-    DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, display_file_name,
-    display_name, display_platform, display_text, human, start_discovery, update,
+    DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
+    display_file_name, display_name, display_platform, display_text, human, start_discovery,
+    update,
 };
 
 /// Window titles double as identities: `signal_existing` looks for the tray one.
@@ -105,6 +113,11 @@ pub struct Strings {
     pub fw_done: &'static str,
     pub fw_failed: &'static str,
     pub fw_policy: &'static str,
+    pub menu_classic: &'static str,
+    pub menu_about: &'static str,
+    pub restart_explorer: &'static str,
+    pub classic_failed: &'static str,
+    pub about_failed: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -154,6 +167,11 @@ pub const IT: Strings = Strings {
     fw_done: "Hoppy è consentito nel firewall ✓",
     fw_failed: "Impossibile consentire Hoppy nel firewall",
     fw_policy: "Le regole sono state aggiunte ma non hanno effetto: probabilmente un criterio aziendale le ignora. Chiedi all'IT di consentire Hoppy (TCP 47471, UDP 47470).",
+    menu_classic: "«Invia con Hoppy» direttamente nel tasto destro (menu classico)",
+    menu_about: "Informazioni e diagnostica…",
+    restart_explorer: "Il nuovo menu del tasto destro compare dopo il riavvio di Esplora risorse (o al prossimo accesso).\n\nRiavviare Esplora risorse ora? Le finestre di Esplora file aperte verranno chiuse.",
+    classic_failed: "Impossibile cambiare il menu del tasto destro",
+    about_failed: "Impossibile aprire il registro di diagnostica",
 };
 
 pub const EN: Strings = Strings {
@@ -203,6 +221,11 @@ pub const EN: Strings = Strings {
     fw_done: "Hoppy is allowed through the firewall ✓",
     fw_failed: "Could not allow Hoppy through the firewall",
     fw_policy: "The rules were added but have no effect: a company policy probably ignores them. Ask IT to allow Hoppy (TCP 47471, UDP 47470).",
+    menu_classic: "\"Send with Hoppy\" directly on right-click (classic menu)",
+    menu_about: "About & diagnostics…",
+    restart_explorer: "The new right-click menu appears after File Explorer restarts (or at the next sign-in).\n\nRestart File Explorer now? Open File Explorer windows will close.",
+    classic_failed: "Could not change the right-click menu",
+    about_failed: "Could not open the diagnostic log",
 };
 
 pub fn strings() -> &'static Strings {
@@ -300,19 +323,35 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Entry point of `hoppyw`; returns the process exit code.
 pub fn run(args: Vec<OsString>) -> i32 {
     let s = strings();
-    let result = match args.first().map(|a| a.to_str()) {
+    let mode = args.first().map(|a| a.to_str());
+    // Not for `firewall`: the elevated copy may run as another (admin) user.
+    match mode {
+        None => diag::init("tray"),
+        Some(Some("send")) => diag::init("send"),
+        _ => {}
+    }
+    diag::log(format!(
+        "hoppyw {} started, {} argument(s)",
+        update::CURRENT_VERSION,
+        args.len()
+    ));
+    let result = match mode {
         None => tray_mode(s),
         Some(Some("send")) => send_mode(s, args[1..].iter().map(PathBuf::from).collect()),
         Some(Some("firewall")) => return firewall_mode(&args[1..]),
         Some(_) => Err(anyhow::anyhow!("{}", s.usage)),
     };
-    match result {
+    let code = match result {
         Ok(()) => 0,
         Err(e) => {
+            diag::log(format!("exit with error: {e:#}"));
             win::message_box_error("Hoppy", &format!("{e:#}"));
             1
         }
-    }
+    };
+    diag::log("exit");
+    diag::flush(Duration::from_millis(500));
+    code
 }
 
 /// `hoppyw firewall --apply|--remove` (run elevated by the tray and the installer) and
@@ -341,6 +380,8 @@ struct Notice {
     title: String,
     text: String,
     error: bool,
+    /// What clicking this balloon does.
+    action: BalloonAction,
 }
 
 struct GuiReceiver {
@@ -356,10 +397,16 @@ struct GuiReceiver {
 impl ReceiveHandler for GuiReceiver {
     fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
         let Some(_asking) = DialogGuard::try_take(&self.asking) else {
+            diag::log(format!("receive: offer from {} declined (busy)", from.ip()));
             return false; // another offer is waiting for an answer
         };
         let body = offer_body(self.s, offer, from);
         let accepted = platform::ask_accept(self.s.incoming_title, &body);
+        diag::log(format!(
+            "receive: offer of {} file(s) from {}: accepted={accepted}",
+            offer.files.len(),
+            from.ip()
+        ));
         if accepted {
             lock(&self.names).insert(from, display_name(&offer.sender.name));
         }
@@ -378,12 +425,17 @@ impl ReceiveHandler for GuiReceiver {
                 ),
                 text: self.s.received_text.to_owned(),
                 error: false,
+                action: BalloonAction::OpenDir,
             },
-            Err(e) => Notice {
-                title: fill(self.s.receive_failed, &[("name", &name)]),
-                text: display_text(&e.to_string(), SHOW_TEXT_MAX),
-                error: true,
-            },
+            Err(e) => {
+                diag::log(format!("receive: from {} failed: {e}", from.ip()));
+                Notice {
+                    title: fill(self.s.receive_failed, &[("name", &name)]),
+                    text: display_text(&e.to_string(), SHOW_TEXT_MAX),
+                    error: true,
+                    action: BalloonAction::Nothing,
+                }
+            }
         };
         lock(&self.notices).push_back(notice);
         self.waker.wake();
@@ -396,6 +448,8 @@ const ID_QUIT: u32 = 3;
 const ID_MUSIC: u32 = 4;
 const ID_UPDATE: u32 = 5;
 const ID_FIREWALL: u32 = 6;
+const ID_CLASSIC: u32 = 7;
+const ID_ABOUT: u32 = 8;
 
 /// What clicking the last balloon does.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -410,11 +464,201 @@ enum BalloonAction {
     Network,
 }
 
+/// Settings as last read by a worker. The UI thread only ever reads this copy: device.json
+/// lives in the roaming AppData folder, which company PCs often redirect to a network
+/// share where a read can take seconds (or minutes when the server is unreachable).
+struct Prefs {
+    identity: config::Identity,
+    /// Windows 11 classic context menu; `None` = not applicable (Windows 10) or unknown.
+    classic: Option<bool>,
+    refreshing: bool,
+    /// A classic-menu change (with its "restart Explorer?" question) is in progress.
+    classic_busy: bool,
+}
+
+/// Serialises the workers' device.json reads/writes (and their cache updates). Never taken
+/// by the UI thread.
+static CONFIG_IO: Mutex<()> = Mutex::new(());
+
+/// What tray workers need to report back to the UI thread.
+#[derive(Clone)]
+struct Ctx {
+    s: &'static Strings,
+    waker: Waker,
+    prefs: Arc<Mutex<Prefs>>,
+    notices: Arc<Mutex<VecDeque<Notice>>>,
+}
+
+impl Ctx {
+    /// Error balloon (shown by the UI thread on the next `Wake`), also logged.
+    fn notify_error(&self, title: &str, text: &str) {
+        diag::log(format!("error: {title}: {text}"));
+        lock(&self.notices).push_back(Notice {
+            title: title.to_owned(),
+            text: display_text(text, SHOW_TEXT_MAX),
+            error: true,
+            action: BalloonAction::Nothing,
+        });
+        self.waker.wake();
+    }
+
+    /// Re-reads device.json and the classic-menu switch in the background (each menu open,
+    /// so `hoppy music on|off` is picked up). At most one refresh at a time.
+    fn refresh_prefs(&self) {
+        {
+            let mut p = lock(&self.prefs);
+            if p.refreshing {
+                return;
+            }
+            p.refreshing = true;
+        }
+        let ctx = self.clone();
+        thread::spawn(move || {
+            let started = Instant::now();
+            let classic = platform::classic_menu();
+            let io = lock(&CONFIG_IO);
+            let identity = config::load_or_create();
+            let mut p = lock(&ctx.prefs);
+            match identity {
+                Ok(identity) => p.identity = identity,
+                Err(e) => diag::log(format!("settings: reading device.json failed: {e:#}")),
+            }
+            if !p.classic_busy {
+                p.classic = classic; // else `set_classic` reports the new state itself
+            }
+            p.refreshing = false;
+            drop((p, io));
+            let took = started.elapsed();
+            if took >= diag::SLOW_HANDLER {
+                diag::log(format!("settings: refresh took {} ms", took.as_millis()));
+            }
+        });
+    }
+
+    /// Runs a device.json change on a worker; its result becomes the cached identity.
+    fn config_job(
+        &self,
+        what: &'static str,
+        job: impl FnOnce() -> Result<config::Identity> + Send + 'static,
+    ) {
+        let ctx = self.clone();
+        thread::spawn(move || {
+            let io = lock(&CONFIG_IO);
+            match job() {
+                Ok(identity) => lock(&ctx.prefs).identity = identity,
+                Err(e) => {
+                    drop(io);
+                    ctx.notify_error("Hoppy", &format!("{what}: {e:#}"));
+                }
+            }
+        });
+    }
+
+    fn set_music(&self, on: bool) {
+        lock(&self.prefs).identity.music = on;
+        self.config_job("music", move || config::set_music(on));
+    }
+
+    /// Turns the classic context menu on/off, then offers to restart Explorer (worker:
+    /// registry writes, a Yes/No dialog and taskkill must not block the tray).
+    fn set_classic(&self, on: bool) {
+        {
+            let mut p = lock(&self.prefs);
+            if p.classic_busy {
+                return;
+            }
+            p.classic_busy = true;
+            p.classic = Some(on);
+        }
+        let ctx = self.clone();
+        thread::spawn(move || {
+            let result = platform::set_classic_menu(on);
+            lock(&ctx.prefs).classic = platform::classic_menu();
+            match result {
+                Ok(true) => {
+                    if platform::ask_accept("Hoppy", ctx.s.restart_explorer)
+                        && let Err(e) = platform::restart_explorer()
+                    {
+                        ctx.notify_error(ctx.s.classic_failed, &format!("{e:#}"));
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => ctx.notify_error(ctx.s.classic_failed, &format!("{e:#}")),
+            }
+            lock(&ctx.prefs).classic_busy = false;
+        });
+    }
+
+    /// Writes a summary line, then opens the log in Notepad.
+    fn open_about(&self, mode: UpdateMode) {
+        let (music, classic) = {
+            let p = lock(&self.prefs);
+            (p.identity.music, p.classic)
+        };
+        diag::log(format!(
+            "about: Hoppy {}, updates={}, music={music}, classic_menu={classic:?}",
+            update::CURRENT_VERSION,
+            match mode {
+                UpdateMode::Off => "off",
+                UpdateMode::Setup => "setup",
+                UpdateMode::Portal => "portable",
+            }
+        ));
+        let ctx = self.clone();
+        thread::spawn(move || {
+            diag::flush(Duration::from_secs(2));
+            let opened = match diag::log_path() {
+                Some(path) => Command::new("notepad.exe")
+                    .arg(path)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(anyhow::Error::from),
+                None => Err(anyhow::anyhow!("LOCALAPPDATA is not set")),
+            };
+            if let Err(e) = opened {
+                ctx.notify_error(ctx.s.about_failed, &format!("{e:#}"));
+            }
+        });
+    }
+}
+
+/// Opens a folder/URL on a worker (ShellExecute can block on a slow network folder).
+fn open_dir(dir: &std::path::Path) {
+    let dir = dir.to_path_buf();
+    thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&dir);
+        if !win::open_folder(&dir) {
+            diag::log("opening the received folder failed");
+        }
+    });
+}
+
+fn open_url(url: &'static str) {
+    thread::spawn(move || {
+        if !win::open_url(url) {
+            diag::log(format!("opening {url} failed"));
+        }
+    });
+}
+
+/// Short name of an event for the UI timing log.
+fn event_name(event: &TrayEvent) -> &'static str {
+    match event {
+        TrayEvent::Click(_) => "click",
+        TrayEvent::BalloonClick => "balloon click",
+        TrayEvent::Wake => "wake",
+        TrayEvent::Reopen => "reopen",
+        TrayEvent::Timer(_) => "timer",
+    }
+}
+
 fn tray_mode(s: &'static Strings) -> Result<()> {
     let Some(_instance) = win::single_instance(INSTANCE_MUTEX) else {
+        diag::log("tray: already running, asking it to show itself");
         win::signal_existing(TRAY_WINDOW);
         return Ok(());
     };
+    // Before the icon exists, so nothing is waiting on the UI thread yet.
     let identity = config::load_or_create()?;
     let me = config::device_info(&identity);
     let dir = default_receive_dir()?;
@@ -423,6 +667,18 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
 
     let tray = Tray::new(TRAY_WINDOW, &fill(s.tip_ready, &[("name", &me.name)]))?;
     let notices = Arc::new(Mutex::new(VecDeque::new()));
+    let ctx = Ctx {
+        s,
+        waker: tray.waker(),
+        prefs: Arc::new(Mutex::new(Prefs {
+            identity,
+            classic: None,
+            refreshing: false,
+            classic_busy: false,
+        })),
+        notices: Arc::clone(&notices),
+    };
+    ctx.refresh_prefs(); // classic-menu state
     let handler = Arc::new(GuiReceiver {
         s,
         waker: tray.waker(),
@@ -448,11 +704,17 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     let ready_tip = fill(s.tip_ready, &[("name", &me.name)]);
     let header = fill(s.menu_header, &[("name", &me.name)]);
     let mut balloon_action = BalloonAction::Nothing;
+    let watch = diag::UiWatch::start();
     while let Some(event) = tray.next_event() {
+        let mut h = watch.handler(event_name(&event));
         match event {
-            TrayEvent::Click => {
-                // Re-read: `hoppy music on|off` may have changed it meanwhile.
-                let music = config::load_or_create().map_or(true, |i| i.music);
+            TrayEvent::Click(anchor) => {
+                let (music, classic) = {
+                    let p = lock(&ctx.prefs);
+                    (p.identity.music, p.classic)
+                };
+                // For the next menu: `hoppy music on|off` may have changed it meanwhile.
+                ctx.refresh_prefs();
                 let update_item = update_menu_text(s, &lock(&updates), mode);
                 let fw_item = firewall_menu_text(s, &fw, &tray);
                 let mut items = Vec::new();
@@ -470,33 +732,34 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     MenuItem::Action(ID_OPEN, s.menu_open),
                     MenuItem::Check(ID_MUSIC, s.menu_music, music),
                 ]);
+                if let Some(on) = classic {
+                    items.push(MenuItem::Check(ID_CLASSIC, s.menu_classic, on));
+                }
                 if let Some(text) = fw_item {
                     items.push(MenuItem::Action(ID_FIREWALL, text));
                 }
-                items.extend([MenuItem::Separator, MenuItem::Action(ID_QUIT, s.menu_quit)]);
-                match tray.popup_menu(&items, true) {
+                items.extend([
+                    MenuItem::Separator,
+                    MenuItem::Action(ID_ABOUT, s.menu_about),
+                    MenuItem::Action(ID_QUIT, s.menu_quit),
+                ]);
+                match h.modal(|| tray.popup_menu(&items, true, anchor)) {
                     Some(ID_UPDATE) => start_update(s, &updates, mode, tray.waker()),
-                    Some(ID_SEND) => match tray.pick_files(s.pick_title) {
+                    Some(ID_SEND) => match h.modal(|| tray.pick_files(s.pick_title)) {
                         Ok(files) if files.is_empty() => {}
-                        Ok(files) => {
-                            if let Err(e) = spawn_sender(&files) {
-                                tray.balloon("Hoppy", &format!("{e:#}"), true, true);
-                            }
+                        Ok(files) => spawn_sender(&ctx, files),
+                        Err(TooManyFiles) => {
+                            h.modal(|| win::message_box_error("Hoppy", s.too_many_files));
                         }
-                        Err(TooManyFiles) => win::message_box_error("Hoppy", s.too_many_files),
                     },
                     Some(ID_OPEN) => open_dir(&dir),
                     Some(ID_FIREWALL) => match lock(&fw).verdict {
-                        Some(Verdict::PublicNetwork) => {
-                            win::open_url(NETWORK_SETTINGS);
-                        }
-                        _ => start_firewall_fix(&tray, s, &fw),
+                        Some(Verdict::PublicNetwork) => open_url(NETWORK_SETTINGS),
+                        _ => start_firewall_fix(&ctx, &fw),
                     },
-                    Some(ID_MUSIC) => {
-                        if let Err(e) = config::set_music(!music) {
-                            tray.balloon("Hoppy", &format!("{e:#}"), true, true);
-                        }
-                    }
+                    Some(ID_MUSIC) => ctx.set_music(!music),
+                    Some(ID_CLASSIC) => ctx.set_classic(!classic.unwrap_or(false)),
+                    Some(ID_ABOUT) => ctx.open_about(mode),
                     Some(ID_QUIT) => break,
                     _ => {}
                 }
@@ -508,13 +771,9 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     let Some(n) = next else { break };
                     // System sound on: this is the "files arrived" notification.
                     tray.balloon(&n.title, &n.text, n.error, true);
-                    balloon_action = if n.error {
-                        BalloonAction::Nothing
-                    } else {
-                        BalloonAction::OpenDir
-                    };
+                    balloon_action = n.action;
                 }
-                if let Some(action) = firewall_wake(&tray, s, &fw) {
+                if let Some(action) = firewall_wake(&tray, &ctx, &fw) {
                     balloon_action = action;
                 }
                 let upd = update_wake(&tray, s, &updates, mode, &ready_tip);
@@ -522,11 +781,13 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     balloon_action = action;
                 }
                 if let Some(path) = upd.launch {
+                    diag::log("update: starting the verified installer and exiting");
                     match Command::new(&path).args(update::INSTALLER_ARGS).spawn() {
                         // The installer stops running copies anyway; leave cleanly first
                         // (dropping `tray` removes the icon) and let it restart us.
                         Ok(_) => break,
                         Err(e) => {
+                            diag::log(format!("update: starting the installer failed: {e}"));
                             let text = display_text(&e.to_string(), SHOW_TEXT_MAX);
                             tray.set_tip(&ready_tip);
                             tray.balloon(s.update_failed, &text, true, true);
@@ -538,13 +799,9 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             TrayEvent::BalloonClick => match balloon_action {
                 BalloonAction::OpenDir => open_dir(&dir),
                 BalloonAction::Update => start_update(s, &updates, mode, tray.waker()),
-                BalloonAction::Portal => {
-                    win::open_url(update::PORTAL_URL);
-                }
-                BalloonAction::Firewall => start_firewall_fix(&tray, s, &fw),
-                BalloonAction::Network => {
-                    win::open_url(NETWORK_SETTINGS);
-                }
+                BalloonAction::Portal => open_url(update::PORTAL_URL),
+                BalloonAction::Firewall => start_firewall_fix(&ctx, &fw),
+                BalloonAction::Network => open_url(NETWORK_SETTINGS),
                 BalloonAction::Nothing => {}
             },
             TrayEvent::Reopen => tray.balloon("Hoppy", s.already_running, false, true),
@@ -571,15 +828,22 @@ struct FirewallState {
     fresh: bool,
     checking: bool,
     checked_at: Option<Instant>,
-    /// The elevated `hoppyw firewall --apply` is running.
+    /// The UAC prompt / elevated `hoppyw firewall --apply` is running.
     fixing: bool,
     /// Its result (exit code 0), for the UI thread to report.
     fixed: Option<bool>,
 }
 
+/// Blocking (PowerShell, seconds): workers only. The lock is never held around it.
 fn check_now() -> Option<Verdict> {
     let exe = std::env::current_exe().ok()?;
-    firewall::check(&[exe]).map(|s| s.verdict(0))
+    let started = Instant::now();
+    let verdict = firewall::check(&[exe]).map(|s| s.verdict(0));
+    diag::log(format!(
+        "firewall: check {verdict:?} in {} ms",
+        started.elapsed().as_millis()
+    ));
+    verdict
 }
 
 fn spawn_firewall_check(fw: &Arc<Mutex<FirewallState>>, waker: Waker) {
@@ -627,28 +891,35 @@ fn firewall_menu_text(
     }
 }
 
-/// UAC prompt for `hoppyw firewall --apply`; the result is reported by `firewall_wake`.
-/// Declining the prompt is silent.
-fn start_firewall_fix(tray: &Tray, s: &Strings, fw: &Arc<Mutex<FirewallState>>) {
-    if lock(fw).fixing {
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let child = match win::run_elevated(Some(tray), &exe, "firewall --apply") {
-        Ok(child) => child,
-        Err(e) if e.is::<ElevationDeclined>() => return,
-        Err(e) => {
-            let text = display_text(&format!("{e:#}"), SHOW_TEXT_MAX);
-            tray.balloon(s.fw_failed, &text, true, true);
+/// UAC prompt for `hoppyw firewall --apply` on a worker (the prompt blocks until answered);
+/// the result is reported by `firewall_wake`. Declining the prompt is silent.
+fn start_firewall_fix(ctx: &Ctx, fw: &Arc<Mutex<FirewallState>>) {
+    {
+        let mut f = lock(fw);
+        if f.fixing {
             return;
         }
-    };
-    lock(fw).fixing = true;
-    let (fw, waker) = (Arc::clone(fw), tray.waker());
+        f.fixing = true;
+    }
+    let (ctx, fw) = (ctx.clone(), Arc::clone(fw));
     thread::spawn(move || {
+        let child = std::env::current_exe()
+            .map_err(anyhow::Error::from)
+            .and_then(|exe| win::run_elevated(Some(&ctx.waker), &exe, "firewall --apply"));
+        let child = match child {
+            Ok(child) => child,
+            Err(e) => {
+                lock(&fw).fixing = false;
+                if e.is::<ElevationDeclined>() {
+                    diag::log("firewall: UAC declined");
+                } else {
+                    ctx.notify_error(ctx.s.fw_failed, &format!("{e:#}"));
+                }
+                return;
+            }
+        };
         let ok = child.wait(120_000) == Some(0);
+        diag::log(format!("firewall: apply ok={ok}"));
         let verdict = check_now();
         let mut f = lock(&fw);
         f.fixing = false;
@@ -656,13 +927,14 @@ fn start_firewall_fix(tray: &Tray, s: &Strings, fw: &Arc<Mutex<FirewallState>>) 
         f.verdict = verdict;
         f.checked_at = Some(Instant::now());
         drop(f);
-        waker.wake();
+        ctx.waker.wake();
     });
 }
 
 /// UI-thread side of `Wake` for the firewall: the hint (once per version) or the result of
 /// a fix. Returns the new balloon action when a balloon was shown.
-fn firewall_wake(tray: &Tray, s: &Strings, fw: &Mutex<FirewallState>) -> Option<BalloonAction> {
+fn firewall_wake(tray: &Tray, ctx: &Ctx, fw: &Mutex<FirewallState>) -> Option<BalloonAction> {
+    let s = ctx.s;
     let (fresh, fixed, verdict) = {
         let mut f = lock(fw);
         (std::mem::take(&mut f.fresh), f.fixed.take(), f.verdict)
@@ -696,11 +968,16 @@ fn firewall_wake(tray: &Tray, s: &Strings, fw: &Mutex<FirewallState>) -> Option<
         Verdict::PublicNetwork => (s.public_title, s.public_text, BalloonAction::Network),
         Verdict::Ok => return None,
     };
-    let shown = config::load_or_create().is_ok_and(|i| i.firewall_hint == update::CURRENT_VERSION);
-    if shown {
-        return None;
+    {
+        let mut p = lock(&ctx.prefs);
+        if p.identity.firewall_hint == update::CURRENT_VERSION {
+            return None;
+        }
+        p.identity.firewall_hint = update::CURRENT_VERSION.to_owned();
     }
-    let _ = config::set_firewall_hint(update::CURRENT_VERSION);
+    ctx.config_job("firewall hint", || {
+        config::set_firewall_hint(update::CURRENT_VERSION)
+    });
     tray.balloon(title, text, false, true);
     Some(action)
 }
@@ -758,14 +1035,20 @@ fn spawn_update_checker(updates: &Arc<Mutex<Updates>>, waker: Waker) {
     thread::spawn(move || {
         thread::sleep(update::FIRST_CHECK);
         loop {
-            if let Ok(Some(release)) = update::check(&WinHttp, update::CURRENT_VERSION) {
-                let mut u = lock(&updates);
-                if u.available.as_ref() != Some(&release) && u.downloading.is_none() {
-                    u.available = Some(release);
-                    u.fresh = true;
-                    drop(u);
-                    waker.wake();
+            match update::check(&WinHttp, update::CURRENT_VERSION) {
+                Ok(Some(release)) => {
+                    diag::log(format!("update: {} is available", release.version));
+                    let mut u = lock(&updates);
+                    if u.available.as_ref() != Some(&release) && u.downloading.is_none() {
+                        u.available = Some(release);
+                        u.fresh = true;
+                        drop(u);
+                        waker.wake();
+                    }
                 }
+                Ok(None) => diag::log("update: up to date"),
+                // Silent for the user (offline, proxy…), but kept for diagnosis.
+                Err(e) => diag::log(format!("update: check failed: {e:#}")),
             }
             let checked = SystemTime::now();
             loop {
@@ -802,7 +1085,7 @@ fn start_update(
     waker: Waker,
 ) {
     if mode == UpdateMode::Portal {
-        win::open_url(update::PORTAL_URL);
+        open_url(update::PORTAL_URL);
         return;
     }
     let release = {
@@ -829,6 +1112,7 @@ fn start_update(
             }
         });
         let result = result.map_err(|e| {
+            diag::log(format!("update: download failed: {e:#}"));
             if e.is::<update::HashMismatch>() {
                 s.update_mismatch.to_owned()
             } else {
@@ -892,17 +1176,20 @@ fn update_wake(
     out
 }
 
-fn open_dir(dir: &std::path::Path) {
-    let _ = std::fs::create_dir_all(dir);
-    win::open_folder(dir);
-}
-
-/// Runs `hoppyw send FILE…` as a separate process (one tray icon per transfer).
-fn spawn_sender(files: &[PathBuf]) -> Result<()> {
-    let exe = std::env::current_exe()?;
-    let mut child = Command::new(exe).arg("send").args(files).spawn()?;
-    thread::spawn(move || child.wait());
-    Ok(())
+/// Runs `hoppyw send FILE…` as a separate process (one tray icon per transfer), from a
+/// worker: process creation can stall while antivirus software scans the exe.
+fn spawn_sender(ctx: &Ctx, files: Vec<PathBuf>) {
+    let ctx = ctx.clone();
+    thread::spawn(move || {
+        let child = std::env::current_exe()
+            .and_then(|exe| Command::new(exe).arg("send").args(&files).spawn());
+        match child {
+            Ok(mut child) => {
+                let _ = child.wait();
+            }
+            Err(e) => ctx.notify_error("Hoppy", &e.to_string()),
+        }
+    });
 }
 
 // ---------------------------------------------------------------- "Send to → Hoppy"
@@ -962,6 +1249,20 @@ const ID_CANCEL: u32 = 2;
 const ID_PEER: u32 = 100;
 
 fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
+    let files = if files.is_empty() {
+        // Desktop shortcut double-clicked (dropping files on it passes them as arguments).
+        match win::pick_files_unowned(s.pick_title) {
+            Ok(files) if files.is_empty() => return Ok(()),
+            Ok(files) => files,
+            Err(TooManyFiles) => bail!("{}", s.too_many_files),
+        }
+    } else {
+        // "Send with Hoppy" on several files: one process per file, merged here.
+        match platform::gather_send_files(files) {
+            Some(files) => files,
+            None => return Ok(()), // handed to the first instance
+        }
+    };
     if files.is_empty() {
         bail!("{}", s.no_files);
     }
@@ -991,9 +1292,12 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
         s.send_header,
         &[("n", &files.len().to_string()), ("size", &human(total))],
     );
+    diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
     let mut phase = Phase::Searching;
     let mut files = Some(files);
+    let watch = diag::UiWatch::start();
     while let Some(event) = tray.next_event() {
+        let mut h = watch.handler(event_name(&event));
         match (event, &phase) {
             (TrayEvent::Wake, Phase::Searching) => {
                 let Some(peers) = lock(&state).peers.take() else {
@@ -1012,7 +1316,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     MenuItem::Action(ID_RETRY, s.retry),
                     MenuItem::Action(ID_CANCEL, s.cancel),
                 ]);
-                match tray.popup_menu(&items, false) {
+                diag::log(format!("send: {} device(s) found", peers.len()));
+                match h.modal(|| tray.popup_menu(&items, false, None)) {
                     Some(ID_RETRY) => {
                         tray.set_tip(s.searching);
                         discovery.refresh();
@@ -1045,6 +1350,9 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     }
                     // Our jingle is the sound of success; skip the system one on top of it.
                     let sound = !(delivered && music.enabled);
+                    if let Err(e) = &outcome {
+                        diag::log(format!("send: failed: {e}"));
+                    }
                     let (title, text, error) = match outcome {
                         Ok(SendOutcome::Delivered) => (s.delivered, String::new(), false),
                         Ok(SendOutcome::Declined(reason)) => {
@@ -1069,15 +1377,15 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     }
                 }
             }
-            (TrayEvent::Click, Phase::Sending(_)) => {
+            (TrayEvent::Click(anchor), Phase::Sending(_)) => {
                 let items = [MenuItem::Action(ID_CANCEL, s.cancel_send)];
-                if tray.popup_menu(&items, true) == Some(ID_CANCEL) {
+                if h.modal(|| tray.popup_menu(&items, true, anchor)) == Some(ID_CANCEL) {
                     break; // closing the process aborts the transfer
                 }
             }
-            (TrayEvent::Click, Phase::Done) => {
+            (TrayEvent::Click(anchor), Phase::Done) => {
                 let items = [MenuItem::Action(ID_CANCEL, s.close)];
-                if tray.popup_menu(&items, true) == Some(ID_CANCEL) {
+                if h.modal(|| tray.popup_menu(&items, true, anchor)) == Some(ID_CANCEL) {
                     break;
                 }
             }

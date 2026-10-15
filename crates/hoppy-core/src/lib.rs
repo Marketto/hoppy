@@ -7,9 +7,12 @@ pub mod protocol;
 pub mod sanitize;
 pub mod transfer;
 
-pub use discovery::{Discovery, DiscoveryConfig, Peer};
+pub use discovery::{CallbackRequest, Discovery, DiscoveryConfig, Peer};
 pub use protocol::{DeviceInfo, Offer};
-pub use transfer::{Progress, ReceiveHandler, SendOutcome, send_files};
+pub use transfer::{
+    Progress, ReceiveHandler, SendOutcome, accept_callbacks, send_files, send_to_peer,
+    send_via_callback,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -21,4 +24,7 @@ pub enum Error {
     Input(String),
     #[error("remote error: {0}")]
     Remote(String),
+    /// Neither a direct connection nor a callback (spec §6) reached the peer.
+    #[error("peer unreachable: {0}")]
+    Unreachable(String),
 }

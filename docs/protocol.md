@@ -19,11 +19,15 @@ authentication**: it is only for trusted LANs during the PoC (see ADR 0003).
 | Default transfer TCP port | `47471` (if busy, use any port and announce it) |
 | Multicast group (IPv4) | `239.255.72.80` |
 | Magic | ASCII `HOPY` = `48 4F 50 59` |
+| Callback magic (§6) | ASCII `HOPC` = `48 4F 50 43` |
 | Protocol version byte | `0x00` |
 | Max JSON frame | 1 MiB (1 048 576 bytes) |
 | Max files per offer | 10 000 |
 | Announce interval | 5 s |
 | Peer expiry | 15 s without any message |
+| Direct connect timeout before callback (§6) | 3 s |
+| Callback window / re-send / connect timeout (§6) | 20 s / 2 s / 3 s |
+| Callbacks per receiver | ≤ 10 per minute, 1 outstanding per source IP |
 
 ## 2. Discovery (UDP)
 
@@ -36,11 +40,12 @@ Every message is one UTF-8 JSON object in one datagram (≤ 1024 bytes).
 | Field | Type | Notes |
 | --- | --- | --- |
 | `hoppy` | int | protocol version, `0` |
-| `type` | string | `announce`, `query` or `bye` |
+| `type` | string | `announce`, `query`, `bye` or `callback` (§6) |
 | `id` | string | stable device id (UUID v4), persisted on the device |
 | `name` | string | human readable, ≤ 64 chars |
 | `platform` | string | `windows`, `android`, `linux`, `macos`, `ios` |
-| `port` | int | TCP transfer port of the sender |
+| `port` | int | TCP transfer port of the sender (`callback`: its callback listener) |
+| `token`, `to` | string | `callback` only, see §6 |
 
 Rules:
 
@@ -120,7 +125,76 @@ Offer for one file `a.txt` of 5 bytes `hello`, using `offer_json` from
 2C F2 4D BA … 93 8B 98 24          SHA-256("hello")
 ```
 
-## 6. Planned for v1 (not in v0)
+## 6. Callback (reverse connect)
+
+For receivers that cannot accept inbound TCP (e.g. a managed Windows PC whose firewall
+blocks inbound connections and whose user cannot add rules) but can connect out. Additive
+to v0: no version bump; older nodes ignore the unknown `callback` type (§2 rule 5; true for
+every v0 implementation, which reject unknown `type` values) and simply stay unreachable.
+
+**Why it works.** Stateful firewalls allow outbound TCP, and Windows by default accepts a
+unicast UDP reply to its own multicast/broadcast for about 3 s ("allow unicast response").
+The receiver multicasts an `announce` every 5 s from its discovery port, so a sender that
+answers each announce immediately gets its datagram through.
+
+**Datagram** (sender → receiver discovery address, from the sender's discovery socket):
+
+```json
+{"hoppy":0,"type":"callback","id":"<sender id>","name":"Phone","platform":"android",
+ "port":50123,"token":"00112233445566778899aabbccddeeff","to":"<receiver id>"}
+```
+
+`port` is the sender's ephemeral TCP callback listener (never 0). `token` is 128 random
+bits from a CSPRNG as exactly 32 lowercase hex characters. `to` is the receiver's `id`.
+A `callback` with a missing/invalid `token`, empty `to` or `port` 0 is invalid and ignored.
+A `callback` never adds or refreshes a peer.
+
+**Sender** (when TCP to the receiver's `addr:port` fails within 3 s — timeout, refused,
+no route — and it runs discovery):
+
+1. Listen on an ephemeral TCP port, create a fresh token.
+2. Send the datagram to the receiver's discovery address (UDP source of its last
+   announce/query; else its IP + 47470) right away, again every 2 s, **and immediately in
+   reply to every `announce`/`query` from that receiver** (lands inside the firewall's
+   response window). Use the discovery socket so source port = the one the receiver's
+   firewall already saw. Stop after 20 s → "unreachable".
+3. On each accepted connection, read the callback hello (3 s timeout). Accept it only if
+   the token matches (constant-time compare) and `id` equals the receiver's id; otherwise
+   close it and keep waiting. Use the first valid one, close the listener.
+4. Continue on that socket **exactly as §3 from the sender's side** (`HOPY 0x00`, Offer,
+   …). The sender stays the client of the session even though it accepted the TCP connection.
+
+**Receiver** (only while it is a receiving node, `port != 0`):
+
+1. Ignore the datagram unless `to` equals its own id and the UDP source IP is loopback
+   (127/8, ::1), private (10/8, 172.16/12, 192.168/16), CGNAT (100.64/10), link-local
+   (169.254/16, fe80::/10) or IPv6 ULA (fc00::/7).
+2. Limits: ignore a token already seen in the last 2 min (re-sends), ignore it while a
+   callback from the same source IP is still running, at most 10 started per minute.
+3. Connect TCP to **UDP source IP of the datagram** : `port` (never an address from the
+   JSON), timeout 3 s, then send the callback hello and serve §3 as the receiver on that
+   socket: the user still decides (invariant: never auto-accept by default), names are
+   sanitized (§4), files are published only after the hash matches.
+
+**Callback hello** (receiver → sender, first bytes on the connection):
+
+```
+48 4F 50 43 00                     "HOPC" 0x00
+00 00 00 58 {"id":…,"token":…}     JSON frame (88 bytes in the vector)
+```
+
+JSON: `{"id":"<receiver id>","token":"<token>"}` (Rust/Kotlin/Python write `id` then
+`token`; readers must not depend on order). Vectors: `callback_example` in
+`docs/test-vectors.json` (datagram, invalid datagrams, exact hello bytes).
+
+**Limits of the scheme.** The token only proves the connector saw the datagram; v0 has no
+authentication (ADR 0003) and anyone on the LAN can sniff it. A send-only node bound to
+an ephemeral UDP port does not receive the receiver's multicast announces, so it relies on
+its own re-sends: these pass a firewall that only allows replies to multicast if the
+firewall also accepts unsolicited UDP (they will not on a strict Windows default). See
+ADR 0006.
+
+## 7. Planned for v1 (not in v0)
 
 TLS 1.3 / Noise encryption with pinned device keys and pairing codes, resume
 (per-chunk hashes), folders (relative paths), BLE discovery, Wi-Fi Direct/Aware,
