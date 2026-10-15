@@ -17,6 +17,8 @@ pub const DISCOVERY_PORT: u16 = 47470;
 pub const TRANSFER_PORT: u16 = 47471;
 pub const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 72, 80);
 pub const MAX_JSON_FRAME: u32 = 1 << 20;
+/// Max JSON frame of the callback hello (spec §6); the real one is under 200 bytes.
+pub const MAX_CALLBACK_HELLO_FRAME: u32 = 1024;
 pub const MAX_FILES: usize = 10_000;
 pub const HASH_LEN: usize = 32;
 /// Callback token: 128 random bits as 32 lowercase hex characters (spec §6).
@@ -214,7 +216,8 @@ pub fn write_callback_hello<W: Write>(w: &mut W, hello: &CallbackHello) -> Resul
     write_json(w, hello)
 }
 
-/// Read by the sender on its callback listener. Does not check the token.
+/// Read by the sender on its callback listener. Does not check the token. The frame is
+/// capped at [`MAX_CALLBACK_HELLO_FRAME`]; the caller bounds the time (spec §6 step 3).
 pub fn read_callback_hello<R: Read>(r: &mut R) -> Result<CallbackHello, Error> {
     let mut buf = [0u8; 5];
     r.read_exact(&mut buf)?;
@@ -224,7 +227,7 @@ pub fn read_callback_hello<R: Read>(r: &mut R) -> Result<CallbackHello, Error> {
     if buf[4] != VERSION {
         return Err(Error::Protocol(format!("unsupported version {}", buf[4])));
     }
-    read_json(r)
+    read_json_limited(r, MAX_CALLBACK_HELLO_FRAME)
 }
 
 pub fn write_hello<W: Write>(w: &mut W) -> Result<(), Error> {
@@ -257,10 +260,15 @@ pub fn write_json<W: Write, T: Serialize>(w: &mut W, value: &T) -> Result<(), Er
 }
 
 pub fn read_json<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<T, Error> {
+    read_json_limited(r, MAX_JSON_FRAME)
+}
+
+/// [`read_json`] with a smaller frame cap (checked before allocating).
+pub fn read_json_limited<R: Read, T: DeserializeOwned>(r: &mut R, max: u32) -> Result<T, Error> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
     let len = u32::from_be_bytes(len);
-    if len > MAX_JSON_FRAME {
+    if len > max.min(MAX_JSON_FRAME) {
         return Err(Error::Protocol(format!(
             "frame of {len} bytes exceeds limit"
         )));
@@ -378,6 +386,16 @@ mod tests {
         assert_eq!(hex, v["hello_hex"].as_str().unwrap());
         assert_eq!(read_callback_hello(&mut buf.as_slice()).unwrap(), hello);
         assert!(read_callback_hello(&mut &b"HOPY\0\0\0\0\x02{}"[..]).is_err());
+        // Over 1 KiB (checked before reading the body) and non-object JSON are rejected.
+        let mut big = b"HOPC\0".to_vec();
+        big.extend_from_slice(&(MAX_CALLBACK_HELLO_FRAME + 1).to_be_bytes());
+        assert!(read_callback_hello(&mut big.as_slice()).is_err());
+        for body in [&b"[1,2]"[..], b"\"x\"", b"{\"id\":1,\"token\":\"t\"}"] {
+            let mut frame = b"HOPC\0".to_vec();
+            frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            frame.extend_from_slice(body);
+            assert!(read_callback_hello(&mut frame.as_slice()).is_err());
+        }
     }
 
     #[test]

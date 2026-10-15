@@ -66,8 +66,13 @@ All per user (HKCU, no admin), no Store/MSIX:
   instance takes the named mutex `Local\HoppySendCollector`, opens a hidden window of class
   `HoppySendCollector` and waits 500 ms after the last file arrived (3 s at most); the
   others find the window, pass their paths with `WM_COPYDATA` (tag `HOPP`, NUL-separated
-  UTF-16), allow it to take the foreground and exit. Late arrivals (after 3 s) start a
-  second send. Same flow for Send to / drag & drop (one process with every file).
+  UTF-16, ≤ 4 MB per message; `wParam` = a hidden `HoppySendForwarder` window of the
+  sender), allow it to take the foreground and exit. The collector ignores messages whose
+  `wParam` window does not belong to a process running its own executable
+  (`QueryFullProcessImageNameW`, case-insensitive; this keeps out unrelated programs, not a
+  same-user process that passes one of our windows). More than 10 000 files (the protocol
+  limit) or 16 MB of paths in total = "Too many files selected". Late arrivals (after 3 s)
+  start a second send. Same flow for Send to / drag & drop (one process with every file).
 - **Windows 11 classic menu** (opt-in): the new context menu shows classic verbs only under
   *Show more options* (or Shift+right-click). An empty default value in
   `HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32`
@@ -78,6 +83,9 @@ All per user (HKCU, no admin), no Store/MSIX:
   /im explorer.exe`; started again if Windows does not do it within ~6 s); otherwise it
   applies at the next sign-in. When Hoppy created the key it sets
   `HKCU\Software\Hoppy\ClassicMenuCreated` = 1, and uninstall removes the key only then.
+  **This changes the whole Windows 11 context menu for that user**, not just Hoppy's entry:
+  every app's verbs appear in the old menu and the new one is gone. Opt out by unchecking
+  the installer task, or later with the tray toggle / `hoppy classic-menu off`.
 - **Desktop shortcut** *Hoppy* (installer task, checked by default) → `hoppyw.exe send`:
   drop files on it, or double-click to choose them in the Open dialog.
 - *Send to → Hoppy* stays (`%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk`).
@@ -86,7 +94,11 @@ All per user (HKCU, no admin), no Store/MSIX:
 
 `hoppyw` writes `%LOCALAPPDATA%\Hoppy\hoppy.log` (local, never roamed; one backup
 `hoppy.log.1` once it reaches 256 KB). Lines carry a UTC timestamp, the process id and role
-(`tray`, `send`); no file names or contents. Logged: start/exit, tray callbacks (event,
+(`tray`, `send`). Never logged: file names, paths (anything path-like in an error text
+becomes `<path>`) and contents; hoppy-core errors only by category (`I/O error (NotFound)`,
+`remote error`, …), since their texts can carry received names. May be logged on
+purpose, for network diagnosis: local and peer IP addresses and device names. Logged: start/exit, file
+counts and sizes, tray callbacks (event,
 `wParam`/`lParam`, delivery = posted/sent/notify; mouse moves skipped), events handled
 ≥ 200 ms after they arrived, menus shown (position, anchor or cursor, foreground) and their
 result, UI handlers taking ≥ 200 ms, a watchdog line when one runs > 2 s, and worker errors

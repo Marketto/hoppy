@@ -21,8 +21,18 @@ data class Peer(val device: DeviceInfo, val address: InetAddress, val port: Int)
 /**
  * A validated, rate-limited request from a sender to connect back to it (spec §6).
  * [address] is the UDP source of the datagram, never an address from its JSON.
+ * Call [markConnected] once the TCP connect succeeded and the hello was written: only then
+ * is the token recorded as used, so a re-send after a failed connect can retry.
  */
-data class CallbackRequest(val sender: DeviceInfo, val address: InetAddress, val port: Int, val token: String)
+class CallbackRequest(
+    val sender: DeviceInfo,
+    val address: InetAddress,
+    val port: Int,
+    val token: String,
+    private val onConnected: () -> Unit = {},
+) {
+    fun markConnected() = onConnected()
+}
 
 /** Sender-side outstanding callback request. Close it to stop the re-sends. */
 interface CallbackTicket : AutoCloseable {
@@ -54,7 +64,8 @@ class DiscoveryNode(
     private val peers = ConcurrentHashMap<String, Pair<Peer, Long>>()
     /** UDP source of each peer's last datagram: where callback datagrams go. */
     private val udpSources = ConcurrentHashMap<String, InetSocketAddress>()
-    private class Pending(val peerId: String, val data: ByteArray)
+    /** [peerIp]: where the peer was discovered; only it may speak for [peerId] (spec §6). */
+    private class Pending(val peerId: String, val peerIp: InetAddress, val data: ByteArray)
     private val pending = ConcurrentHashMap<Long, Pending>()
     private val nextTicket = AtomicLong(1)
     private val limiter = CallbackLimiter()
@@ -143,12 +154,12 @@ class DiscoveryNode(
     fun requestCallback(peer: Peer, port: Int, token: String): CallbackTicket {
         val key = nextTicket.getAndIncrement()
         val data = DiscoveryMessage(DiscoveryMessage.CALLBACK, me, port, token, peer.device.id).encode()
-        pending[key] = Pending(peer.device.id, data)
+        pending[key] = Pending(peer.device.id, peer.address, data)
         val fallback = InetSocketAddress(peer.address, Protocol.DISCOVERY_PORT)
         val ticket = object : CallbackTicket {
             override fun resend() {
                 val s = socket ?: return
-                val target = udpSources[peer.device.id] ?: fallback
+                val target = udpSources[peer.device.id]?.takeIf { it.address == peer.address } ?: fallback
                 runCatching { io?.execute { runCatching { s.send(DatagramPacket(data, data.size, target)) } } }
             }
             override fun close() { pending.remove(key) }
@@ -196,6 +207,9 @@ class DiscoveryNode(
                 DiscoveryMessage.CALLBACK -> handleCallback(msg, packet.address)
                 else -> {
                     val source = packet.socketAddress as InetSocketAddress
+                    // While we wait for this id to connect back, only its known IP may speak
+                    // for it: a claim from elsewhere would collect the token (spec §6 step 2).
+                    if (pending.values.any { it.peerId == msg.device.id && !trustedSource(it.peerIp, packet.address) }) continue
                     if (msg.port != 0) udpSources[msg.device.id] = source
                     // A firewalled receiver accepts unicast replies to its announces for a few
                     // seconds only: answer pending callback requests right now (spec §6).
@@ -226,7 +240,9 @@ class DiscoveryNode(
         val token = msg.token ?: return
         val ip = from.hostAddress ?: return
         if (!limiter.admit(ip, token, System.currentTimeMillis())) return
-        val request = CallbackRequest(msg.device, from, msg.port, token)
+        val request = CallbackRequest(msg.device, from, msg.port, token) {
+            limiter.markUsed(token, System.currentTimeMillis())
+        }
         try {
             Thread({
                 try { handler(request) } catch (e: Exception) { /* handler reports its own errors */ } finally { limiter.release(ip) }
@@ -263,7 +279,13 @@ class DiscoveryNode(
         const val CALLBACK_WINDOW_MS = 20_000L
         const val CALLBACK_RESEND_MS = 2_000L
         const val CALLBACK_CONNECT_TIMEOUT_MS = 3_000
+        /** Receiver-side cap on callback attempts per rolling minute, per source IP. */
         const val MAX_CALLBACKS_PER_MINUTE = 10
+        /** Receiver-side cap on callback attempts per rolling minute, all sources together. */
+        const val MAX_CALLBACKS_PER_MINUTE_TOTAL = 30
+
+        /** [from] may speak for a peer discovered at [known] (spec §6 sender step 2). */
+        fun trustedSource(known: InetAddress, from: InetAddress): Boolean = known == from && isLocalAddress(from)
 
         /** Loopback, RFC 1918, 100.64/10, link-local, IPv6 ULA (fc00::/7) / link-local. */
         fun isLocalAddress(a: InetAddress): Boolean {
@@ -283,22 +305,33 @@ class DiscoveryNode(
     }
 }
 
-/** Receiver-side callback limits (spec §6): 1 outstanding per IP, tokens deduped, 10/min. */
+/**
+ * Receiver-side callback limits (spec §6): 1 outstanding per IP, 10/min per IP, 30/min in
+ * total; a token is remembered for 2 min only once it connected back ([markUsed]).
+ */
 class CallbackLimiter {
-    private val tokens = LinkedHashMap<String, Long>()
+    private val used = LinkedHashMap<String, Long>()
     private val outstanding = HashSet<String>()
-    private val started = ArrayDeque<Long>()
+    private val started = ArrayDeque<Pair<String, Long>>()
 
+    /** If true, call [release] when the attempt ends and [markUsed] if it connected. */
     @Synchronized
     fun admit(ip: String, token: String, nowMs: Long): Boolean {
-        tokens.entries.removeIf { nowMs - it.value > TOKEN_MEMORY_MS }
-        while (started.isNotEmpty() && nowMs - started.first() >= 60_000L) started.removeFirst()
-        if (token in tokens || ip in outstanding || started.size >= DiscoveryNode.MAX_CALLBACKS_PER_MINUTE) return false
-        if (tokens.size >= MAX_TOKENS) tokens.remove(tokens.keys.first())
-        tokens[token] = nowMs
+        used.entries.removeIf { nowMs - it.value > TOKEN_MEMORY_MS }
+        while (started.isNotEmpty() && nowMs - started.first().second >= 60_000L) started.removeFirst()
+        val fromIp = started.count { it.first == ip }
+        if (token in used || ip in outstanding || fromIp >= DiscoveryNode.MAX_CALLBACKS_PER_MINUTE ||
+            started.size >= DiscoveryNode.MAX_CALLBACKS_PER_MINUTE_TOTAL
+        ) return false
         outstanding += ip
-        started.addLast(nowMs)
+        started.addLast(ip to nowMs)
         return true
+    }
+
+    @Synchronized
+    fun markUsed(token: String, nowMs: Long) {
+        if (used.size >= MAX_TOKENS) used.remove(used.keys.first())
+        used[token] = nowMs
     }
 
     @Synchronized

@@ -406,6 +406,132 @@ fn callback_sender_verifies_token_and_id() {
     assert_eq!(outcome, SendOutcome::Declined(Some("declined".into())));
 }
 
+/// A TCP connection from a specific loopback source IP (127.0.0.2 stands in for another
+/// LAN host). `None` where the OS has no 127/8 beyond 127.0.0.1 (macOS by default).
+fn connect_from(src: [u8; 4], to: SocketAddr) -> Option<std::net::TcpStream> {
+    use socket2::{Domain, Socket, Type};
+    let s = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    s.bind(&SocketAddr::from((src, 0)).into()).ok()?;
+    s.connect(&to.into()).ok()?;
+    Some(s.into())
+}
+
+/// Spec §6 sender steps 2–3: while a callback is pending, only the receiver's known IP may
+/// speak for its id (announces from elsewhere are ignored, connections from elsewhere are
+/// closed unread), and the hello must arrive whole within 3 s and fit in 1 KiB.
+#[test]
+fn callback_sender_ignores_other_ips_and_slow_hellos() {
+    use std::io::{Read, Write};
+    use std::time::Instant;
+    let fake_r = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    fake_r
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let me = device("tx", "Sender");
+    let s_disc = loopback_discovery(me.clone(), 0, Some(fake_r.local_addr().unwrap().port()));
+    let mut buf = [0u8; 2048];
+    let (_, s_udp) = fake_r.recv_from(&mut buf).unwrap();
+    let rx = device("rx", "R");
+    let announce = DiscoveryMessage::new(MessageKind::Announce, &rx, closed_port());
+    fake_r.send_to(&announce.encode(), s_udp).unwrap();
+    let peer = s_disc.wait_for_peers(1, Duration::from_secs(3)).remove(0);
+
+    let src = tempfile::tempdir().unwrap();
+    fs::write(src.path().join("x.txt"), "x").unwrap();
+    let path = src.path().join("x.txt");
+    let sender = thread::spawn(move || {
+        let r = send_to_peer(&peer, &me, Some(&s_disc), &[path], &mut |_| {});
+        drop(s_disc);
+        r
+    });
+    let next_callback = |sock: &std::net::UdpSocket| {
+        let mut buf = [0u8; 2048];
+        loop {
+            let (n, _) = sock.recv_from(&mut buf).ok()?;
+            if let Some(m) = DiscoveryMessage::decode(&buf[..n])
+                && m.kind == MessageKind::Callback
+            {
+                return Some(m);
+            }
+        }
+    };
+    let callback = next_callback(&fake_r).expect("callback datagram");
+    let token = callback.token.clone().unwrap();
+    let target = SocketAddr::from(([127, 0, 0, 1], callback.port));
+
+    if let Ok(spoof) = std::net::UdpSocket::bind("127.0.0.2:0") {
+        // Someone else claims the receiver's id: no token for them, re-sends stay put.
+        spoof
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        for _ in 0..3 {
+            spoof.send_to(&announce.encode(), s_udp).unwrap();
+            assert!(next_callback(&spoof).is_none(), "token sent to a spoofer");
+        }
+        let again = next_callback(&fake_r).expect("re-send still reaches the real receiver");
+        assert_eq!(again.token.as_deref(), Some(token.as_str()));
+    } else {
+        eprintln!("skipped spoofed-announce part: cannot bind 127.0.0.2");
+    }
+
+    if let Some(mut s) = connect_from([127, 0, 0, 2], target) {
+        // Right token, wrong IP: closed before the hello is even read.
+        let hello = CallbackHello {
+            id: "rx".into(),
+            token: token.clone(),
+        };
+        let _ = protocol::write_callback_hello(&mut s, &hello);
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        assert!(
+            rest.is_empty(),
+            "connection from another IP must be dropped"
+        );
+    } else {
+        eprintln!("skipped wrong-IP connection part: cannot bind 127.0.0.2");
+    }
+
+    // Oversized hello frame: closed without waiting for the body.
+    let mut s = std::net::TcpStream::connect(target).unwrap();
+    s.write_all(b"HOPC\0\0\0\x04\x01").unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let t0 = Instant::now();
+    let mut rest = Vec::new();
+    let _ = s.read_to_end(&mut rest);
+    assert!(
+        rest.is_empty() && t0.elapsed() < Duration::from_secs(2),
+        "oversized hello"
+    );
+
+    // Slow-loris: one byte every 400 ms never finishes a hello; cut off after ~3 s total.
+    let mut s = std::net::TcpStream::connect(target).unwrap();
+    let t0 = Instant::now();
+    let slow = b"HOPC\0\0\0\0\x58{\"id\":\"rx\",\"token\":\"";
+    let mut closed_after = None;
+    for &b in slow.iter().cycle().take(40) {
+        if s.write_all(&[b]).is_err() {
+            closed_after = Some(t0.elapsed());
+            break;
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+    let closed_after = closed_after.expect("slow hello must be cut off");
+    assert!(closed_after < Duration::from_secs(6), "{closed_after:?}");
+
+    let mut s = std::net::TcpStream::connect(target).unwrap();
+    let hello = CallbackHello {
+        id: "rx".into(),
+        token,
+    };
+    protocol::write_callback_hello(&mut s, &hello).unwrap();
+    protocol::read_hello(&mut s).unwrap();
+    let _: Offer = protocol::read_json(&mut s).unwrap();
+    protocol::write_json(&mut s, &Decision::reject("declined")).unwrap();
+    let outcome = sender.join().unwrap().unwrap();
+    assert_eq!(outcome, SendOutcome::Declined(Some("declined".into())));
+}
+
 /// Receiver side: ignores callbacks for other ids, connects back once per token.
 #[test]
 fn callback_receiver_filters_and_dedupes() {
@@ -440,6 +566,12 @@ fn callback_receiver_filters_and_dedupes() {
     let other = DiscoveryMessage::callback(&s_dev, port, &token, "not-rx");
     udp.send_to(&other.encode(), r_addr).unwrap();
     assert!(accept_within(500).is_none(), "callback for another id");
+
+    // A connect-back that fails (nothing listens yet) does not burn the token: the
+    // sender's next re-send with the same token is answered.
+    let refused = DiscoveryMessage::callback(&s_dev, closed_port(), &token, "rx");
+    udp.send_to(&refused.encode(), r_addr).unwrap();
+    thread::sleep(Duration::from_millis(500));
 
     let good = DiscoveryMessage::callback(&s_dev, port, &token, "rx");
     udp.send_to(&good.encode(), r_addr).unwrap();

@@ -45,17 +45,25 @@ DIRECT_CONNECT_TIMEOUT = 3.0
 CALLBACK_WINDOW = 20.0
 CALLBACK_RESEND = 2.0
 CALLBACK_CONNECT_TIMEOUT = 3.0
-CALLBACK_HELLO_TIMEOUT = 3.0
-MAX_CALLBACKS_PER_MINUTE = 10
+CALLBACK_HELLO_TIMEOUT = 3.0  # one deadline for the whole hello, not per read
+MAX_CALLBACK_HELLO_FRAME = 1024
+MAX_CALLBACKS_PER_MINUTE = 10  # per source IP
+MAX_CALLBACKS_PER_MINUTE_TOTAL = 30
 TOKEN_MEMORY = 120.0
 ROOT = Path(__file__).resolve().parent.parent
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
 # ---------------------------------------------------------------- framing
-def read_exact(sock: socket.socket, n: int) -> bytes:
+def read_exact(sock: socket.socket, n: int, deadline: float | None = None) -> bytes:
+    """Reads n bytes; with a `deadline` (time.monotonic()) the whole read must finish by then."""
     buf = bytearray()
     while len(buf) < n:
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("read deadline passed")
+            sock.settimeout(left)
         chunk = sock.recv(n - len(buf))
         if not chunk:
             raise ConnectionError("connection closed")
@@ -70,11 +78,14 @@ def write_json(sock: socket.socket, obj: dict) -> None:
     sock.sendall(struct.pack(">I", len(body)) + body)
 
 
-def read_json(sock: socket.socket) -> dict:
-    (n,) = struct.unpack(">I", read_exact(sock, 4))
-    if n > MAX_FRAME:
+def read_json(sock: socket.socket, max_len: int = MAX_FRAME, deadline: float | None = None) -> dict:
+    (n,) = struct.unpack(">I", read_exact(sock, 4, deadline))
+    if n > max_len:
         raise ValueError(f"frame of {n} bytes exceeds limit")
-    return json.loads(read_exact(sock, n))
+    obj = json.loads(read_exact(sock, n, deadline))
+    if not isinstance(obj, dict):
+        raise ValueError("frame is not a JSON object")
+    return obj
 
 
 # ---------------------------------------------------------------- names (spec §4)
@@ -176,25 +187,31 @@ def callback_hello(receiver_id: str, token: str) -> bytes:
 
 
 class CallbackLimiter:
-    """Receiver-side limits: 1 outstanding per IP, tokens deduped for 2 min, 10/min overall."""
+    """Receiver-side limits (spec §6): 1 outstanding per IP, 10/min per IP, 30/min in total;
+    a token is remembered for 2 min only once it connected back (mark_used)."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.tokens: dict[str, float] = {}
+        self.used: dict[str, float] = {}
         self.outstanding: set[str] = set()
-        self.started: list[float] = []
+        self.started: list[tuple[str, float]] = []
 
     def admit(self, ip: str, token: str, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         with self.lock:
-            self.tokens = {t: at for t, at in self.tokens.items() if now - at <= TOKEN_MEMORY}
-            self.started = [t for t in self.started if now - t < 60]
-            if token in self.tokens or ip in self.outstanding or len(self.started) >= MAX_CALLBACKS_PER_MINUTE:
+            self.used = {t: at for t, at in self.used.items() if now - at <= TOKEN_MEMORY}
+            self.started = [(i, t) for i, t in self.started if now - t < 60]
+            from_ip = sum(1 for i, _ in self.started if i == ip)
+            if (token in self.used or ip in self.outstanding or from_ip >= MAX_CALLBACKS_PER_MINUTE
+                    or len(self.started) >= MAX_CALLBACKS_PER_MINUTE_TOTAL):
                 return False
-            self.tokens[token] = now
             self.outstanding.add(ip)
-            self.started.append(now)
+            self.started.append((ip, now))
             return True
+
+    def mark_used(self, token: str, now: float | None = None) -> None:
+        with self.lock:
+            self.used[token] = time.monotonic() if now is None else now
 
     def release(self, ip: str) -> None:
         with self.lock:
@@ -205,6 +222,7 @@ def answer_callback(ip: str, port: int, token: str, device: dict, out: Path, lim
     try:
         conn = socket.create_connection((ip, port), timeout=CALLBACK_CONNECT_TIMEOUT)
         conn.sendall(callback_hello(device["id"], token))
+        limiter.mark_used(token)  # only now: a re-send after a failed connect may retry
         handle(conn, out)
     except (OSError, ValueError) as e:
         print(f"callback to {ip}:{port} failed: {e}", file=sys.stderr)
@@ -251,7 +269,9 @@ class callback_connect:
             if udp in ready:
                 data, addr = udp.recvfrom(2048)
                 m = decode(data)
-                if m and m["type"] in ("announce", "query") and m["port"] and addr[0] == peer_ip:
+                # Only the receiver's known IP may speak for it (spec §6 sender step 2).
+                if (m and m["type"] in ("announce", "query") and m["port"] and addr[0] == peer_ip
+                        and is_local_address(addr[0])):
                     if peer_id is None:
                         peer_id = m["id"]
                     if m["id"] == peer_id:  # reply inside the firewall's response window
@@ -259,12 +279,15 @@ class callback_connect:
                         udp.sendto(msg("callback", self.sender, port, token=token, to=peer_id), addr)
                         next_resend = time.monotonic() + CALLBACK_RESEND
             if srv in ready:
-                conn, _ = srv.accept()
+                conn, (from_ip, *_) = srv.accept()
+                if from_ip != peer_ip:  # spec §6 step 3: closed before reading anything
+                    conn.close()
+                    continue
                 try:
-                    conn.settimeout(CALLBACK_HELLO_TIMEOUT)
-                    if read_exact(conn, 5) != CALLBACK_MAGIC + bytes([VERSION]):
+                    deadline = time.monotonic() + CALLBACK_HELLO_TIMEOUT
+                    if read_exact(conn, 5, deadline) != CALLBACK_MAGIC + bytes([VERSION]):
                         raise ValueError("bad callback magic")
-                    hello = read_json(conn)
+                    hello = read_json(conn, MAX_CALLBACK_HELLO_FRAME, deadline)
                     if hmac.compare_digest(str(hello.get("token", "")).encode(), token.encode()) and hello.get("id") == peer_id:
                         conn.settimeout(10)
                         return conn
@@ -454,11 +477,22 @@ def selftest() -> int:
         bad += 1
         print("FAIL token validation")
     lim = CallbackLimiter()
-    checks = [lim.admit("10.0.0.1", "t1", 0), not lim.admit("10.0.0.1", "t2", 0)]
-    lim.release("10.0.0.1")
-    checks += [not lim.admit("10.0.0.1", "t1", 0), lim.admit("10.0.0.1", "t2", 0)]
-    checks += [lim.admit(f"10.0.1.{i}", f"u{i}", 0) for i in range(MAX_CALLBACKS_PER_MINUTE - 2)]
-    checks += [not lim.admit("10.0.2.1", "v", 0), lim.admit("10.0.2.1", "v", 61)]
+    a = "10.0.0.1"
+    checks = [lim.admit(a, "t1", 0), not lim.admit(a, "t2", 0)]
+    lim.release(a)
+    checks += [lim.admit(a, "t1", 0)]  # failed connect: same token may retry
+    lim.mark_used("t1", 0)
+    lim.release(a)
+    checks += [not lim.admit(a, "t1", 0)]  # connected back: re-sends ignored
+    for i in range(MAX_CALLBACKS_PER_MINUTE - 2):
+        checks.append(lim.admit(a, f"t{i + 3}", 0))
+        lim.release(a)
+    checks += [not lim.admit(a, "fresh", 0)]  # per-IP cap
+    checks += [lim.admit(f"10.0.1.{i}", f"u{i}", 0)
+               for i in range(MAX_CALLBACKS_PER_MINUTE_TOTAL - MAX_CALLBACKS_PER_MINUTE)]
+    checks += [not lim.admit("10.0.2.1", "v", 0), lim.admit("10.0.2.1", "v", 61)]  # global cap
+    checks += [not lim.admit("10.0.2.2", "t1", 61), lim.admit("10.0.2.2", "t1", 181)]
+    checks += [callback_listener_checks()]
     checks += [is_local_address(a) for a in ("127.0.0.1", "192.168.1.2", "100.64.0.1", "fe80::1", "fd00::1")]
     checks += [not is_local_address(a) for a in ("8.8.8.8", "100.128.0.1", "2001:db8::1")]
     if not all(checks):
@@ -466,6 +500,71 @@ def selftest() -> int:
         print(f"FAIL callback limits/addresses: {checks}")
     print("selftest:", "OK" if not bad else f"{bad} failure(s)")
     return 1 if bad else 0
+
+
+def callback_listener_checks() -> bool:
+    """Sender side of spec §6 step 3 on loopback: oversized, non-object and slow hellos are
+    closed cleanly; a connection from another IP (127.0.0.2) is closed unread."""
+    sender = me("selftest-tx")
+    rx_udp = udp_socket(0)
+    rx_udp.settimeout(3)
+    cb = callback_connect(("127.0.0.1", rx_udp.getsockname()[1]), sender)
+    result: dict = {}
+    t = threading.Thread(target=lambda: result.update(conn=_try(cb.__enter__)), daemon=True)
+    t.start()
+    rx = me("selftest-rx")
+    ok = True
+    try:
+        _, s_addr = rx_udp.recvfrom(2048)  # the sender's unicast query
+        rx_udp.sendto(msg("announce", rx, 1), s_addr)
+        while True:
+            m = decode(rx_udp.recvfrom(2048)[0])
+            if m and m["type"] == "callback":
+                break
+        target = ("127.0.0.1", m["port"])
+
+        def closed_quickly(payload: bytes, src: str = "127.0.0.1", within: float = 1.5) -> bool:
+            c = socket.socket()
+            try:
+                c.bind((src, 0))
+            except OSError:
+                return True  # no 127.0.0.2 here (macOS): skip
+            c.connect(target)
+            c.sendall(payload)
+            c.settimeout(5)
+            t0 = time.monotonic()
+            try:
+                rest = c.recv(1)
+            except OSError:
+                rest = b""
+            c.close()
+            return rest == b"" and time.monotonic() - t0 < within
+
+        hdr = CALLBACK_MAGIC + bytes([VERSION])
+        ok &= closed_quickly(hdr + struct.pack(">I", MAX_CALLBACK_HELLO_FRAME + 1))
+        ok &= closed_quickly(hdr + struct.pack(">I", 5) + b"[1,2]")
+        ok &= closed_quickly(hdr + struct.pack(">I", 3) + b'"x"')
+        ok &= closed_quickly(callback_hello(rx["id"], m["token"]), src="127.0.0.2")
+        ok &= closed_quickly(hdr + b"\0\0", within=CALLBACK_HELLO_TIMEOUT + 1.5)  # stalls
+        good = socket.create_connection(target)
+        good.sendall(callback_hello(rx["id"], m["token"]))
+        t.join(5)
+        ok &= isinstance(result.get("conn"), socket.socket)
+        good.close()
+    except (OSError, ValueError) as e:
+        print(f"callback listener check: {e}")
+        ok = False
+    finally:
+        rx_udp.close()
+        cb.__exit__(None, None, None)
+    return ok
+
+
+def _try(fn):
+    try:
+        return fn()
+    except (OSError, ConnectionError) as e:
+        return e
 
 
 def vectors() -> None:

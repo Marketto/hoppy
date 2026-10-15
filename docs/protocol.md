@@ -27,7 +27,8 @@ authentication**: it is only for trusted LANs during the PoC (see ADR 0003).
 | Peer expiry | 15 s without any message |
 | Direct connect timeout before callback (§6) | 3 s |
 | Callback window / re-send / connect timeout (§6) | 20 s / 2 s / 3 s |
-| Callbacks per receiver | ≤ 10 per minute, 1 outstanding per source IP |
+| Callback hello: whole-read deadline / max JSON frame (§6) | 3 s / 1 KiB (1 024 bytes) |
+| Callbacks per receiver | ≤ 10 per minute per source IP, ≤ 30 per minute in total, 1 outstanding per source IP |
 
 ## 2. Discovery (UDP)
 
@@ -152,15 +153,24 @@ A `callback` never adds or refreshes a peer.
 **Sender** (when TCP to the receiver's `addr:port` fails within 3 s — timeout, refused,
 no route — and it runs discovery):
 
-1. Listen on an ephemeral TCP port, create a fresh token.
+1. Listen on an ephemeral TCP port, create a fresh token. The receiver's **known IP** is
+   the IP it was discovered at (the one the failed direct connect went to).
 2. Send the datagram to the receiver's discovery address (UDP source of its last
-   announce/query; else its IP + 47470) right away, again every 2 s, **and immediately in
-   reply to every `announce`/`query` from that receiver** (lands inside the firewall's
-   response window). Use the discovery socket so source port = the one the receiver's
-   firewall already saw. Stop after 20 s → "unreachable".
-3. On each accepted connection, read the callback hello (3 s timeout). Accept it only if
-   the token matches (constant-time compare) and `id` equals the receiver's id; otherwise
-   close it and keep waiting. Use the first valid one, close the listener.
+   announce/query; else its known IP + 47470) right away, again every 2 s, **and
+   immediately in reply to every `announce`/`query` from that receiver** (lands inside the
+   firewall's response window). Use the discovery socket so source port = the one the
+   receiver's firewall already saw. Stop after 20 s → "unreachable".
+   While the request is pending, an `announce`/`query` carrying the receiver's `id` counts
+   as "from that receiver" only if its UDP source IP equals the known IP and is local
+   (receiver step 1 ranges); any other such datagram is ignored entirely: it is not
+   answered, does not move the re-send target and does not update the peer. (Otherwise
+   anyone on the LAN could claim the receiver's `id` and collect the token.)
+3. Close every accepted connection whose remote IP is not the known IP, before reading
+   anything. On the others, read the callback hello with **one overall 3 s deadline** for
+   the whole hello (not per read) and a JSON frame of at most **1 KiB**; a frame that is
+   larger, not a JSON object, or late closes the connection. Accept it only if the token
+   matches (constant-time compare) and `id` equals the receiver's id; otherwise close it
+   and keep waiting. Use the first valid one, close the listener.
 4. Continue on that socket **exactly as §3 from the sender's side** (`HOPY 0x00`, Offer,
    …). The sender stays the client of the session even though it accepted the TCP connection.
 
@@ -169,8 +179,11 @@ no route — and it runs discovery):
 1. Ignore the datagram unless `to` equals its own id and the UDP source IP is loopback
    (127/8, ::1), private (10/8, 172.16/12, 192.168/16), CGNAT (100.64/10), link-local
    (169.254/16, fe80::/10) or IPv6 ULA (fc00::/7).
-2. Limits: ignore a token already seen in the last 2 min (re-sends), ignore it while a
-   callback from the same source IP is still running, at most 10 started per minute.
+2. Limits: ignore it while a callback from the same source IP is still running; ignore a
+   token that already led to a successful connect-back in the last 2 min (re-sends); at
+   most 10 attempts started per minute per source IP and 30 per minute in total. A token
+   is recorded as used only once the TCP connect succeeded and the hello was written, so
+   a re-send after a failed connect (sender's listener not ready, transient loss) retries.
 3. Connect TCP to **UDP source IP of the datagram** : `port` (never an address from the
    JSON), timeout 3 s, then send the callback hello and serve §3 as the receiver on that
    socket: the user still decides (invariant: never auto-accept by default), names are
@@ -188,7 +201,13 @@ JSON: `{"id":"<receiver id>","token":"<token>"}` (Rust/Kotlin/Python write `id` 
 `docs/test-vectors.json` (datagram, invalid datagrams, exact hello bytes).
 
 **Limits of the scheme.** The token only proves the connector saw the datagram; v0 has no
-authentication (ADR 0003) and anyone on the LAN can sniff it. A send-only node bound to
+authentication (ADR 0003) and anyone on the LAN can sniff it. The sender's IP checks
+(steps 2–3) stop a LAN host from simply claiming the receiver's `id`, not one that spoofs
+the receiver's IP. Conversely, UDP source addresses are not authenticated: a forged
+`callback` with a spoofed private/loopback source can make a receiver open a TCP
+connection to that IP and an arbitrary `port` and write the fixed `HOPC` hello (≈ 90 bytes,
+nothing it read is echoed back) before it waits for `HOPY`. Impact is low (no payload
+control, rate-limited as above, local ranges only) and accepted for v0. A send-only node bound to
 an ephemeral UDP port does not receive the receiver's multicast announces on that socket.
 It MAY, while a callback is pending, also listen to the group on a second socket bound to
 47470 with address reuse (the Rust desktop does; on platforms that allow it, bind that

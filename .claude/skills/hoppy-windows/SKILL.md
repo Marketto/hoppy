@@ -41,7 +41,9 @@ PoC UX (no console windows):
   run on workers; worker errors become `Notice`s (balloon) + log lines. Handlers run inside
   `diag::UiWatch::handler`; wrap modal calls (menus, dialogs) in `h.modal(...)`.
 - `crates/hoppy-cli/src/diag.rs` — `%LOCALAPPDATA%\Hoppy\hoppy.log` (channel → writer
-  thread, rotation at 256 KB, UTC timestamps, no file names), `UiWatch` (handler > 200 ms
+  thread, rotation at 256 KB, UTC timestamps; no file names/paths: `format_line` runs
+  `redact_paths`, core errors are logged via `error_kind`/`error_chain`, never `{e}`; IPs
+  and device names allowed), `UiWatch` (handler > 200 ms
   logged, watchdog line > 2 s). Init only in `hoppyw` tray/send (not `firewall`: elevated
   copy may be another user). Tray menu *About & diagnostics…* opens it in Notepad.
 - `crates/hoppy-cli/src/update.rs` — tray update check, pure and Linux-tested: semver
@@ -67,7 +69,8 @@ PoC UX (no console windows):
   `TrayEvent::Click(Some((x, y)))`; cursor otherwise), `GetOpenFileNameW` (also unowned
   for `hoppyw send` without files), `ShellExecuteW` (COM-initialised, worker-safe), the
   `hoppyw send` collector (`gather_send_files`: mutex + window `HoppySendCollector`,
-  `WM_COPYDATA`, timing in `collect_wait`), HKCU registry helpers (verb
+  `WM_COPYDATA` from our own exe only (`wParam` = sender window → image path), capped
+  by `Collected` at `COLLECT_MAX_FILES`/`COLLECT_MAX_BYTES`, timing in `collect_wait`), HKCU registry helpers (verb
   `Software\Classes\*\shell\Hoppy`, classic menu CLSID override + `Software\Hoppy`
   marker, `restart_explorer`), named
   mutex `Local\HoppyTray` (single instance; a 2nd launch makes the 1st show a balloon),

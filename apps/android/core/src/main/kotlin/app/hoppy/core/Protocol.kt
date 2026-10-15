@@ -23,6 +23,8 @@ object Protocol {
     const val TRANSFER_PORT = 47471
     const val MULTICAST_GROUP = "239.255.72.80"
     const val MAX_JSON_FRAME = 1 shl 20
+    /** Max JSON frame of the callback hello (spec §6); the real one is under 200 bytes. */
+    const val MAX_CALLBACK_HELLO_FRAME = 1024
     const val MAX_FILES = 10_000
     const val HASH_LEN = 32
     const val CHUNK = 256 * 1024
@@ -58,13 +60,16 @@ object Protocol {
         writeJson(out, linkedMapOf("id" to receiverId, "token" to token))
     }
 
-    /** Returns (receiverId, token); does not check the token. */
+    /**
+     * Returns (receiverId, token); does not check the token. The frame is capped at
+     * [MAX_CALLBACK_HELLO_FRAME]; the caller bounds the time (spec §6 step 3).
+     */
     fun readCallbackHello(input: InputStream): Pair<String, String> {
         val buf = ByteArray(5)
         DataInputStream(input).readFully(buf)
         if (!buf.copyOfRange(0, 4).contentEquals(CALLBACK_MAGIC)) throw ProtocolException("bad callback magic")
         if (buf[4].toInt() != VERSION) throw ProtocolException("unsupported version ${buf[4]}")
-        val m = Protocol.readJson(input)
+        val m = readJson(input, MAX_CALLBACK_HELLO_FRAME)
         return (m["id"] as? String ?: "") to (m["token"] as? String ?: "")
     }
 
@@ -77,10 +82,10 @@ object Protocol {
         data.flush()
     }
 
-    fun readJson(input: InputStream): Map<String, Any?> {
+    fun readJson(input: InputStream, maxLen: Int = MAX_JSON_FRAME): Map<String, Any?> {
         val data = DataInputStream(input)
         val len = data.readInt()
-        if (len < 0 || len > MAX_JSON_FRAME) throw ProtocolException("frame of $len bytes exceeds limit")
+        if (len < 0 || len > minOf(maxLen, MAX_JSON_FRAME)) throw ProtocolException("frame of $len bytes exceeds limit")
         val body = ByteArray(len)
         data.readFully(body)
         return try {

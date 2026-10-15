@@ -114,17 +114,68 @@ pub fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Most files one send may gather: the protocol's offer limit.
+pub const COLLECT_MAX_FILES: usize = hoppy_core::protocol::MAX_FILES;
+/// Most UTF-16 payload bytes the collector accepts in total, over all forwarders.
+pub const COLLECT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// UTF-16LE bytes → code units (the WM_COPYDATA copy has no u16 alignment); an odd
+/// trailing byte is ignored.
+pub fn decode_utf16_le(bytes: &[u8]) -> Vec<u16> {
+    let (pairs, _) = bytes.as_chunks::<2>();
+    pairs.iter().map(|&p| u16::from_le_bytes(p)).collect()
+}
+
+/// Files gathered by the `hoppyw send` collector, within `COLLECT_MAX_FILES` /
+/// `COLLECT_MAX_BYTES`; past either limit nothing more is kept and `overflow` is set.
+#[derive(Debug, Default)]
+pub struct Collected {
+    pub files: Vec<PathBuf>,
+    pub bytes: usize,
+    pub overflow: bool,
+}
+
+impl Collected {
+    /// Adds one forwarded payload of `bytes` bytes holding `paths`.
+    pub fn add(&mut self, bytes: usize, paths: Vec<PathBuf>) {
+        let bytes = self.bytes.saturating_add(bytes);
+        if self.overflow
+            || bytes > COLLECT_MAX_BYTES
+            || self.files.len() + paths.len() > COLLECT_MAX_FILES
+        {
+            self.overflow = true;
+            return;
+        }
+        self.bytes = bytes;
+        self.files.extend(paths);
+    }
+}
+
+/// Same executable, compared the way Windows does: case-insensitive, `\\?\` prefix ignored.
+/// Paths that are not valid Unicode never match.
+pub fn same_exe_path(a: &Path, b: &Path) -> bool {
+    fn norm(p: &Path) -> Option<String> {
+        let s = p.to_str()?;
+        Some(s.strip_prefix(r"\\?\").unwrap_or(s).to_lowercase())
+    }
+    matches!((norm(a), norm(b)), (Some(a), Some(b)) if a == b)
+}
+
 /// Explorer starts one `hoppyw send FILE` per selected file. The first instance collects
 /// the others' files (`COLLECT_QUIET`/`COLLECT_MAX`) and gets them all back; the others
 /// forward theirs and get `None` (exit at once). Elsewhere: the files as given.
-pub fn gather_send_files(files: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
+/// More than `COLLECT_MAX_FILES` files (or `COLLECT_MAX_BYTES` of paths) = `TooManyFiles`.
+pub fn gather_send_files(files: Vec<PathBuf>) -> Result<Option<Vec<PathBuf>>, TooManyFiles> {
     #[cfg(windows)]
     {
         win::gather_send_files(files)
     }
     #[cfg(not(windows))]
     {
-        Some(files)
+        if files.len() > COLLECT_MAX_FILES {
+            return Err(TooManyFiles);
+        }
+        Ok(Some(files))
     }
 }
 
@@ -208,7 +259,8 @@ pub enum TrayEvent {
     Timer(usize),
 }
 
-/// `Tray::pick_files`: the selection did not fit the dialog's buffer.
+/// `Tray::pick_files`: the selection did not fit the dialog's buffer; `gather_send_files`:
+/// more than `COLLECT_MAX_FILES` files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooManyFiles;
 
@@ -330,7 +382,8 @@ pub mod win {
         RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateMutexW, GetExitCodeProcess, WaitForSingleObject,
+        CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, FNERR_BUFFERTOOSMALL, GetOpenFileNameW, OFN_ALLOWMULTISELECT,
@@ -359,8 +412,9 @@ pub mod win {
     };
 
     use super::{
-        COLLECT_MAX, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune,
-        collect_wait, copy_wide, dedup_paths, parse_multiselect, split_https_url, split_wide_list,
+        COLLECT_MAX, COLLECT_MAX_BYTES, COLLECT_MAX_FILES, Collected, ElevationDeclined, HttpSink,
+        MenuItem, TooManyFiles, TrayEvent, Tune, collect_wait, copy_wide, decode_utf16_le,
+        dedup_paths, parse_multiselect, same_exe_path, split_https_url, split_wide_list,
         verb_command, verb_label,
     };
     use crate::diag;
@@ -1106,14 +1160,57 @@ pub mod win {
 
     const COLLECT_CLASS: &str = "HoppySendCollector";
     const COLLECT_MUTEX: &str = r"Local\HoppySendCollector";
+    /// Window class of the short-lived window a forwarder passes as WM_COPYDATA's wParam.
+    const FORWARD_CLASS: &str = "HoppySendForwarder";
     /// WM_COPYDATA tag ("HOPP"); anything else is ignored.
     const COPYDATA_MAGIC: usize = 0x484F_5050;
     /// Larger payloads are ignored (a few thousand long paths fit).
     const COPYDATA_MAX: u32 = 4 * 1024 * 1024;
 
     thread_local! {
-        /// Files received by `collect_wndproc`, drained by `collect`.
-        static COLLECTED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+        /// Files received by `collect_wndproc` (within the limits), read by `collect`.
+        static COLLECTED: RefCell<Collected> = RefCell::new(Collected::default());
+        /// WM_COPYDATA messages refused because the sender is not our own executable.
+        static REJECTED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Full image path of the process owning `hwnd`.
+    fn window_process_image(hwnd: HWND) -> Option<PathBuf> {
+        let mut pid = 0u32;
+        // SAFETY: any handle value is accepted; an invalid window leaves `pid` at 0.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid == 0 {
+            return None;
+        }
+        // SAFETY: plain call; a null handle is checked below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u16; 32 * 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: `process` is open with query rights; `len` is the buffer size in u16s and
+        // receives the length written (without NUL).
+        let ok = unsafe {
+            let ok =
+                QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+            CloseHandle(process);
+            ok
+        };
+        if ok == 0 {
+            return None;
+        }
+        let path = buf.get(..len as usize)?;
+        Some(PathBuf::from(OsString::from_wide(path)))
+    }
+
+    /// The forwarding window (wParam of WM_COPYDATA) belongs to a process running our own
+    /// executable. wParam is chosen by the sender, so this only keeps out unrelated programs.
+    fn sender_is_own_exe(sender: HWND) -> bool {
+        let Ok(own) = std::env::current_exe() else {
+            return false;
+        };
+        !sender.is_null() && window_process_image(sender).is_some_and(|p| same_exe_path(&p, &own))
     }
 
     unsafe extern "system" fn collect_wndproc(
@@ -1139,44 +1236,59 @@ pub mod win {
         {
             return 0;
         }
+        if !sender_is_own_exe(wparam as HWND) {
+            REJECTED.with(|r| r.set(r.get() + 1));
+            return 0;
+        }
         // SAFETY: the system copied `cbData` bytes to `lpData` for the duration of the call.
         // Read as bytes: the copy carries no alignment guarantee for u16.
         let bytes =
             unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) };
-        let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
-            .collect();
+        let units = decode_utf16_le(bytes);
         let paths: Vec<PathBuf> = split_wide_list(&units)
             .into_iter()
             .map(|w| PathBuf::from(OsString::from_wide(w)))
             .collect();
-        COLLECTED.with(|c| c.borrow_mut().extend(paths));
+        // Taken even past the limits: the first instance reports "too many files" once.
+        COLLECTED.with(|c| c.borrow_mut().add(bytes.len(), paths));
         1
     }
 
     /// See `super::gather_send_files`.
-    pub fn gather_send_files(files: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
+    pub fn gather_send_files(files: Vec<PathBuf>) -> Result<Option<Vec<PathBuf>>, TooManyFiles> {
         let start = Instant::now();
         loop {
             if let Some(guard) = single_instance(COLLECT_MUTEX) {
-                return Some(collect(files, guard));
+                return collect(files, guard).map(Some);
             }
             if forward(&files) {
                 diag::log(format!(
                     "send: forwarded {} file(s) to the first instance",
                     files.len()
                 ));
-                return None;
+                return Ok(None);
             }
             // The collector is starting (no window yet) or closing (window gone, mutex not
             // yet released): retry, and send on our own if that takes too long.
             if start.elapsed() >= COLLECT_MAX {
                 diag::log("send: no collector answered, sending alone");
-                return Some(files);
+                if files.len() > COLLECT_MAX_FILES {
+                    return Err(TooManyFiles);
+                }
+                return Ok(Some(files));
             }
             std::thread::sleep(Duration::from_millis(30));
         }
+    }
+
+    unsafe extern "system" fn forward_wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // SAFETY: forwards the unmodified arguments Windows passed to us.
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     }
 
     /// Hands `files` to the collector window; `true` if it took them.
@@ -1192,46 +1304,67 @@ pub mod win {
             data.extend(f.as_os_str().encode_wide());
             data.push(0);
         }
+        let Ok(cb) = u32::try_from(data.len() * 2) else {
+            return false;
+        };
+        // The collector checks that wParam's window belongs to our executable.
+        let me = match hidden_window(FORWARD_CLASS, forward_wndproc, FORWARD_CLASS) {
+            Ok(me) => me,
+            Err(_) => return false,
+        };
         let cds = COPYDATASTRUCT {
             dwData: COPYDATA_MAGIC,
-            cbData: (data.len() * 2) as u32,
+            cbData: cb,
             lpData: data.as_mut_ptr().cast(),
         };
         let mut pid = 0u32;
         let mut answer = 0usize;
         // SAFETY: live (or just closed: the calls then fail) window; `cds` and `data` are
-        // alive during the synchronous send. The collector will show the device menu, so
-        // pass it the foreground right Explorer gave this process.
+        // alive during the synchronous send; `me` is our own window, destroyed once. The
+        // collector will show the device menu, so pass it the foreground right Explorer
+        // gave this process.
         let sent = unsafe {
             GetWindowThreadProcessId(hwnd, &mut pid);
             if pid != 0 {
                 AllowSetForegroundWindow(pid);
             }
-            SendMessageTimeoutW(
+            let sent = SendMessageTimeoutW(
                 hwnd,
                 WM_COPYDATA,
-                0,
+                me as WPARAM,
                 (&raw const cds) as LPARAM,
                 SMTO_ABORTIFHUNG,
                 2000,
                 &mut answer,
-            )
+            );
+            DestroyWindow(me);
+            sent
         };
         sent != 0 && answer == 1
     }
 
     /// First instance: keep a findable window open while other instances keep arriving.
-    fn collect(mut files: Vec<PathBuf>, guard: InstanceGuard) -> Vec<PathBuf> {
+    fn collect(files: Vec<PathBuf>, guard: InstanceGuard) -> Result<Vec<PathBuf>, TooManyFiles> {
+        let own = files.len();
+        if own > COLLECT_MAX_FILES {
+            return Err(TooManyFiles);
+        }
         let hwnd = match hidden_window(COLLECT_CLASS, collect_wndproc, COLLECT_CLASS) {
             Ok(hwnd) => hwnd,
             Err(e) => {
                 diag::log(format!("send: collector window failed: {e:#}"));
-                return files;
+                return Ok(files);
             }
         };
-        let own = files.len();
+        COLLECTED.with(|c| {
+            *c.borrow_mut() = Collected {
+                files,
+                ..Default::default()
+            }
+        });
         let start = Instant::now();
         let mut last = start;
+        let mut count = own;
         while let Some(wait) = collect_wait(start.elapsed(), last.elapsed()) {
             let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX).max(1);
             let mut msg = MSG::default();
@@ -1244,24 +1377,39 @@ pub mod win {
                     DispatchMessageW(&msg);
                 }
             }
-            let got = COLLECTED.with(|c| std::mem::take(&mut *c.borrow_mut()));
-            if !got.is_empty() {
-                files.extend(got);
+            let (now, overflow) = COLLECTED.with(|c| {
+                let c = c.borrow();
+                (c.files.len(), c.overflow)
+            });
+            if now != count || overflow {
+                count = now;
                 last = Instant::now();
             }
         }
         // SAFETY: our own window, destroyed once; later forwarders find nothing and retry.
         unsafe { DestroyWindow(hwnd) };
-        files.extend(COLLECTED.with(|c| std::mem::take(&mut *c.borrow_mut())));
         drop(guard);
-        let files = dedup_paths(files);
+        let got = COLLECTED.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        let rejected = REJECTED.with(|r| r.replace(0));
+        if rejected > 0 {
+            diag::log(format!(
+                "send: ignored {rejected} message(s) not sent by this executable"
+            ));
+        }
+        if got.overflow {
+            diag::log(format!(
+                "send: more than {COLLECT_MAX_FILES} files or {COLLECT_MAX_BYTES} bytes of paths"
+            ));
+            return Err(TooManyFiles);
+        }
+        let files = dedup_paths(got.files);
         diag::log(format!(
             "send: collected {} file(s) ({} from other instances) in {} ms",
             files.len(),
             files.len().saturating_sub(own),
             start.elapsed().as_millis()
         ));
-        files
+        Ok(files)
     }
 
     // ------------------------------------------------------------ registry (HKCU only)
@@ -1794,9 +1942,53 @@ mod tests {
     fn gather_is_a_no_op_off_windows() {
         if !cfg!(windows) {
             let files = vec![PathBuf::from("x")];
-            assert_eq!(gather_send_files(files.clone()), Some(files));
+            assert_eq!(gather_send_files(files.clone()), Ok(Some(files)));
+            let many = vec![PathBuf::from("x"); COLLECT_MAX_FILES + 1];
+            assert_eq!(gather_send_files(many), Err(TooManyFiles));
             assert_eq!(classic_menu(), None);
         }
+    }
+
+    #[test]
+    fn decodes_unaligned_utf16_le() {
+        let bytes: Vec<u8> = w("a🐰").iter().flat_map(|u| u.to_le_bytes()).collect();
+        assert_eq!(decode_utf16_le(&bytes), w("a🐰"));
+        assert_eq!(decode_utf16_le(&bytes[1..]).len(), (bytes.len() - 1) / 2);
+        assert!(decode_utf16_le(&[7]).is_empty());
+    }
+
+    #[test]
+    fn collected_stops_at_the_limits() {
+        let mut c = Collected::default();
+        c.add(10, vec![PathBuf::from("a"); COLLECT_MAX_FILES - 1]);
+        c.add(10, vec![PathBuf::from("b")]);
+        assert_eq!(
+            (c.files.len(), c.bytes, c.overflow),
+            (COLLECT_MAX_FILES, 20, false)
+        );
+        c.add(2, vec![PathBuf::from("c")]);
+        assert!(c.overflow);
+        c.add(0, Vec::new()); // nothing more once over
+        assert_eq!(c.files.len(), COLLECT_MAX_FILES);
+
+        let mut c = Collected::default();
+        c.add(COLLECT_MAX_BYTES, vec![PathBuf::from("a")]);
+        assert!(!c.overflow);
+        c.add(1, vec![PathBuf::from("b")]);
+        assert!(c.overflow);
+        assert_eq!(c.files, vec![PathBuf::from("a")]);
+    }
+
+    #[test]
+    fn compares_exe_paths_like_windows() {
+        let same = |a: &str, b: &str| same_exe_path(Path::new(a), Path::new(b));
+        assert!(same(
+            r"C:\Users\U\AppData\Local\Programs\Hoppy\hoppyw.exe",
+            r"c:\users\u\appdata\local\programs\hoppy\HOPPYW.EXE"
+        ));
+        assert!(same(r"\\?\C:\H\hoppyw.exe", r"C:\H\hoppyw.exe"));
+        assert!(!same(r"C:\H\hoppyw.exe", r"C:\H\hoppy.exe"));
+        assert!(!same(r"C:\Evil\hoppyw.exe", r"C:\H\hoppyw.exe"));
     }
 
     #[test]

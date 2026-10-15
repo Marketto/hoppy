@@ -46,7 +46,8 @@ object TransferClient {
     private const val CONNECT_TIMEOUT_MS = 5_000
     /** Direct attempt before falling back to a callback (spec §6). */
     const val DIRECT_CONNECT_TIMEOUT_MS = 3_000
-    private const val CALLBACK_HELLO_TIMEOUT_MS = 3_000
+    /** One deadline for the whole callback hello, not per read (spec §6 step 3). */
+    private const val CALLBACK_HELLO_TIMEOUT_MS = 3_000L
     private const val DECISION_TIMEOUT_MS = 120_000 // a human may be deciding
     private const val IO_TIMEOUT_MS = 30_000
 
@@ -129,11 +130,14 @@ object TransferClient {
                     } catch (e: SocketTimeoutException) {
                         null
                     }
-                    if (client != null) {
-                        // A wrong or silent client is dropped; keep waiting for the real one.
+                    // Only the peer's known IP may connect back (spec §6 step 3): anything else
+                    // is closed unread. A wrong, slow or silent client is dropped too.
+                    if (client != null && client.inetAddress != peer.address) {
+                        client.close()
+                    } else if (client != null) {
                         try {
-                            client.soTimeout = CALLBACK_HELLO_TIMEOUT_MS
-                            val (id, got) = Protocol.readCallbackHello(client.getInputStream()) // unbuffered: no read-ahead
+                            val input = DeadlineInputStream(client, System.currentTimeMillis() + CALLBACK_HELLO_TIMEOUT_MS)
+                            val (id, got) = Protocol.readCallbackHello(input) // unbuffered: no read-ahead
                             if (Protocol.tokensEqual(got, token) && id == peer.device.id) return client
                         } catch (e: IOException) {
                             // fall through
@@ -197,21 +201,50 @@ object TransferClient {
     }
 }
 
+/**
+ * Reads [socket] until one overall [deadlineMs], so a peer trickling one byte at a time
+ * cannot hold the reader longer than that (slow-loris).
+ */
+private class DeadlineInputStream(private val socket: Socket, private val deadlineMs: Long) : InputStream() {
+    private val input = socket.getInputStream()
+
+    private fun arm() {
+        val left = deadlineMs - System.currentTimeMillis()
+        if (left <= 0) throw SocketTimeoutException("callback hello deadline passed")
+        socket.soTimeout = left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    override fun read(): Int { arm(); return input.read() }
+    override fun read(b: ByteArray, off: Int, len: Int): Int { arm(); return input.read(b, off, len) }
+}
+
 /** Receiver side of spec §6: connect back to a sender that asked for it. */
 object CallbackReceiver {
     /**
      * Makes [node] answer callback requests: each runs on its own background thread,
      * connects back, then behaves exactly like [TransferServer.handle] (the handler still
      * decides). Call once after creating the node; set `node.callbackHandler = null` to stop.
+     * Apps that must cancel running transfers use [answer] with [onSocket] instead.
      */
     fun install(node: DiscoveryNode, sink: FileSink, handler: ReceiveHandler) {
         node.callbackHandler = { request -> answer(request, node.me, sink, handler) }
     }
 
-    /** Connects to the requester, sends the callback hello, then serves the transfer. Never throws. */
-    fun answer(request: CallbackRequest, me: DeviceInfo, sink: FileSink, handler: ReceiveHandler) {
+    /**
+     * Connects to the requester, sends the callback hello, then serves the transfer. Never
+     * throws. [onSocket] gets the socket before connecting, so the caller can close it to
+     * cancel (e.g. when the Android service is destroyed).
+     */
+    fun answer(
+        request: CallbackRequest,
+        me: DeviceInfo,
+        sink: FileSink,
+        handler: ReceiveHandler,
+        onSocket: (Socket) -> Unit = {},
+    ) {
         val socket = Socket()
         try {
+            onSocket(socket)
             socket.connect(InetSocketAddress(request.address, request.port), DiscoveryNode.CALLBACK_CONNECT_TIMEOUT_MS)
             val out = socket.getOutputStream()
             Protocol.writeCallbackHello(out, me.id, request.token)
@@ -220,6 +253,7 @@ object CallbackReceiver {
             socket.close()
             return
         }
+        request.markConnected()
         TransferServer.handle(socket, sink, handler)
     }
 }

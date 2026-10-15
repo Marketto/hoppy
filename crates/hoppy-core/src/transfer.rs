@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::Error;
 use crate::discovery::{
     CALLBACK_CONNECT_TIMEOUT, CALLBACK_RESEND, CALLBACK_WINDOW, CallbackRequest, Discovery, Peer,
+    same_ip,
 };
 use crate::protocol::{
     self, CallbackHello, Decision, DeviceInfo, FileEntry, HASH_LEN, MAX_FILES, Offer,
@@ -25,7 +26,7 @@ const CHUNK: usize = 256 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Direct connect timeout before `send_to_peer` falls back to a callback (spec §6).
 pub const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long the sender waits for the callback hello on an accepted connection.
+/// Deadline for the whole callback hello on an accepted connection (not per read).
 const CALLBACK_HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// The receiver may be waiting for a human to press "Accept".
 const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -121,12 +122,14 @@ fn connect_via_callback(peer: &Peer, discovery: &Discovery) -> Result<TcpStream,
     let mut next_resend = start + CALLBACK_RESEND;
     loop {
         match listener.accept() {
-            Ok((stream, _)) => {
-                // A wrong or silent client is dropped; keep waiting for the real one.
+            // Only the peer's known IP may connect back (spec §6 step 3); anything else is
+            // closed before we read a byte. A wrong or silent client is dropped too.
+            Ok((stream, from)) if same_ip(from.ip(), peer.addr.ip()) => {
                 if let Ok(stream) = check_callback_hello(stream, &token, &peer.device.id) {
                     return Ok(stream);
                 }
             }
+            Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(_) => {} // e.g. ECONNABORTED: transient, retry until the window closes
         }
@@ -148,12 +151,33 @@ fn connect_via_callback(peer: &Peer, discovery: &Discovery) -> Result<TcpStream,
 
 fn check_callback_hello(stream: TcpStream, token: &str, peer_id: &str) -> Result<TcpStream, Error> {
     stream.set_nonblocking(false)?; // accepted sockets may inherit non-blocking mode
-    stream.set_read_timeout(Some(CALLBACK_HELLO_TIMEOUT))?;
-    let hello = protocol::read_callback_hello(&mut &stream)?;
+    let mut reader = DeadlineReader {
+        stream: &stream,
+        deadline: Instant::now() + CALLBACK_HELLO_TIMEOUT,
+    };
+    let hello = protocol::read_callback_hello(&mut reader)?;
     if protocol::tokens_equal(&hello.token, token) && hello.id == peer_id {
         Ok(stream)
     } else {
         Err(Error::Protocol("callback token mismatch".into()))
+    }
+}
+
+/// Reads from a socket until one overall deadline, so a peer trickling one byte at a time
+/// cannot hold the reader longer than that (slow-loris).
+struct DeadlineReader<'a> {
+    stream: &'a TcpStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
     }
 }
 
@@ -304,6 +328,7 @@ pub fn answer_callback(
         token: request.token.clone(),
     };
     protocol::write_callback_hello(&mut &stream, &hello).ok()?;
+    request.mark_connected();
     receive_one(stream, request.addr, dir, handler)
 }
 

@@ -6,7 +6,11 @@
 //! - `log` never blocks: lines go through a channel to one writer thread (the UI thread must
 //!   not do file I/O). Before `init`, and in the `hoppy` CLI, it does nothing.
 //! - One line per entry: UTC timestamp, process id, role, message (newlines flattened).
-//!   No file contents, no file names: only counts, ids and error texts.
+//! - Privacy: no file contents, file names or paths. Logged: counts, sizes, ids, versions
+//!   and errors: hoppy-core errors only as their category (`error_kind`; their texts can
+//!   carry received names), other errors as text with anything path-like replaced by
+//!   `<path>` (`redact_paths`, applied to every line by `format_line`). Local and peer IP
+//!   addresses and device names may appear (network diagnosis).
 //! - Rotation: when the file would exceed `MAX_LOG` it becomes `hoppy.log.1` (one backup).
 //! - `UiWatch`: times UI-thread handlers (modal menus/dialogs excluded), logs those over
 //!   `SLOW_HANDLER`, and a watchdog thread logs a handler still running after `STUCK`.
@@ -99,13 +103,82 @@ pub fn flush(timeout: Duration) {
     }
 }
 
-/// `2026-10-15 08:30:01.250Z [1234 tray] message`, control characters flattened.
+/// `2026-10-15 08:30:01.250Z [1234 tray] message`, control characters flattened, paths
+/// redacted (`redact_paths`).
 pub fn format_line(now: SystemTime, pid: u32, role: &str, msg: &str) -> String {
     let clean: String = msg
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    format!("{} [{pid} {role}] {clean}\n", utc_stamp(now))
+    format!(
+        "{} [{pid} {role}] {}\n",
+        utc_stamp(now),
+        redact_paths(&clean)
+    )
+}
+
+/// Replaces anything path-like with `<path>`: `X:\…`/`X:/…` (also `X:\\…` from `{:?}`),
+/// `\\…` (UNC, `\\?\`) and `/…` at a word start. Windows names may contain spaces, so a
+/// path runs to a character Windows forbids in names (`"`, `<`, `>`, `|`), to `": "` / `"; "`
+/// (as in `context: cause`) or to the end of the line. Over-redacting is fine.
+pub fn redact_paths(text: &str) -> String {
+    let c: Vec<char> = text.chars().collect();
+    let boundary = |i: usize| i == 0 || matches!(c[i - 1], ' ' | '(' | '[' | '"' | '\'' | '=');
+    let starts_path = |i: usize| {
+        let at = |k: usize| c.get(i + k).copied();
+        let drive =
+            c[i].is_ascii_alphabetic() && at(1) == Some(':') && matches!(at(2), Some('\\' | '/'));
+        let unc = c[i] == '\\' && at(1) == Some('\\');
+        let unix = c[i] == '/' && at(1).is_some_and(|n| !n.is_whitespace() && n != '/');
+        boundary(i) && (drive || unc || unix)
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < c.len() {
+        if !starts_path(i) {
+            out.push(c[i]);
+            i += 1;
+            continue;
+        }
+        out.push_str("<path>");
+        while i < c.len()
+            && !matches!(c[i], '"' | '<' | '>' | '|')
+            && !(matches!(c[i], ':' | ';') && c.get(i + 1) == Some(&' '))
+        {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Log text for a hoppy-core error: its category only (I/O errors with their kind). The
+/// message may hold peer-chosen text (offer JSON, file names, remote errors) or paths.
+pub fn error_kind(e: &hoppy_core::Error) -> String {
+    use hoppy_core::Error;
+    match e {
+        Error::Io(io) => format!("I/O error ({:?})", io.kind()),
+        Error::Protocol(_) => "protocol error".into(),
+        Error::Input(_) => "input error".into(),
+        Error::Remote(_) => "remote error".into(),
+        Error::Unreachable(_) => "peer unreachable".into(),
+    }
+}
+
+/// Log text for an `anyhow` chain: hoppy-core errors as `error_kind` (and nothing below
+/// them), I/O errors as their kind, other messages as text (paths redacted on output).
+pub fn error_chain(e: &anyhow::Error) -> String {
+    let mut parts = Vec::new();
+    for cause in e.chain() {
+        if let Some(core) = cause.downcast_ref::<hoppy_core::Error>() {
+            parts.push(error_kind(core));
+            break;
+        }
+        match cause.downcast_ref::<io::Error>() {
+            Some(io) => parts.push(format!("I/O error ({:?})", io.kind())),
+            None => parts.push(cause.to_string()),
+        }
+    }
+    parts.join(": ")
 }
 
 /// UTC `YYYY-MM-DD hh:mm:ss.mmmZ` without a date/time dependency.
@@ -268,6 +341,56 @@ impl Drop for Handler<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_are_redacted() {
+        let cases = [
+            (
+                r"Not a file: C:\Users\Mario Rossi\Downloads\foto 1.jpg",
+                "Not a file: <path>",
+            ),
+            (
+                r"reading C:\Users\M\AppData\device.json: Access is denied. (os error 5)",
+                "reading <path>: Access is denied. (os error 5)",
+            ),
+            (r#"open "C:\\x\\a b.txt" failed"#, r#"open "<path>" failed"#),
+            (r"\\?\D:\x and \\nas\share\y", "<path>"),
+            (
+                "cannot open /home/u/a b.txt: denied",
+                "cannot open <path>: denied",
+            ),
+            (
+                "opening https://hoppy.example/download failed, 1/2, TCP/IP",
+                "opening https://hoppy.example/download failed, 1/2, TCP/IP",
+            ),
+            (
+                "offer from 192.168.1.20 accepted=true",
+                "offer from 192.168.1.20 accepted=true",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact_paths(input), want, "{input}");
+        }
+        let line = format_line(UNIX_EPOCH, 1, "send", r"failed: E:\secret.txt");
+        assert!(line.ends_with("failed: <path>\n"), "{line}");
+    }
+
+    #[test]
+    fn core_errors_are_logged_by_kind_only() {
+        use hoppy_core::Error;
+        let e = Error::Remote("hash mismatch: diary.txt".into());
+        assert_eq!(error_kind(&e), "remote error");
+        let io = io::Error::new(io::ErrorKind::NotFound, "secret.txt");
+        assert_eq!(error_kind(&Error::Io(io)), "I/O error (NotFound)");
+        let chain = anyhow::Error::new(Error::Input("x.txt is not a regular file".into()))
+            .context("sending");
+        assert_eq!(error_chain(&chain), "sending: input error");
+        let chain = anyhow::Error::new(io::Error::other("x")).context(r"reading C:\a\b.json");
+        assert_eq!(
+            redact_paths(&error_chain(&chain)),
+            "reading <path>: I/O error (Other)"
+        );
+    }
 
     #[test]
     fn stamps_are_utc_civil_dates() {

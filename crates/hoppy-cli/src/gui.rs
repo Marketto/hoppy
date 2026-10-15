@@ -354,7 +354,7 @@ pub fn run(args: Vec<OsString>) -> i32 {
     let code = match result {
         Ok(()) => 0,
         Err(e) => {
-            diag::log(format!("exit with error: {e:#}"));
+            diag::log(format!("exit with error: {}", diag::error_chain(&e)));
             win::message_box_error("Hoppy", &format!("{e:#}"));
             1
         }
@@ -438,7 +438,11 @@ impl ReceiveHandler for GuiReceiver {
                 action: BalloonAction::OpenDir,
             },
             Err(e) => {
-                diag::log(format!("receive: from {} failed: {e}", from.ip()));
+                diag::log(format!(
+                    "receive: from {} failed: {}",
+                    from.ip(),
+                    diag::error_kind(e)
+                ));
                 Notice {
                     title: fill(self.s.receive_failed, &[("name", &name)]),
                     text: display_text(&e.to_string(), SHOW_TEXT_MAX),
@@ -1254,7 +1258,7 @@ struct SendState {
 
 enum SendError {
     /// Neither direct nor callback reached the peer: show the firewall hint.
-    Unreachable(String),
+    Unreachable,
     Other(String),
 }
 
@@ -1279,8 +1283,9 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     } else {
         // "Send with Hoppy" on several files: one process per file, merged here.
         match platform::gather_send_files(files) {
-            Some(files) => files,
-            None => return Ok(()), // handed to the first instance
+            Ok(Some(files)) => files,
+            Ok(None) => return Ok(()), // handed to the first instance
+            Err(TooManyFiles) => bail!("{}", s.too_many_files),
         }
     };
     if files.is_empty() {
@@ -1370,12 +1375,9 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     }
                     // Our jingle is the sound of success; skip the system one on top of it.
                     let sound = !(delivered && music.enabled);
-                    match &outcome {
-                        Err(SendError::Unreachable(e)) => {
-                            diag::log(format!("send: unreachable: {e}"))
-                        }
-                        Err(SendError::Other(e)) => diag::log(format!("send: failed: {e}")),
-                        Ok(_) => diag::log(format!("send: done (callback: {fallback})")),
+                    // Failures were logged by kind in `spawn_send` (texts may hold names).
+                    if outcome.is_ok() {
+                        diag::log(format!("send: done (callback: {fallback})"));
                     }
                     let (title, text, error) = match outcome {
                         Ok(SendOutcome::Delivered) => (s.delivered, String::new(), false),
@@ -1384,7 +1386,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                             let reason = reason.filter(|r| r != "declined").unwrap_or_default();
                             (s.declined, display_text(&reason, SHOW_TEXT_MAX), true)
                         }
-                        Err(SendError::Unreachable(_)) => {
+                        Err(SendError::Unreachable) => {
                             (s.unreachable_title, s.unreachable_text.to_owned(), true)
                         }
                         Err(SendError::Other(e)) => {
@@ -1472,8 +1474,11 @@ fn spawn_send(
             }
             _ => {}
         });
+        if let Err(e) = &result {
+            diag::log(format!("send: failed: {}", diag::error_kind(e)));
+        }
         lock(&state).outcome = Some(result.map_err(|e| match e {
-            Error::Unreachable(detail) => SendError::Unreachable(detail),
+            Error::Unreachable(_) => SendError::Unreachable,
             e => SendError::Other(e.to_string()),
         }));
         waker.wake();

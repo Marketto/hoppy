@@ -24,3 +24,12 @@ infrastructure; worst-case latency ≈ one announce interval (5 s). Does not hel
 sides block inbound, across subnets, or when the sender is a send-only node behind a strict
 firewall: those need a relay (v1 roadmap). The token is not authentication (ADR 0003 still
 applies). All three implementations and the interop test cover it.
+
+Hardening after protocol review (same date, spec §6): while a callback is pending the
+sender trusts announces/queries carrying the receiver's id, and callback connections, only
+from the receiver's known (local) IP, so another LAN host cannot collect the token just by
+claiming the id; the callback hello has one 3 s deadline and a 1 KiB frame cap (no
+slow-loris). Receivers cap attempts at 10/min per source IP and 30/min in total, and
+record a token as used only after a successful connect-back so a re-send can retry. A
+forged UDP source can still make a receiver connect to a local IP:port and write the fixed
+`HOPC` hello; accepted as low impact for v0.

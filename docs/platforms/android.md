@@ -28,7 +28,10 @@
   restart) to `CallbackReceiver.answer` with the same sink and per-connection handler as
   the TCP accept loop, so the accept prompt, `receiving` flag (music silence) and
   end-of-receive notification apply to connected-back transfers too. The node only
-  answers while `receivePort != 0`.
+  answers while `receivePort != 0`. Callback transfers run on `DiscoveryNode` threads, not
+  on the service pool, so the service tracks every transfer socket (direct and callback,
+  via `answer(..., onSocket)`) and closes them in `onDestroy`; an open Accept prompt is
+  declined, partial files are aborted.
 - Send errors: if neither the direct connection nor the callback works (connect timeout /
   refused / no route, `PeerUnreachableException` from `:core`), the send screen says it cannot reach the device
   and suggests allowing Hoppy in the Windows firewall (*Private networks*) and checking both

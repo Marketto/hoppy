@@ -21,9 +21,11 @@ pub const CALLBACK_WINDOW: Duration = Duration::from_secs(20);
 pub const CALLBACK_RESEND: Duration = Duration::from_secs(2);
 /// Receiver-side TCP connect timeout when connecting back.
 pub const CALLBACK_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-/// Receiver-side cap on callbacks started per rolling minute (all sources together).
+/// Receiver-side cap on callback attempts started per rolling minute, per source IP.
 pub const MAX_CALLBACKS_PER_MINUTE: usize = 10;
-/// Receiver remembers handled tokens this long to drop the sender's re-sends.
+/// Receiver-side cap on callback attempts started per rolling minute, all sources together.
+pub const MAX_CALLBACKS_PER_MINUTE_TOTAL: usize = 30;
+/// Receiver remembers tokens that connected back this long to drop the sender's re-sends.
 const TOKEN_MEMORY: Duration = Duration::from_secs(120);
 const MAX_REMEMBERED_TOKENS: usize = 256;
 
@@ -67,13 +69,31 @@ struct Seen {
 }
 
 /// A receiver-side request to connect back (spec §6), already validated and rate-limited.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct CallbackRequest {
     /// The sender as it described itself in the datagram (display only, not authenticated).
     pub sender: DeviceInfo,
     /// UDP source IP of the datagram + the requested port. Never an IP from the JSON.
     pub addr: SocketAddr,
     pub token: String,
+    connected: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl CallbackRequest {
+    /// Call once the TCP connect succeeded and the callback hello was written: only then
+    /// is the token recorded as used, so a re-send after a failed connect can retry.
+    pub fn mark_connected(&self) {
+        (self.connected)();
+    }
+}
+
+impl std::fmt::Debug for CallbackRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackRequest")
+            .field("sender", &self.sender)
+            .field("addr", &self.addr)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Receiver-side hook: connect to `addr`, send the callback hello, receive. Runs on its
@@ -83,6 +103,8 @@ pub type CallbackHook = Arc<dyn Fn(CallbackRequest) + Send + Sync>;
 /// Sender-side outstanding request (see [`Discovery::request_callback`]).
 struct Pending {
     peer_id: String,
+    /// The IP the peer was discovered at: only datagrams from it may carry its id (spec §6).
+    peer_ip: IpAddr,
     port: u16,
     token: String,
 }
@@ -193,6 +215,7 @@ impl Discovery {
             key,
             Pending {
                 peer_id: peer.device.id.clone(),
+                peer_ip: peer.addr.ip(),
                 port,
                 token: token.to_string(),
             },
@@ -205,6 +228,7 @@ impl Discovery {
             inner: self.inner.clone(),
             key,
             peer_id: peer.device.id.clone(),
+            peer_ip: peer.addr.ip(),
             fallback: SocketAddr::new(peer.addr.ip(), DISCOVERY_PORT),
             payload: DiscoveryMessage::callback(
                 &self.inner.config.me,
@@ -260,6 +284,7 @@ pub struct CallbackTicket {
     inner: Arc<Inner>,
     key: u64,
     peer_id: String,
+    peer_ip: IpAddr,
     /// Used when the peer's discovery address is unknown (e.g. it already expired).
     fallback: SocketAddr,
     payload: Vec<u8>,
@@ -275,6 +300,7 @@ impl CallbackTicket {
             .expect("peer map poisoned")
             .get(&self.peer_id)
             .map(|s| s.udp)
+            .filter(|udp| same_ip(udp.ip(), self.peer_ip))
             .unwrap_or(self.fallback);
         let _ = self.inner.socket.send_to(&self.payload, target);
     }
@@ -353,47 +379,59 @@ fn bind_announce_listener() -> io::Result<UdpSocket> {
 /// Receiver-side admission control for callbacks (spec §6 "Limits").
 #[derive(Default)]
 pub(crate) struct CallbackLimiter {
-    tokens: VecDeque<(String, Instant)>,
+    /// Tokens that connected back (see [`Self::mark_used`]).
+    used: VecDeque<(String, Instant)>,
     outstanding: HashSet<IpAddr>,
-    started: VecDeque<Instant>,
+    started: VecDeque<(IpAddr, Instant)>,
 }
 
 impl CallbackLimiter {
     /// `true` if a callback from `ip` with `token` may start now; then the caller must
-    /// call [`Self::release`] when it ends.
+    /// call [`Self::release`] when it ends, and [`Self::mark_used`] if it connected.
     pub(crate) fn admit(&mut self, ip: IpAddr, token: &str, now: Instant) -> bool {
         while self
-            .tokens
+            .used
             .front()
             .is_some_and(|(_, t)| now.duration_since(*t) > TOKEN_MEMORY)
         {
-            self.tokens.pop_front();
+            self.used.pop_front();
         }
         while self
             .started
             .front()
-            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+            .is_some_and(|(_, t)| now.duration_since(*t) >= Duration::from_secs(60))
         {
             self.started.pop_front();
         }
-        if self.tokens.iter().any(|(t, _)| t == token)
+        let from_ip = self.started.iter().filter(|(i, _)| *i == ip).count();
+        if self.used.iter().any(|(t, _)| t == token)
             || self.outstanding.contains(&ip)
-            || self.started.len() >= MAX_CALLBACKS_PER_MINUTE
+            || from_ip >= MAX_CALLBACKS_PER_MINUTE
+            || self.started.len() >= MAX_CALLBACKS_PER_MINUTE_TOTAL
         {
             return false;
         }
-        if self.tokens.len() >= MAX_REMEMBERED_TOKENS {
-            self.tokens.pop_front();
-        }
-        self.tokens.push_back((token.to_string(), now));
         self.outstanding.insert(ip);
-        self.started.push_back(now);
+        self.started.push_back((ip, now));
         true
+    }
+
+    /// The connect-back with `token` succeeded: drop its re-sends from now on.
+    pub(crate) fn mark_used(&mut self, token: &str, now: Instant) {
+        if self.used.len() >= MAX_REMEMBERED_TOKENS {
+            self.used.pop_front();
+        }
+        self.used.push_back((token.to_string(), now));
     }
 
     pub(crate) fn release(&mut self, ip: IpAddr) {
         self.outstanding.remove(&ip);
     }
+}
+
+/// IP equality that treats IPv4-mapped IPv6 (`::ffff:a.b.c.d`) as the IPv4 address.
+pub(crate) fn same_ip(a: IpAddr, b: IpAddr) -> bool {
+    a.to_canonical() == b.to_canonical()
 }
 
 /// Spec §6: a receiver only connects back to loopback, private (RFC 1918), CGNAT
@@ -505,6 +543,17 @@ fn receive_loop(inner: &Arc<Inner>, rx: &UdpSocket, stop: &AtomicBool) {
                 map.remove(&msg.id);
             }
             MessageKind::Announce | MessageKind::Query => {
+                // While we wait for this id to connect back, only its known IP may speak
+                // for it: a claim from elsewhere would collect the token (spec §6 step 2).
+                let claimed = inner
+                    .pending
+                    .lock()
+                    .expect("pending poisoned")
+                    .values()
+                    .any(|p| p.peer_id == msg.id && !trusted_source(p.peer_ip, from.ip()));
+                if claimed {
+                    continue;
+                }
                 if msg.port != 0 {
                     let peer = Peer {
                         device: msg.device(),
@@ -543,6 +592,11 @@ fn receive_loop(inner: &Arc<Inner>, rx: &UdpSocket, stop: &AtomicBool) {
 }
 
 /// Receiver side of spec §6: validate, rate-limit, then run the hook on its own thread.
+/// `from` may speak for a peer discovered at `known` (spec §6 sender step 2).
+fn trusted_source(known: IpAddr, from: IpAddr) -> bool {
+    same_ip(known, from) && is_local_address(from)
+}
+
 fn handle_callback(inner: &Arc<Inner>, msg: DiscoveryMessage, from: SocketAddr) {
     if inner.config.transfer_port == 0 || msg.to.as_deref() != Some(inner.config.me.id.as_str()) {
         return;
@@ -563,10 +617,17 @@ fn handle_callback(inner: &Arc<Inner>, msg: DiscoveryMessage, from: SocketAddr) 
     {
         return;
     }
+    let marker = (inner.clone(), token.clone());
     let request = CallbackRequest {
         sender: msg.device(),
         addr: SocketAddr::new(ip, msg.port),
         token,
+        connected: Arc::new(move || {
+            let (inner, token) = &marker;
+            if let Ok(mut limiter) = inner.limiter.lock() {
+                limiter.mark_used(token, Instant::now());
+            }
+        }),
     };
     let inner2 = inner.clone();
     let spawned = thread::Builder::new()
@@ -682,19 +743,37 @@ mod tests {
         assert!(l.admit(a, "t1", now));
         assert!(!l.admit(a, "t2", now), "one outstanding per source IP");
         l.release(a);
-        assert!(!l.admit(a, "t1", now), "duplicate token");
-        assert!(l.admit(a, "t2", now));
+        assert!(l.admit(a, "t1", now), "failed connect: the token may retry");
+        l.mark_used("t1", now);
         l.release(a);
+        assert!(!l.admit(a, "t1", now), "token that connected back");
         for i in 3..=MAX_CALLBACKS_PER_MINUTE {
-            assert!(l.admit(ip(&format!("10.0.0.{i}")), &format!("t{i}"), now));
+            assert!(l.admit(a, &format!("t{i}"), now), "attempt {i}");
+            l.release(a);
         }
-        assert!(!l.admit(ip("10.0.1.1"), "fresh", now), "per-minute cap");
+        assert!(!l.admit(a, "fresh", now), "per-IP cap");
+        let mut n = MAX_CALLBACKS_PER_MINUTE;
+        for i in 0..MAX_CALLBACKS_PER_MINUTE_TOTAL - n {
+            assert!(l.admit(ip(&format!("10.0.0.{i}")), &format!("u{i}"), now));
+            n += 1;
+        }
+        assert_eq!(n, MAX_CALLBACKS_PER_MINUTE_TOTAL);
+        assert!(!l.admit(ip("10.0.1.1"), "other", now), "global cap");
         let later = now + Duration::from_secs(61);
-        assert!(l.admit(ip("10.0.1.1"), "fresh", later));
+        assert!(l.admit(ip("10.0.1.1"), "other", later));
         assert!(
             !l.admit(ip("10.0.1.2"), "t1", later),
-            "tokens remembered for 2 min"
+            "used tokens remembered for 2 min"
         );
         assert!(l.admit(ip("10.0.1.2"), "t1", now + Duration::from_secs(181)));
+    }
+
+    #[test]
+    fn trusted_source_needs_known_local_ip() {
+        let known = ip("192.168.1.20");
+        assert!(trusted_source(known, ip("192.168.1.20")));
+        assert!(trusted_source(known, ip("::ffff:192.168.1.20")));
+        assert!(!trusted_source(known, ip("192.168.1.21")));
+        assert!(!trusted_source(ip("8.8.8.8"), ip("8.8.8.8")));
     }
 }
