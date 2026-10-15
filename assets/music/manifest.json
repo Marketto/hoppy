@@ -8,13 +8,14 @@
       "kind": "idle",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 341419,
-      "ms": 15483.855,
-      "bpm": 124,
+      "samples": 392000,
+      "ms": 17777.778,
+      "bpm": 108,
       "key": "D major",
+      "rms_db": -24.0,
       "bars": 8,
       "beats_per_bar": 4,
-      "bar_ms": 1935.484
+      "bar_ms": 2222.222
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_purikura_transfer.ogg",
@@ -23,13 +24,14 @@
       "kind": "transfer",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 492279,
-      "ms": 22325.578,
-      "bpm": 172,
+      "samples": 627200,
+      "ms": 28444.444,
+      "bpm": 135,
       "key": "D major",
+      "rms_db": -24.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 1395.349
+      "bar_ms": 1777.778
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_purikura_done.ogg",
@@ -41,7 +43,8 @@
       "samples": 44100,
       "ms": 2000.0,
       "bpm": 160,
-      "key": "D major"
+      "key": "D major",
+      "rms_db": -21.0
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_showa_idle.ogg",
@@ -50,13 +53,14 @@
       "kind": "idle",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 378000,
-      "ms": 17142.857,
-      "bpm": 112,
+      "samples": 432000,
+      "ms": 19591.837,
+      "bpm": 98,
       "key": "G major (yonanuki: G A B D E)",
+      "rms_db": -24.0,
       "bars": 8,
       "beats_per_bar": 4,
-      "bar_ms": 2142.857
+      "bar_ms": 2448.98
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_showa_transfer.ogg",
@@ -65,13 +69,14 @@
       "kind": "transfer",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 542769,
-      "ms": 24615.374,
-      "bpm": 156,
+      "samples": 694033,
+      "ms": 31475.42,
+      "bpm": 122,
       "key": "G major (yonanuki: G A B D E)",
+      "rms_db": -24.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 1538.462
+      "bar_ms": 1967.213
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_showa_done.ogg",
@@ -83,7 +88,8 @@
       "samples": 46305,
       "ms": 2100.0,
       "bpm": 140,
-      "key": "G major (yonanuki: G A B D E)"
+      "key": "G major (yonanuki: G A B D E)",
+      "rms_db": -21.0
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_manga_idle.ogg",
@@ -92,13 +98,14 @@
       "kind": "idle",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 330750,
-      "ms": 15000.0,
-      "bpm": 128,
+      "samples": 378000,
+      "ms": 17142.857,
+      "bpm": 112,
       "key": "C major (chromatic comic accents)",
+      "rms_db": -24.0,
       "bars": 8,
       "beats_per_bar": 4,
-      "bar_ms": 1875.0
+      "bar_ms": 2142.857
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_manga_transfer.ogg",
@@ -107,13 +114,14 @@
       "kind": "transfer",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 470400,
-      "ms": 21333.333,
-      "bpm": 180,
+      "samples": 604800,
+      "ms": 27428.571,
+      "bpm": 140,
       "key": "C major (chromatic comic accents)",
+      "rms_db": -24.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 1333.333
+      "bar_ms": 1714.286
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_manga_done.ogg",
@@ -125,7 +133,8 @@
       "samples": 41895,
       "ms": 1900.0,
       "bpm": 150,
-      "key": "C major (chromatic comic accents)"
+      "key": "C major (chromatic comic accents)",
+      "rms_db": -21.0
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_yume_idle.ogg",
@@ -134,13 +143,14 @@
       "kind": "idle",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 460174,
-      "ms": 20869.569,
-      "bpm": 92,
+      "samples": 529200,
+      "ms": 24000.0,
+      "bpm": 80,
       "key": "F lydian (F G A B C D E)",
+      "rms_db": -24.0,
       "bars": 8,
       "beats_per_bar": 4,
-      "bar_ms": 2608.696
+      "bar_ms": 3000.0
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_yume_transfer.ogg",
@@ -149,13 +159,14 @@
       "kind": "transfer",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 661500,
-      "ms": 30000.0,
-      "bpm": 128,
+      "samples": 846720,
+      "ms": 38400.0,
+      "bpm": 100,
       "key": "F lydian (F G A B C D E)",
+      "rms_db": -24.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 1875.0
+      "bar_ms": 2400.0
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_yume_done.ogg",
@@ -167,7 +178,8 @@
       "samples": 52920,
       "ms": 2400.0,
       "bpm": 120,
-      "key": "F lydian (F G A B C D E)"
+      "key": "F lydian (F G A B C D E)",
+      "rms_db": -21.0
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_night_idle.ogg",
@@ -176,13 +188,14 @@
       "kind": "idle",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 470400,
-      "ms": 21333.333,
-      "bpm": 90,
+      "samples": 542769,
+      "ms": 24615.374,
+      "bpm": 78,
       "key": "D minor (dorian/aeolian, m7/m9 chords)",
+      "rms_db": -24.0,
       "bars": 8,
       "beats_per_bar": 4,
-      "bar_ms": 2666.667
+      "bar_ms": 3076.923
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_night_transfer.ogg",
@@ -191,13 +204,14 @@
       "kind": "transfer",
       "loop": true,
       "sample_rate": 22050,
-      "samples": 682839,
-      "ms": 30967.755,
-      "bpm": 124,
+      "samples": 864000,
+      "ms": 39183.673,
+      "bpm": 98,
       "key": "D minor (dorian/aeolian, m7/m9 chords)",
+      "rms_db": -24.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 1935.484
+      "bar_ms": 2448.98
     },
     {
       "file": "apps/android/app/src/main/res/raw/music_night_done.ogg",
@@ -209,7 +223,8 @@
       "samples": 52920,
       "ms": 2400.0,
       "bpm": 110,
-      "key": "D minor (dorian/aeolian, m7/m9 chords)"
+      "key": "D minor (dorian/aeolian, m7/m9 chords)",
+      "rms_db": -21.0
     },
     {
       "file": "assets/music/desktop_idle.wav",
@@ -217,29 +232,15 @@
       "theme": "purikura",
       "kind": "idle",
       "loop": true,
-      "sample_rate": 16000,
-      "samples": 247742,
-      "ms": 15483.875,
-      "bpm": 124,
+      "sample_rate": 12000,
+      "samples": 213333,
+      "ms": 17777.75,
+      "bpm": 108,
       "key": "D major",
+      "rms_db": -26.0,
       "bars": 8,
       "beats_per_bar": 4,
-      "bar_ms": 1935.484
-    },
-    {
-      "file": "assets/music/desktop_transfer.wav",
-      "resource": "desktop_transfer",
-      "theme": "purikura",
-      "kind": "transfer",
-      "loop": true,
-      "sample_rate": 16000,
-      "samples": 178605,
-      "ms": 11162.812,
-      "bpm": 172,
-      "key": "D major",
-      "bars": 8,
-      "beats_per_bar": 4,
-      "bar_ms": 1395.349
+      "bar_ms": 2222.222
     },
     {
       "file": "assets/music/desktop_done.wav",
@@ -251,7 +252,8 @@
       "samples": 32000,
       "ms": 2000.0,
       "bpm": 160,
-      "key": "D major"
+      "key": "D major",
+      "rms_db": -21.0
     },
     {
       "file": "site/music/portal.ogg",
@@ -260,13 +262,14 @@
       "kind": "loop",
       "loop": true,
       "sample_rate": 32000,
-      "samples": 1280000,
-      "ms": 40000.0,
-      "bpm": 96,
+      "samples": 1462857,
+      "ms": 45714.281,
+      "bpm": 84,
       "key": "Eb major (maj7/add9)",
+      "rms_db": -26.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 2500.0
+      "bar_ms": 2857.143
     },
     {
       "file": "site/music/portal.mp3",
@@ -275,13 +278,14 @@
       "kind": "loop",
       "loop": true,
       "sample_rate": 32000,
-      "samples": 1280000,
-      "ms": 40000.0,
-      "bpm": 96,
+      "samples": 1462857,
+      "ms": 45714.281,
+      "bpm": 84,
       "key": "Eb major (maj7/add9)",
+      "rms_db": -26.0,
       "bars": 16,
       "beats_per_bar": 4,
-      "bar_ms": 2500.0
+      "bar_ms": 2857.143
     }
   ]
 }

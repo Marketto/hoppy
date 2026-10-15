@@ -15,9 +15,11 @@ PoC UX (no console windows):
   dialog first; one process per file from the verb, merged by the first one): tray icon
   "Looking for devices…", then a
   popup menu at the mouse cursor lists nearby devices → click one → progress in the tray
-  tooltip → final balloon → the process exits a few seconds later. Music (sender only,
-  unless `music: false` in device.json): idle loop → transfer loop once accepted → done
-  jingle; stopped on decline/error/cancel/exit. Rules: `docs/design/themes.md` "Music".
+  tooltip → final balloon → the process exits a few seconds later. Sound: silent while
+  searching/menu/sending; only the done jingle on delivery (replaces the balloon's system
+  sound), unless `music: false` in device.json (tray item "♪ Sound when delivered",
+  `hoppy music on|off`; field name kept for compatibility). The tray receiver plays no
+  jingle (balloon system sound only). Rules: `docs/design/themes.md` "Music".
   Alternative: click the tray icon → *Send files…* (native Open dialog).
 
 ## Pieces
@@ -79,8 +81,9 @@ PoC UX (no console windows):
   `install()`, `run_elevated` (`ShellExecuteExW` "runas", hidden, returns an `Elevated`
   process handle to wait on; UAC "No" = `ElevationDeclined`; needs the
   `Win32_System_Registry` feature for `SHELLEXECUTEINFOW`), `no_window` (CREATE_NO_WINDOW
-  for netsh/powershell children of the GUI exe), and `play_tune`/`stop_tune` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`, WAVs
-  from `assets/music/` embedded with `include_bytes!` only in Windows builds). A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
+  for netsh/powershell children of the GUI exe), and `play_done_jingle`/`stop_sound` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`;
+  only `assets/music/desktop_done.wav` is embedded, with `include_bytes!`, only in Windows
+  builds). A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
   string-interpolated): `%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk` → `hoppyw.exe send`
   and `...\Startup\Hoppy receiver.lnk` → `hoppyw.exe`.
@@ -160,7 +163,7 @@ or run anything. Manual test on a real PC: tray left/right click opens the menu 
 the icon (check `hoppy log`: `delivery=notify`, no "waited" lines), right-click → Send with
 Hoppy on 1 and 20 files (one menu), classic-menu task/toggle + Explorer restart, desktop
 shortcut drop/double-click, accept dialog, balloon click, Send to menu,
-send music (idle → transfer → done, mute toggle), installer music + checkbox, update flow
+send sound (silent until delivery, then the jingle once; "♪ Sound when delivered" toggle), installer music + checkbox, update flow
 (balloon → download % → silent install → tray back; portable → portal), firewall task
 (UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`,
 callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while the tray

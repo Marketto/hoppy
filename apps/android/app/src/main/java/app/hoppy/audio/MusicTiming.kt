@@ -23,11 +23,11 @@ object MusicTiming {
      * regenerate the music → update this table (`MusicTimingTest` fails if they drift).
      */
     val BAR_MS: Map<String, Map<String, Double>> = mapOf(
-        "purikura" to mapOf(IDLE to 1935.484, TRANSFER to 1395.349),
-        "showa" to mapOf(IDLE to 2142.857, TRANSFER to 1538.462),
-        "manga" to mapOf(IDLE to 1875.0, TRANSFER to 1333.333),
-        "yume" to mapOf(IDLE to 2608.696, TRANSFER to 1875.0),
-        "night" to mapOf(IDLE to 2666.667, TRANSFER to 1935.484),
+        "purikura" to mapOf(IDLE to 2222.222, TRANSFER to 1777.778),
+        "showa" to mapOf(IDLE to 2448.98, TRANSFER to 1967.213),
+        "manga" to mapOf(IDLE to 2142.857, TRANSFER to 1714.286),
+        "yume" to mapOf(IDLE to 3000.0, TRANSFER to 2400.0),
+        "night" to mapOf(IDLE to 3076.923, TRANSFER to 2448.98),
     )
 
     fun barMs(theme: String, kind: String): Double? = BAR_MS[theme]?.get(kind)

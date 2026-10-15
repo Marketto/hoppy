@@ -3,9 +3,9 @@
 //! - `hoppyw` (no args): single instance, notification-area icon, receives into
 //!   Downloads\Hoppy asking Yes/No for each offer, balloon when done.
 //! - `hoppyw send FILE…`: searches nearby devices, shows a popup menu at the cursor, sends
-//!   with progress in the tray tooltip, final balloon, then exits. Plays music unless muted
-//!   (`music` in device.json): idle loop → transfer loop once accepted → done jingle.
-//!   The receiver never plays music. Explorer's "Send with Hoppy" verb starts one instance
+//!   with progress in the tray tooltip, final balloon, then exits. Silent while searching
+//!   and sending; on delivery plays the done jingle unless muted (`music` in device.json,
+//!   "Sound when delivered"). The receiver never plays it (its balloon has the system sound). Explorer's "Send with Hoppy" verb starts one instance
 //!   per selected file: the first collects the others' files (`platform::gather_send_files`).
 //!   Without files (desktop shortcut double-clicked) it opens the file picker first.
 //! - Updates: the tray checks GitHub Releases 30 s after start and then daily (`update.rs`);
@@ -46,7 +46,7 @@ use hoppy_core::{
 
 use crate::firewall::{self, Verdict};
 use crate::platform::win::{self, Tray, Waker};
-use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
+use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
     display_file_name, display_name, display_platform, display_text, human, start_discovery,
@@ -129,7 +129,7 @@ pub const IT: Strings = Strings {
     menu_header: "Hoppy · ricevo come {name}",
     menu_send: "Invia file…",
     menu_open: "Apri cartella ricevuti",
-    menu_music: "♪ Musica durante l'invio",
+    menu_music: "♪ Suono a fine invio",
     menu_quit: "Esci",
     pick_title: "Hoppy — scegli i file da inviare",
     already_running: "Hoppy è già attivo: trovi l'icona vicino all'orologio.",
@@ -186,7 +186,7 @@ pub const EN: Strings = Strings {
     menu_header: "Hoppy · receiving as {name}",
     menu_send: "Send files…",
     menu_open: "Open received folder",
-    menu_music: "♪ Music while sending",
+    menu_music: "♪ Sound when delivered",
     menu_quit: "Quit",
     pick_title: "Hoppy — choose files to send",
     already_running: "Hoppy is already running: look for its icon near the clock.",
@@ -1210,38 +1210,36 @@ fn spawn_sender(ctx: &Ctx, files: Vec<PathBuf>) {
 
 // ---------------------------------------------------------------- "Send to → Hoppy"
 
-/// Sender music; stops when dropped (before the process exits).
-struct Music {
+/// The sender's only sound: the done jingle on delivery. Stops when dropped (before the
+/// process exits).
+struct Jingle {
     enabled: bool,
-    playing: Option<Tune>,
+    playing: bool,
 }
 
-impl Music {
-    fn new(enabled: bool) -> Music {
-        Music {
+impl Jingle {
+    fn new(enabled: bool) -> Jingle {
+        Jingle {
             enabled,
-            playing: None,
+            playing: false,
         }
     }
 
-    /// Starts `tune` unless muted or already playing (restarting would skip the loop).
-    fn play(&mut self, tune: Tune) {
-        if self.enabled && self.playing != Some(tune) {
-            win::play_tune(tune);
-            self.playing = Some(tune);
+    /// Plays the jingle unless muted. Returns whether it plays.
+    fn play(&mut self) -> bool {
+        if self.enabled {
+            win::play_done_jingle();
+            self.playing = true;
         }
-    }
-
-    fn stop(&mut self) {
-        if self.playing.take().is_some() {
-            win::stop_tune();
-        }
+        self.enabled
     }
 }
 
-impl Drop for Music {
+impl Drop for Jingle {
     fn drop(&mut self) {
-        self.stop();
+        if self.playing {
+            win::stop_sound();
+        }
     }
 }
 
@@ -1307,9 +1305,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let discovery = Arc::new(start_discovery(&me, 0, &[])?);
 
     let tray = Tray::new(SEND_WINDOW, s.searching)?;
-    // Declared after `tray`, so it is dropped (music stopped) before the icon goes.
-    let mut music = Music::new(identity.music);
-    music.play(Tune::Idle);
+    // Declared after `tray`, so it is dropped (jingle stopped) before the icon goes.
+    let mut jingle = Jingle::new(identity.music);
     let state = Arc::new(Mutex::new(SendState::default()));
     spawn_search(&discovery, &state, tray.waker());
 
@@ -1368,13 +1365,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                 };
                 if let Some(outcome) = outcome {
                     let delivered = matches!(outcome, Ok(SendOutcome::Delivered));
-                    if delivered {
-                        music.play(Tune::Done); // replaces the loop
-                    } else {
-                        music.stop();
-                    }
                     // Our jingle is the sound of success; skip the system one on top of it.
-                    let sound = !(delivered && music.enabled);
+                    let sound = !(delivered && jingle.play());
                     // Failures were logged by kind in `spawn_send` (texts may hold names).
                     if outcome.is_ok() {
                         diag::log(format!("send: done (callback: {fallback})"));
@@ -1398,16 +1390,11 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     tray.balloon(&title, &text, error, sound);
                     tray.set_timer(EXIT_TIMER, EXIT_AFTER_MS);
                     phase = Phase::Done;
-                } else {
-                    if accepted {
-                        music.play(Tune::Transfer);
-                    }
-                    if let Some(pct) = pct {
-                        let pct = pct.to_string();
-                        tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
-                    } else if fallback && !accepted {
-                        tray.set_tip(&fill(s.fallback, &[("name", name)]));
-                    }
+                } else if let Some(pct) = pct {
+                    let pct = pct.to_string();
+                    tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
+                } else if fallback && !accepted {
+                    tray.set_tip(&fill(s.fallback, &[("name", name)]));
                 }
             }
             (TrayEvent::Click(anchor), Phase::Sending(_)) => {
@@ -1459,7 +1446,7 @@ fn spawn_send(
                 lock(&state).fallback = true;
                 waker.wake();
             }
-            // Only sent after the receiver accepted: switch to the transfer music.
+            // Only sent after the receiver accepted (ends the "trying another way" tip).
             Progress::FileStarted { index: 0, .. } => {
                 lock(&state).accepted = true;
                 waker.wake();

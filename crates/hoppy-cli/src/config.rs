@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 pub struct Identity {
     pub id: String,
     pub name: String,
-    /// Windows `hoppyw send` plays music while sending (`hoppy music on|off`, tray menu).
+    /// Windows `hoppyw send` plays a jingle on delivery (`hoppy music on|off`, tray menu
+    /// "Sound when delivered"). Named `music` for compatibility with older device.json.
     #[serde(default = "default_music")]
     pub music: bool,
     /// Windows tray: version that last showed the firewall/Public-network balloon (once
@@ -64,7 +65,7 @@ pub fn save(identity: &Identity) -> Result<()> {
     Ok(())
 }
 
-/// Turns the send music on/off. Re-reads the file first so a long-running tray does not
+/// Turns the delivery jingle on/off. Re-reads the file first so a long-running tray does not
 /// overwrite a name changed meanwhile with `hoppy name`.
 pub fn set_music(on: bool) -> Result<Identity> {
     let mut identity = load_or_create()?;

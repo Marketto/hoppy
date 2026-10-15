@@ -264,17 +264,6 @@ pub enum TrayEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooManyFiles;
 
-/// Music played by `hoppyw send` (assets/music/desktop_*.wav, embedded on Windows only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tune {
-    /// Loop while searching / choosing a device / waiting for the answer.
-    Idle,
-    /// Faster loop once the receiver has accepted.
-    Transfer,
-    /// One-shot jingle on delivery.
-    Done,
-}
-
 /// One entry of a popup menu. Ids must be non-zero (0 means "dismissed").
 #[derive(Debug, Clone, Copy)]
 pub enum MenuItem<'a> {
@@ -362,9 +351,7 @@ pub mod win {
         GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WAIT_OBJECT_0, WPARAM,
     };
     use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
-    use windows_sys::Win32::Media::Audio::{
-        PlaySoundW, SND_ASYNC, SND_LOOP, SND_MEMORY, SND_NODEFAULT,
-    };
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     use windows_sys::Win32::Networking::WinHttp::{
         INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
         WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_FLAG_NUMBER64, WINHTTP_QUERY_STATUS_CODE,
@@ -413,16 +400,15 @@ pub mod win {
 
     use super::{
         COLLECT_MAX, COLLECT_MAX_BYTES, COLLECT_MAX_FILES, Collected, ElevationDeclined, HttpSink,
-        MenuItem, TooManyFiles, TrayEvent, Tune, collect_wait, copy_wide, decode_utf16_le,
-        dedup_paths, parse_multiselect, same_exe_path, split_https_url, split_wide_list,
-        verb_command, verb_label,
+        MenuItem, TooManyFiles, TrayEvent, collect_wait, copy_wide, decode_utf16_le, dedup_paths,
+        parse_multiselect, same_exe_path, split_https_url, split_wide_list, verb_command,
+        verb_label,
     };
     use crate::diag;
 
-    // 'static, so the buffers outlive any asynchronous SND_MEMORY playback.
-    static MUSIC_IDLE: &[u8] = include_bytes!("../../../assets/music/desktop_idle.wav");
-    static MUSIC_TRANSFER: &[u8] = include_bytes!("../../../assets/music/desktop_transfer.wav");
-    static MUSIC_DONE: &[u8] = include_bytes!("../../../assets/music/desktop_done.wav");
+    // The only sound `hoppyw send` plays (on delivery). 'static, so the buffer outlives the
+    // asynchronous SND_MEMORY playback.
+    static DONE_JINGLE: &[u8] = include_bytes!("../../../assets/music/desktop_done.wav");
 
     const WM_TRAY: u32 = WM_APP + 1;
     const WM_WAKE: u32 = WM_APP + 2;
@@ -464,24 +450,20 @@ pub mod win {
 
     /// Starts `tune` asynchronously (loops: Idle, Transfer), replacing whatever this process
     /// was playing. Silent if the PC has no audio device (SND_NODEFAULT: no beep either).
-    pub fn play_tune(tune: Tune) {
-        let (wav, flags) = match tune {
-            Tune::Idle => (MUSIC_IDLE, SND_LOOP),
-            Tune::Transfer => (MUSIC_TRANSFER, SND_LOOP),
-            Tune::Done => (MUSIC_DONE, 0),
-        };
+    /// One-shot "delivered" jingle (assets/music/desktop_done.wav), asynchronous.
+    pub fn play_done_jingle() {
         // SAFETY: with SND_MEMORY the "name" is a pointer to a complete WAV image; it is
         // 'static, so it stays valid for the whole asynchronous playback.
         unsafe {
             PlaySoundW(
-                wav.as_ptr().cast(),
+                DONE_JINGLE.as_ptr().cast(),
                 null_mut(),
-                SND_MEMORY | SND_ASYNC | SND_NODEFAULT | flags,
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
             )
         };
     }
 
-    pub fn stop_tune() {
+    pub fn stop_sound() {
         // SAFETY: a null sound stops this process's playback.
         unsafe { PlaySoundW(null(), null_mut(), 0) };
     }
@@ -1748,7 +1730,7 @@ pub mod win {
 
     use anyhow::{Result, bail};
 
-    use super::{HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
+    use super::{HttpSink, MenuItem, TooManyFiles, TrayEvent};
 
     pub struct Elevated(Infallible);
 
@@ -1762,10 +1744,10 @@ pub mod win {
         bail!("elevation is Windows-only")
     }
 
-    /// No music off Windows (the assets are not even embedded).
-    pub fn play_tune(_tune: Tune) {}
+    /// No sound off Windows (the jingle is not even embedded).
+    pub fn play_done_jingle() {}
 
-    pub fn stop_tune() {}
+    pub fn stop_sound() {}
 
     pub struct InstanceGuard;
 

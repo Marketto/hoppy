@@ -63,8 +63,8 @@ class MusicTimingTest {
     @Test
     fun fractionalBarsDoNotDrift() {
         val bar = MusicTiming.barMs("purikura", MusicTiming.IDLE)!!
-        // End of bar 7 of 8: boundary at 7 * bar ≈ 13548.388 ms.
-        assertEquals(48L, MusicTiming.delayToNextBar(13500, bar))
+        // End of bar 7 of 8: boundary at 7 * bar ≈ 15555.554 ms.
+        assertEquals(56L, MusicTiming.delayToNextBar(15500, bar))
     }
 
     @Test
