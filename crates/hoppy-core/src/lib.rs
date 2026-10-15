@@ -7,7 +7,7 @@ pub mod protocol;
 pub mod sanitize;
 pub mod transfer;
 
-pub use discovery::{CallbackRequest, Discovery, DiscoveryConfig, Peer};
+pub use discovery::{CallbackRequest, Discovery, DiscoveryConfig, Peer, Sweep};
 pub use protocol::{DeviceInfo, Offer};
 pub use transfer::{
     Progress, ReceiveHandler, SendOutcome, accept_callbacks, send_files, send_to_peer,

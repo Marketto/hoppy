@@ -635,6 +635,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hoppy-ffi"
+version = "0.1.0"
+dependencies = [
+ "hoppy-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

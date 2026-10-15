@@ -54,7 +54,8 @@ Rules:
 2. On start a node sends `query` then `announce`; afterwards `announce` every 5 s.
    Targets: multicast `239.255.72.80:47470` on every non-loopback IPv4 interface,
    plus `255.255.255.255:47470` (fallback for networks that drop multicast),
-   plus any explicit seed address configured by the user.
+   plus any explicit seed address configured by the user. Nodes that cannot multicast
+   use the unicast sweep instead (§2.1).
 3. On `query` the receiver records the sender as a peer **and** replies with an
    `announce` sent by unicast to the datagram's source address and port.
 4. On `bye` the peer is removed. Messages carrying the node's own `id` are ignored.
@@ -63,7 +64,36 @@ Rules:
 6. `port: 0` marks a **send-only** node (e.g. the desktop "Send to" process while a
    separate receiver runs). It sends `query` every 5 s instead of `announce`,
    binds an ephemeral UDP port so unicast replies reach it, is never listed as a
-   peer, and does not answer queries.
+   peer, and does not answer queries. It need not send `bye` (the Rust core does not:
+   a desktop sender shares its `id` with the tray receiver, which a `bye` would remove).
+
+### 2.1 Unicast sweep (nodes without multicast)
+
+Client behaviour only: no new message, field or value; every v0 node already supports it
+through rules 1–3. A node that cannot send or hear multicast/broadcast (iOS apps without
+Apple's multicast entitlement, ADR 0009) MAY discover by unicast:
+
+1. **Sweep**: send `query` (its current `port`) to `47470` of every host of each local IPv4
+   subnet with a private RFC 1918 address (10/8, 172.16/12, 192.168/16), limited to the /24
+   around its own address (a wider subnet is narrowed to that /24; /31 and /32 are skipped),
+   skipping its own address and the network/broadcast addresses, only on interfaces that
+   are up and broadcast-capable (no cellular, no point-to-point VPN, no obvious virtual
+   adapters such as docker0, virbr0, vboxnet, Hyper-V vEthernet), preferring the one that
+   carries the default route. At most 256 targets (one /24), paced (≈ 2 ms apart). At start, then every 10 s (shorter than the 15 s peer expiry, so nodes that
+   only hear it through the sweep keep listing it), and on user refresh (at most every 3 s).
+   Seeds (rule 2) still get every message.
+2. Receivers answer each `query` with a unicast `announce` and record the sweeping node as a
+   peer when its `port != 0` (rule 3): both sides learn each other.
+3. While receiving (`port != 0`) it also sends `query` to each known peer every 5 s, and a
+   node that does not multicast sends `bye`/`announce` for state changes to its known peers
+   by unicast too (e.g. `bye` when it stops receiving or quits).
+4. A send-only node on an ephemeral port (rule 6) never hears these nodes' unicast
+   `announce`, so desktop send-only processes without explicit seeds sweep as well
+   (opt out: `hoppy --no-sweep`, or `HOPPY_NO_SWEEP=1` for `hoppyw` too).
+5. Unicast to known peers goes only to local addresses (spec §6 ranges).
+
+Implementation: `Sweep` in `crates/hoppy-core/src/discovery.rs` (`sweep_targets`, tested);
+Kotlin and Python do not sweep (Android's node is bound to 47470 and hears sweep queries).
 
 ## 3. Transfer (TCP)
 

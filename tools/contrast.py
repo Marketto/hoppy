@@ -15,6 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 COLORS = ROOT / "apps/android/app/src/main/res/values/colors.xml"
+# iPhone/iPad palettes: `static let name = 0xRRGGBB` lines in apps/ios/Shared/Theme.swift.
+IOS_COLORS = ROOT / "apps/ios/Shared/Theme.swift"
 
 TEXT, LARGE = 4.5, 3.0
 
@@ -40,6 +42,17 @@ PAIRS = [
     ("night", "button label", "night_on_teal", ["night_teal"], TEXT),
     ("night", "accent text", "night_teal", ["night_bg", "night_surface", "night_container"], TEXT),
     ("night", "chip text", "night_on_teal_container", ["night_teal_container"], TEXT),
+    # iOS (Theme.swift): text, accent text/links and button labels on every surface; the
+    # switch tint and the card outline of the received files are non-text state (3:1).
+    ("ios purikura", "body text", "ios_purikuraText", ["ios_purikuraBg", "ios_purikuraCard"], TEXT),
+    ("ios purikura", "muted text", "ios_purikuraMuted", ["ios_purikuraBg", "ios_purikuraCard"], TEXT),
+    ("ios purikura", "accent text", "ios_purikuraAccent", ["ios_purikuraBg", "ios_purikuraCard"], TEXT),
+    ("ios purikura", "button label", "ios_purikuraOnButton", ["ios_purikuraButtonTop", "ios_purikuraButtonBottom"], TEXT),
+    ("ios purikura", "switch / outline", "ios_purikuraAccent", ["ios_purikuraBg", "ios_purikuraCard"], LARGE),
+    ("ios night", "body text", "ios_nightText", ["ios_nightBg", "ios_nightCard"], TEXT),
+    ("ios night", "muted text", "ios_nightMuted", ["ios_nightBg", "ios_nightCard"], TEXT),
+    ("ios night", "accent text", "ios_nightAccent", ["ios_nightBg", "ios_nightCard"], TEXT),
+    ("ios night", "button label", "ios_nightOnButton", ["ios_nightButtonTop", "ios_nightButtonBottom"], TEXT),
 ]
 
 
@@ -67,8 +80,14 @@ def ratio(a, b) -> float:
     return (la + 0.05) / (lb + 0.05)
 
 
+def load_ios_colors() -> dict[str, str]:
+    text = IOS_COLORS.read_text(encoding="utf-8")
+    return {"ios_" + m.group(1): m.group(2).upper() for m in re.finditer(r"static let (\w+) = 0x([0-9A-Fa-f]{6})\b", text)}
+
+
 def main() -> int:
     colors = load_colors()
+    colors.update(load_ios_colors())
     # The Yume sky is a gradient drawn in code (ThemeBackgroundView); check every stop.
     colors.update({"yume_bg_1": "DCCBFF", "yume_bg_2": "F6D8F2", "yume_bg_3": "FFE6EF", "yume_bg_4": "D6F5EC"})
     bad = 0

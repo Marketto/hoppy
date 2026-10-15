@@ -5,8 +5,9 @@ description: Use when working on the Rust crates (hoppy-core library or the hopp
 
 # Rust core
 
-`crates/hoppy-core` is the desktop engine; `crates/hoppy-cli` holds the `hoppy` CLI and the
-`hoppyw` tray/GUI binary (Windows + Linux + macOS), sharing `src/lib.rs`.
+`crates/hoppy-core` is the engine of the desktop and of the iPhone/iPad app; `crates/hoppy-cli`
+holds the `hoppy` CLI and the `hoppyw` tray/GUI binary (Windows + Linux + macOS), sharing
+`src/lib.rs`; `crates/hoppy-ffi` is the C ABI for iOS (`.claude/skills/hoppy-ios/SKILL.md`).
 Design notes: `docs/architecture.md`. Wire rules: `docs/protocol.md`.
 
 ## Layout
@@ -22,6 +23,12 @@ Design notes: `docs/architecture.md`. Wire rules: `docs/protocol.md`.
   `request_callback` on a multicast node not bound to 47470 starts a listen-only announce
   socket (47470, reuse; bound to the group address except on Windows) until the last
   `CallbackTicket` drops; replies always leave from the main socket.
+  `sweep: Sweep::{Off, LocalSubnets, Hosts}` = unicast sweep (spec §2.1; iOS, desktop
+  send-only processes without seeds via `hoppy::sweep_for`); `set_transfer_port` switches
+  receiving on/off at runtime (bye/announce). Nodes without multicast also unicast
+  query/announce/bye to known peers.
+- `sanitize.rs` also has `display_text` (strip bidi/control characters before showing
+  network text), shared by the CLI and the FFI.
 
 ## Conventions
 

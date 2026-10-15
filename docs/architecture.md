@@ -9,8 +9,10 @@ device. The app chooses the fastest available path; the user never picks a trans
 
 ```
 ┌────────────── platform shells (thin) ──────────────┐
-│ Windows: Send To + tray icon   Android: share target │
-│ (crates/hoppy-cli)             (apps/android/app)    │
+│ Windows/Linux/macOS: tray + Send   Android: share    │
+│ (crates/hoppy-cli)                 (apps/android/app)│
+│ iPhone/iPad: SwiftUI + Share ext. (apps/ios) ─ C ABI │
+│ (crates/hoppy-ffi → HoppyFFI.xcframework)            │
 ├────────────── engine (per language) ────────────────┤
 │ Rust: crates/hoppy-core   Kotlin: apps/android/core  │
 │   discovery · transfer · name sanitizing · limits    │
@@ -29,6 +31,9 @@ when encryption and resume make the engine too valuable to keep twice.
 UDP port 47470: multicast `239.255.72.80` on every IPv4 interface + broadcast + optional
 unicast seeds. JSON `announce`/`query`/`bye`. Receivers announce every 5 s and answer
 queries; senders that do not receive use `port: 0` and an ephemeral port (spec §2 rule 6).
+Nodes that cannot multicast (iOS without the entitlement) and desktop send-only processes
+sweep their /24 with unicast `query` (spec §2.1, ADR 0009): every receiver answers and
+records them, so no wire change was needed.
 
 ## Transfer (v0)
 

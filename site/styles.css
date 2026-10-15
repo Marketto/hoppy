@@ -259,6 +259,9 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
   border-radius: 22px; background: var(--accent); color: var(--btn-text); text-decoration: none; font-weight: 900;
 }
 .card-btn:hover { color: var(--btn-text); filter: brightness(1.05); }
+.card-more { font-size: 13.5px; color: var(--muted); }
+.card-more summary { padding: 12px 0; cursor: pointer; font-weight: 700; color: var(--text); }
+.card-more p { margin: 0 0 4px; line-height: 1.45; }
 .badge {
   display: inline-flex; align-self: flex-start; padding: 6px 14px; border-radius: 16px;
   background: var(--soon); color: var(--soon-text); font-weight: 900; font-size: 13.5px;
@@ -455,6 +458,23 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
 .pn > span { font-size: .78em; color: var(--m-muted); }
 .pn-act { display: flex; gap: .3em; margin-top: .3em; }
 .pn-act span { padding: .2em .5em; border-radius: .5em; background: var(--m-hi); color: var(--m-text); font-weight: 700; font-size: .8em; }
+
+/* iPhone/iPad in-app alert (Accept/Decline) and the received-files card */
+.pa-link { color: var(--m-accent-ink); font-weight: 700; }
+.pal { position: absolute; z-index: 3; left: 12%; right: 12%; top: 30%; display: flex; flex-direction: column; gap: .3em; padding: .8em .7em 0; border-radius: 1em; background: var(--m-surface); text-align: center; box-shadow: 0 .3em .9em rgba(40, 20, 50, .25); }
+.pal b { font-size: .92em; }
+.pal > span { font-size: .74em; line-height: 1.3; color: var(--m-text); }
+.pal-btns { display: grid; grid-template-columns: 1fr 1fr; margin: .4em -.7em 0; border-top: 1px solid var(--m-line); }
+.pal-btns span { padding: .5em 0; font-size: .82em; color: var(--m-accent-ink); }
+.pal-btns span + span { border-left: 1px solid var(--m-line); }
+.pal-btns .is-default { font-weight: 900; }
+.pal-btns .is-tap { --tx: 50%; --ty: 50%; }
+.prc { display: flex; flex-direction: column; gap: .3em; padding: .6em .65em; border-radius: .9em; background: var(--m-surface); box-shadow: 0 0 0 .14em var(--m-accent); }
+.prc b { font-size: .86em; line-height: 1.25; }
+.prc span { font-size: .76em; color: var(--m-muted); }
+.prc small { font-size: .68em; color: var(--m-muted); }
+.prc-btns { display: flex; flex-wrap: wrap; gap: .25em; margin-top: .15em; }
+.prc-btns span { padding: .2em .45em; border-radius: .45em; background: var(--m-hi); color: var(--m-text); font-weight: 700; font-size: .72em; }
 
 .pg { display: grid; grid-template-columns: repeat(3, 1fr); gap: .15em; padding: .15em; }
 .pg span { display: block; }

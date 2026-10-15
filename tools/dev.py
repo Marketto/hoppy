@@ -5,7 +5,8 @@
 
 Commands (each prints what it runs and exits non-zero on failure):
   doctor         which toolchains are available here
-  check          fast gate: rust fmt + clippy + tests, python selftest, docs lint
+  check          fast gate: rust fmt + clippy + tests, python selftest, docs lint, contrast,
+                 iOS static check (tools/ios_check.py), secrets
   rust           cargo test for the workspace
   interop        Rust <-> Python (+ Kotlin core if Gradle is available) wire tests
   android-test   :core JVM unit tests via Gradle
@@ -77,6 +78,7 @@ def cmd_check() -> None:
     run([sys.executable, "tools/hoppy_ref.py", "selftest"])
     cmd_docs()
     cmd_contrast()
+    run([sys.executable, "tools/ios_check.py"])
     cmd_secrets()
 
 

@@ -5,7 +5,8 @@ then **only** the skill/doc the router points you to. Humans: see `README.md`.
 
 Hoppy sends files between nearby devices (Windows, macOS, Linux, Android, iPhone)
 as simply as possible: "Send to → Hoppy", tap a device, done. Current stage:
-**PoC — Windows + Ubuntu + macOS desktop app + Android app, LAN only, protocol v0 (unencrypted)**.
+**PoC — Windows + Ubuntu + macOS desktop app + Android app + iPhone/iPad app (sideloaded),
+LAN only, protocol v0 (unencrypted)**.
 
 ## 1. Task router
 
@@ -19,6 +20,7 @@ Match the request to a row, load the skill, follow it. One request may hit sever
 | Ubuntu/Linux desktop (tray, notifications, right-click entries, .deb) | `.claude/skills/hoppy-linux/SKILL.md` | `crates/hoppy-cli/src/linux/`, `crates/hoppy-cli/src/gui.rs`, `apps/linux/` | `python3 tools/dev.py check` (+ `cargo deb -p hoppy`) |
 | Mac desktop (menu-bar app, Finder service, login item, Hoppy.app/.dmg, signing) | `.claude/skills/hoppy-macos/SKILL.md` | `crates/hoppy-cli/src/macos/`, `crates/hoppy-cli/src/gui.rs`, `apps/macos/` | `python3 tools/dev.py check` + CI job `macOS · tests + universal Hoppy.app` (annotations) |
 | Android app (UI, service, share target, storage) | `.claude/skills/hoppy-android/SKILL.md` | `apps/android/` | `python3 tools/dev.py android-test` (+ CI build) |
+| iPhone/iPad app (SwiftUI, Share extension, Rust FFI, unicast sweep, unsigned .ipa / Sideloadly) | `.claude/skills/hoppy-ios/SKILL.md` | `apps/ios/`, `crates/hoppy-ffi/` | `python3 tools/dev.py check` + CI job `iOS · Rust core + unsigned Hoppy.app + simulator tests` (annotations) |
 | Themes, theme picker, animations, mascots, music, fonts, app icon | `.claude/skills/hoppy-themes/SKILL.md` | `apps/android/app/src/main/java/app/hoppy/ui/theme/`, `tools/gen_mascots.py`, `tools/gen_music.py`, `tools/fonts.py`, `docs/design/themes.md` | `python3 tools/dev.py mascots` / `music` (+ CI build) |
 | Cross-implementation bugs ("works Rust→Rust, not with Android") | `.claude/skills/hoppy-interop-test/SKILL.md` | `tools/hoppy_ref.py`, `tools/interop.sh` | `python3 tools/dev.py interop` |
 | New transport (BLE, Wi-Fi Direct/Aware, relay) or new platform | `.claude/skills/hoppy-new-transport/SKILL.md` | `docs/architecture.md`, `docs/roadmap.md` | depends; write an ADR |
@@ -35,27 +37,31 @@ touches bytes on the wire or files written to disk.
 ```
 crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, sanitize.rs
 crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` tray/Send GUI (Windows + Linux + macOS)
+crates/hoppy-ffi/      C ABI over hoppy-core (staticlib → HoppyFFI.xcframework) for the iOS app
 apps/android/core/     Pure-JVM Kotlin: same protocol for Android (unit + interop tested)
 apps/android/app/      Android UI shell: share target, receive service, themes
 apps/windows/          Windows installer (Inno Setup) and install script
 apps/linux/            Linux app launcher (.desktop) shipped in the .deb
 apps/macos/            Hoppy.app Info.plist, localised strings, build-app.sh (universal app + .dmg)
+apps/ios/              iPhone/iPad: SwiftUI app + Share extension, XcodeGen project.yml, build-xcframework.sh / build-ipa.sh
 site/                  Download portal (GitHub Pages), built by tools/site.py
 tools/dev.py           ONE command runner for everything (see `--help`)
 tools/hoppy_ref.py     Python reference implementation + debugging CLI (stdlib only)
 tools/interop.sh       Rust ↔ Python ↔ Kotlin wire tests
 tools/gen_mascots.py   Mascot source of truth → SVG + Android vectors + animations
 tools/gen_music.py     Theme music source of truth → Android OGG + desktop WAV
+tools/ios_check.py     Static checks of apps/ios on Linux (strings, plists, project, header)
 tools/fonts.py         Bundles subsetted OFL Japanese fonts into the Android app
 docs/                  protocol, architecture, roadmap, decisions (ADRs), design, platforms
-assets/brand/          Generated mascot SVGs + preview, app icons (linux/, macos/: tools/gen_icons.py)
+assets/brand/          Generated mascot SVGs + preview, app icons (linux/, macos/, iOS asset catalogs: tools/gen_icons.py)
 assets/music/          Generated desktop music (WAV) + manifest
 ```
 
 ## 3. Invariants (never break these)
 
 1. **Three implementations, one protocol.** Rust, Kotlin and Python must change together
-   with `docs/protocol.md` and `docs/test-vectors.json`. A wire change without a vector and
+   with `docs/protocol.md` and `docs/test-vectors.json` (iOS runs the Rust core through
+   `crates/hoppy-ffi`: never a 4th implementation in Swift). A wire change without a vector and
    an interop run is not done.
 2. **Never trust a received name.** All file names go through the §4 sanitizer; files are
    written to a temporary/pending location and published only after the SHA-256 matches.
@@ -92,6 +98,8 @@ python3 tools/hoppy_ref.py peers                      # who is on the LAN?
 
 The Android app needs the Android SDK; where it is missing, rely on CI
 (`.github/workflows/ci.yml`) and on `python3 tools/dev.py interop` for the networking.
+The iOS app needs macOS + Xcode: on Linux only the Rust FFI tests and `tools/ios_check.py`
+run; CI builds it (job `ios`).
 
 ## 5. Conventions
 

@@ -10,7 +10,8 @@
     { id: "android", asset: "Hoppy-android.apk", icon: "phone" },
     { id: "macos", asset: "Hoppy-macos-universal.dmg", icon: "laptop" },
     { id: "linux", asset: "Hoppy-linux-amd64.deb", icon: "desktop" },
-    { id: "ios", asset: null, icon: "tablet" }, // will link to TestFlight / App Store
+    // Unsigned: installed from a PC/Mac with Sideloadly and a free Apple ID (ADR 0009).
+    { id: "ios", asset: "Hoppy-ios-unsigned.ipa", icon: "tablet" },
   ];
   // Used when the GitHub API is unreachable (rate limit, offline).
   const DEFAULT_AVAILABLE = ["windows", "android"];
@@ -46,11 +47,13 @@
         android: "Android 10 o successivo, telefoni e tablet.",
         macos: "macOS 12 o successivo: Mac Intel dal 2015 e Mac con chip Apple.",
         linux: "Ubuntu 22.04 o successivo, 64 bit.",
-        ios: "iPhone e iPad dal 2021 in poi.",
+        ios: "iPhone e iPad con iOS/iPadOS 15 o successivo. Si installa dal PC con Sideloadly.",
       },
       apkHint: "Apri il file scaricato e consenti l'installazione da questa fonte se il telefono lo chiede.",
       exeHint: "Se Windows mostra un avviso: «Ulteriori informazioni» → «Esegui comunque».",
       dmgHint: "Trascina Hoppy in Applicazioni. Al primo avvio: Impostazioni di Sistema → Privacy e sicurezza → «Apri comunque».",
+      ipaTitle: "Installazione con Sideloadly",
+      ipaHint: "Scarica il file .ipa sul PC (Windows o Mac) e installa Sideloadly. Collega l'iPad o l'iPhone con il cavo, trascina il file in Sideloadly, scrivi il tuo Apple ID e premi Start. Sull'iPad: Impostazioni → Generali → VPN e gestione dispositivi → autorizza il tuo Apple ID, poi Impostazioni → Privacy e sicurezza → Modalità sviluppatore → attiva e riavvia. La firma gratuita dura 7 giorni: poi ripeti l'installazione.",
       musicOn: "Attiva musica",
       musicOff: "Disattiva musica",
     },
@@ -84,11 +87,13 @@
         android: "Android 10 or later, phones and tablets.",
         macos: "macOS 12 or later: Intel Macs from 2015 and Apple silicon Macs.",
         linux: "Ubuntu 22.04 or later, 64-bit.",
-        ios: "iPhone and iPad from 2021 onwards.",
+        ios: "iPhone and iPad with iOS/iPadOS 15 or later. Installed from a computer with Sideloadly.",
       },
       apkHint: "Open the downloaded file and allow installs from this source if your phone asks.",
       exeHint: "If Windows shows a warning: “More info” → “Run anyway”.",
       dmgHint: "Drag Hoppy to Applications. On first launch: System Settings → Privacy & Security → “Open Anyway”.",
+      ipaTitle: "Installing with Sideloadly",
+      ipaHint: "Download the .ipa on a computer (Windows or Mac) and install Sideloadly. Connect the iPad or iPhone with a cable, drop the file on Sideloadly, enter your Apple ID and press Start. On the iPad: Settings → General → VPN & Device Management → trust your Apple ID, then Settings → Privacy & Security → Developer Mode → turn on and restart. The free signature lasts 7 days: then install again.",
       musicOn: "Play music",
       musicOff: "Pause music",
     },
@@ -287,7 +292,7 @@
     if (p && available(p)) {
       label.textContent = fmt(t.download, { name: t.names[p.id] });
       btn.href = downloadUrl(p.asset);
-      const hint = { android: t.apkHint, windows: t.exeHint, macos: t.dmgHint }[p.id] || "";
+      const hint = { android: t.apkHint, windows: t.exeHint, macos: t.dmgHint, ios: t.ipaHint }[p.id] || "";
       note.textContent = (state.env.os === "chromeos" ? t.chromeos + " " : "") + fmt(t.detected, { name: t.names[p.id], req: t.reqs[p.id] }) + (hint ? " " + hint : "");
     } else if (p) {
       label.textContent = t.soon + " · " + t.names[p.id];
@@ -312,6 +317,7 @@
         (x.id === os ? `<span class="tag"></span>` : "") +
         `<svg class="card-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[x.icon]}</svg>` +
         `<p class="card-name"></p><p class="card-req"></p>` +
+        (ok && x.id === "ios" ? `<details class="card-more"><summary></summary><p></p></details>` : "") +
         (ok ? `<a class="card-btn"></a>` : `<span class="badge"></span>`);
       if (x.id === os) li.querySelector(".tag").textContent = t.suggested;
       li.querySelector(".card-name").textContent = t.names[x.id];
@@ -321,6 +327,11 @@
         a.textContent = t.get;
         a.href = downloadUrl(x.asset);
         a.setAttribute("aria-label", `${t.get} · ${t.names[x.id]}`);
+        const more = li.querySelector(".card-more");
+        if (more) {
+          more.querySelector("summary").textContent = t.ipaTitle;
+          more.querySelector("p").textContent = t.ipaHint;
+        }
       } else {
         li.querySelector(".badge").textContent = t.soon;
       }

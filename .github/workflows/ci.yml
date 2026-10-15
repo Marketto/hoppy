@@ -128,6 +128,66 @@ jobs:
           name: hoppy-macos
           path: dist/Hoppy-macos-universal.dmg
 
+  ios:
+    name: iOS · Rust core + unsigned Hoppy.app + simulator tests
+    runs-on: macos-latest
+    # iPhone/iPad (ADR 0009): the Rust core as HoppyFFI.xcframework, the SwiftUI app + Share
+    # extension built unsigned for devices (what Sideloadly installs) and the FFI smoke tests
+    # on a simulator. Logs are not readable by agents: failures become annotations
+    # (tools/ci-annotate.sh for cargo, tools/ci_annotate_xcode.py for xcodebuild).
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (iOS)
+        shell: bash
+        run: |
+          cargo clippy -p hoppy-ffi --all-targets --target aarch64-apple-ios --message-format=short -- -D warnings 2>&1 | tee clippy.log ||
+            { bash tools/ci-annotate.sh "clippy (iOS)" clippy.log; exit 1; }
+      - name: HoppyFFI.xcframework
+        shell: bash
+        run: |
+          bash apps/ios/build-xcframework.sh release 2>&1 | tee xcframework.log ||
+            { python3 tools/ci_annotate_xcode.py "Rust core for iOS" xcframework.log; exit 1; }
+      - name: XcodeGen
+        shell: bash
+        run: |
+          brew install xcodegen 2>&1 | tail -n 3
+          cd apps/ios && xcodegen generate 2>&1 | tee ../../xcodegen.log ||
+            { python3 ../../tools/ci_annotate_xcode.py "xcodegen" ../../xcodegen.log; exit 1; }
+      - name: Simulator tests (FFI smoke)
+        shell: bash
+        run: |
+          xcodebuild -version
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          ios = sorted((r for r in data if ".iOS-" in r), key=lambda r: [int(x) for x in r.split(".iOS-")[1].split("-")])
+          for runtime in reversed(ios):
+              for d in data[runtime]:
+                  if d["name"].startswith("iPhone"):
+                      print(d["udid"]); sys.exit()
+          ')
+          echo "simulator: $udid"
+          [ -n "$udid" ] || { echo "::error title=iOS simulator::no available iPhone simulator"; exit 1; }
+          cd apps/ios
+          perl -e 'alarm 1500; exec @ARGV' xcodebuild test -project Hoppy.xcodeproj -scheme Hoppy \
+            -destination "id=$udid" -derivedDataPath build/dd-test 2>&1 | tee ../../xctest.log ||
+            { python3 ../../tools/ci_annotate_xcode.py "iOS simulator tests" ../../xctest.log; exit 1; }
+      - name: Unsigned .ipa (device build)
+        shell: bash
+        run: |
+          bash apps/ios/build-ipa.sh 0.0.0 dist 2>&1 | tee ipa.log ||
+            { python3 tools/ci_annotate_xcode.py "iOS device build" ipa.log; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hoppy-ios
+          path: dist/Hoppy-ios-unsigned.ipa
+
   android:
     name: Android · APK
     runs-on: ubuntu-latest

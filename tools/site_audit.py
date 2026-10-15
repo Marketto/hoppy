@@ -31,7 +31,9 @@ hoppy_site = importlib.util.module_from_spec(_spec)  # tools/site.py ("site" cla
 _spec.loader.exec_module(hoppy_site)
 
 FAKE_RELEASE = {"tag_name": "v0.1.0", "published_at": "2026-10-14T18:00:00Z",
-                "assets": [{"name": "Hoppy-Setup-x64.exe"}, {"name": "Hoppy-android.apk"}]}
+                "assets": [{"name": n} for n in ("Hoppy-Setup-x64.exe", "Hoppy-android.apk",
+                                                  "Hoppy-macos-universal.dmg", "Hoppy-linux-amd64.deb",
+                                                  "Hoppy-ios-unsigned.ipa")]}
 VIEWS = [
     ("desktop-light", {"width": 1280, "height": 900}, "light", False),
     ("desktop-dark", {"width": 1280, "height": 900}, "dark", False),
@@ -109,6 +111,7 @@ def main() -> int:
                 status=200, content_type="application/json", body=json.dumps(FAKE_RELEASE)))
             page.goto("http://127.0.0.1:8799/")
             page.wait_for_timeout(600)
+            page.evaluate("document.querySelectorAll('details').forEach((d) => { d.open = true; })")
             page.add_script_tag(content=axe)
             res = page.evaluate("""async () => axe.run(document, {
                 runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'] } })""")

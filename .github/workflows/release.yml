@@ -3,9 +3,8 @@ name: Release
 # Builds the installable packages and publishes a GitHub Release.
 #   - push a tag:        git tag v0.2.0 && git push origin v0.2.0
 #   - or run manually:   Actions → Release → Run workflow (version: 0.2.0)
-# Windows, Android, macOS and Ubuntu are always built. iPhone/iPad is switched on with a
-# repository variable (Settings → Secrets and variables → Actions → Variables):
-# ENABLE_IOS = true. See docs/release.md.
+# Windows, Android, macOS, Ubuntu and iPhone/iPad (unsigned .ipa for Sideloadly, ADR 0009)
+# are always built. See docs/release.md.
 
 on:
   push:
@@ -262,15 +261,32 @@ jobs:
           path: dist/*
 
   ios:
-    name: iPhone/iPad (2021+)
+    name: iPhone/iPad · unsigned .ipa (sideload with Sideloadly)
     needs: meta
-    if: vars.ENABLE_IOS == 'true'
     runs-on: macos-latest
+    # No Apple Developer account (ADR 0009): the .ipa is not signed; the user installs it
+    # from Windows/macOS with Sideloadly and a free Apple ID (re-sign every 7 days).
     steps:
-      - name: Not implemented yet
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: Set version
+        run: sed -i '' 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
+      - name: XcodeGen
+        run: brew install xcodegen
+      - name: Build Hoppy-ios-unsigned.ipa
+        shell: bash
+        env:
+          HOPPY_BUILD_NUMBER: ${{ github.run_number }}
         run: |
-          echo "::error::The iOS app does not exist yet. It will ship through TestFlight/App Store (needs an Apple Developer account); see docs/release.md."
-          exit 1
+          bash apps/ios/build-ipa.sh "${{ needs.meta.outputs.version }}" dist 2>&1 | tee ipa.log ||
+            { python3 tools/ci_annotate_xcode.py "iOS package" ipa.log; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-ios
+          path: dist/Hoppy-ios-unsigned.ipa
 
   publish:
     name: Publish release
@@ -307,10 +323,12 @@ jobs:
           | Android 10+ (phone and tablet) | \`Hoppy-android.apk\` |
           | Ubuntu 22.04+ (64-bit) | \`Hoppy-linux-amd64.deb\` (open it with App Center / Software Install) |
           | macOS 12+ (Intel Macs from 2015 and Apple silicon) | \`Hoppy-macos-universal.dmg\` (drag Hoppy to Applications) |
+          | iPhone / iPad, iOS/iPadOS 15+ | \`Hoppy-ios-unsigned.ipa\` (install with Sideloadly from a PC or Mac, free Apple ID) |
 
           > Proof of concept: protocol v0 is **not encrypted**. Use Hoppy only on networks you trust.
           > Windows may show a SmartScreen warning (the installer is not code-signed yet): More info → Run anyway.
           > macOS: unless notarized, the first launch is blocked once: System Settings → Privacy & Security → **Open Anyway** (macOS 12–14: right-click Hoppy → Open also works).
+          > iPhone/iPad: the .ipa is **unsigned**. Install it with Sideloadly (https://sideloadly.io) and your Apple ID; the free signature lasts **7 days** (then sideload again). Turn on Settings → Privacy & Security → **Developer Mode**, and trust your Apple ID under Settings → General → VPN & Device Management. Hoppy receives only while it is open. Details: docs/platforms/ios.md in the repository.
           EOF
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber

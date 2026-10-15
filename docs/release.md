@@ -8,7 +8,7 @@
 | Android 10+ (phone + tablet, one universal APK) | **live** | `Hoppy-android.apk` | `release.yml` → `android` |
 | macOS 12+ — Intel Macs from 2015 and Apple silicon | **live** | `Hoppy-macos-universal.dmg` (`Hoppy.app` universal x86_64 + arm64 via `lipo`, ad-hoc signed; Developer ID + notarized once the `APPLE_*` secrets exist) | `release.yml` → `macos` (`apps/macos/build-app.sh`) |
 | Ubuntu 22.04+ x64 | **live** | `Hoppy-linux-amd64.deb` (`cargo-deb`, built on ubuntu-22.04: glibc 2.35) | `release.yml` → `linux` |
-| iPhone / iPad from 2021 | gated (`ENABLE_IOS`) | TestFlight / App Store link (no app yet) | `release.yml` → `ios` (placeholder) |
+| iPhone / iPad, iOS/iPadOS 15+ | **live** | `Hoppy-ios-unsigned.ipa` (`Payload/Hoppy.app` + `PlugIns/HoppyShare.appex`, **unsigned**: installed with Sideloadly and a free Apple ID, 7-day signature, Developer Mode; ADR 0009) | `release.yml` → `ios` (`apps/ios/build-ipa.sh`) |
 
 Every release also carries `SHA256SUMS.txt` (`sha256sum` output: `<hex>  <name>` per line).
 Asset names never contain the version, so
@@ -37,6 +37,9 @@ it never downloads: it links to the portal, whose Ubuntu button points at
 The **Mac menu-bar app** (docs/platforms/macos-ios.md) does the same with
 `Hoppy-macos-universal.dmg`: notification + *Download Hoppy X…* → portal, no download (an
 unsigned app replaced in place would go through Gatekeeper again anyway). **Never rename it.**
+The **iPhone/iPad app** has no update check: a sideloaded app is replaced by sideloading the
+new `Hoppy-ios-unsigned.ipa` (the portal's iOS button points at
+`releases/latest/download/Hoppy-ios-unsigned.ipa`). **Never rename it.**
 
 **Trust model of updates.** `SHA256SUMS.txt` comes from the same GitHub Release as the
 installer, so it proves *integrity* (no corrupted or truncated download), not *authenticity*:
@@ -64,13 +67,11 @@ publishing (they appear as workflow artifacts).
 
 ## Unlocking a platform
 
-1. Make the platform's build real (iOS: Xcode project).
-2. Set the repository variable (`Settings → Secrets and variables → Actions → Variables`):
-   `ENABLE_IOS` = `true` (Ubuntu and macOS are always built; `ENABLE_LINUX` and
-   `ENABLE_MACOS` are no longer read).
-3. Cut a release. The portal shows a download as soon as the latest release contains the
-   platform's asset; until then it says "Coming soon". For iOS, add the store link in
-   `site/app.js` (`PLATFORMS`, `ios`).
+Every platform is built on every release (the `ENABLE_LINUX`, `ENABLE_MACOS` and
+`ENABLE_IOS` variables are no longer read). The portal shows a download as soon as the
+latest release contains the platform's asset (`site/app.js` `PLATFORMS`); until then it says
+"Coming soon". A new platform: add its job to `release.yml`, its asset to `PLATFORMS`, its
+row above.
 
 ## Signing (secrets only — never committed)
 
@@ -107,7 +108,11 @@ publishing (they appear as workflow artifacts).
   3. Afterwards: drop the Gatekeeper steps from the .dmg's `Primo avvio - First launch.txt`,
      README and the portal hint (`dmgHint` in `site/app.js`); consider an in-app updater like
      Windows (verify the Developer ID team before replacing the app).
-- **iOS**: needs an Apple Developer Program membership (TestFlight/App Store).
+- **iOS**: the .ipa is **unsigned** on purpose (`CODE_SIGNING_ALLOWED=NO`, no entitlements):
+  the user signs it with a free Apple ID through Sideloadly (docs/platforms/ios.md). The
+  signature lasts 7 days; Developer Mode and "trust this Apple ID" are needed on the device.
+  With an Apple Developer Program membership later: TestFlight/App Store, the multicast
+  entitlement and an App Group become possible (ADR 0009 "Consequences").
 
 ## Download portal
 

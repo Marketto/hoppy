@@ -106,8 +106,66 @@ def write_macos_icons(page) -> None:
     print("wrote assets/brand/macos/hoppy-1024.png, Hoppy.icns, menubar-template.png")
 
 
+IOS_ASSETS = ROOT / "apps" / "ios" / "Hoppy" / "Assets.xcassets"  # app only (icon)
+IOS_SHARED = ROOT / "apps" / "ios" / "Shared" / "Mascots.xcassets"  # app + Share extension
+# In-app mascots (points): idle on the home screen, happy after a delivery.
+IOS_MASCOTS = {"Mascot": "mascot-kawaii.svg", "MascotHappy": "mascot-happy.svg"}
+IOS_MASCOT_PT = 160
+
+
+def write_ios_assets(page) -> None:
+    """App icon (one opaque 1024 px square: iOS rounds the corners itself, and an icon with
+    alpha would be shown on black) + the mascot images, into the Xcode asset catalog."""
+    import json
+
+    icon_set = IOS_ASSETS / "AppIcon.appiconset"
+    icon_set.mkdir(parents=True, exist_ok=True)
+    svg = (BRAND / "hoppy-icon.svg").read_text().replace(
+        SVG_HEADER, f'viewBox="{CROP}" width="1024" height="1024"')
+    assert f'viewBox="{CROP}"' in svg, "unexpected hoppy-icon.svg header"
+    page.set_viewport_size({"width": 1024, "height": 1024})
+    page.set_content(f'<body style="margin:0;background:#fff">{svg}</body>')
+    icon = icon_set / "AppIcon-1024.png"
+    page.screenshot(path=str(icon))
+    Image.open(icon).convert("RGB").save(icon, optimize=True)
+    (icon_set / "Contents.json").write_text(json.dumps({
+        "images": [{"filename": icon.name, "idiom": "universal", "platform": "ios", "size": "1024x1024"}],
+        "info": {"author": "tools/gen_icons.py", "version": 1},
+    }, indent=2) + "\n")
+    for name, src in IOS_MASCOTS.items():
+        folder = IOS_SHARED / f"{name}.imageset"
+        folder.mkdir(parents=True, exist_ok=True)
+        art = (BRAND / src).read_text()
+        images = []
+        for scale in (2, 3):
+            px = IOS_MASCOT_PT * scale
+            page.set_viewport_size({"width": px, "height": px})
+            page.set_content('<body style="margin:0;background:transparent">'
+                             + art.replace('width="200" height="200"', f'width="{px}" height="{px}"', 1)
+                             + "</body>")
+            out = folder / f"{name}-{scale}x.png"  # no "@": the secrets scan reads it as an e-mail
+            page.screenshot(path=str(out), omit_background=True)
+            Image.open(out).save(out, optimize=True)
+            images.append({"filename": out.name, "idiom": "universal", "scale": f"{scale}x"})
+        (folder / "Contents.json").write_text(json.dumps({
+            "images": [{"idiom": "universal", "scale": "1x"}, *images],
+            "info": {"author": "tools/gen_icons.py", "version": 1},
+        }, indent=2) + "\n")
+    (IOS_SHARED / "Contents.json").write_text(json.dumps(
+        {"info": {"author": "tools/gen_icons.py", "version": 1}}, indent=2) + "\n")
+    print(f"wrote {icon_set.relative_to(ROOT)} and {', '.join(IOS_MASCOTS)} in {IOS_SHARED.relative_to(ROOT)}")
+
+
 def main() -> None:
     args = sys.argv[1:]
+    if "--ios" in args:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            write_ios_assets(browser.new_page())
+            browser.close()
+        return
     if "--macos" in args:
         from playwright.sync_api import sync_playwright
 
@@ -131,6 +189,7 @@ def main() -> None:
             page.set_content(html)
             page.screenshot(path=str(png), omit_background=True)
             write_macos_icons(page)
+            write_ios_assets(page)
             browser.close()
         Image.open(png).save(BRAND / "hoppy.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
         print("wrote assets/brand/hoppy-512.png, assets/brand/hoppy.ico")
