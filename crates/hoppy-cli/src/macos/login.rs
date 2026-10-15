@@ -16,7 +16,10 @@ use anyhow::{Context, Result, bail};
 use objc2_foundation::{NSOperatingSystemVersion, NSProcessInfo};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
-use super::{Location, bundle_location, bundle_of, is_ours, launch_agent_path, launch_agent_plist};
+use super::{
+    Location, bundle_location, bundle_of, is_our_file, launch_agent_path, launch_agent_plist,
+    write_marked_file,
+};
 use crate::config;
 use crate::update::CURRENT_VERSION;
 
@@ -48,10 +51,7 @@ fn agent_path() -> Result<PathBuf> {
 }
 
 fn agent_is_ours() -> bool {
-    agent_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .is_some_and(|t| is_ours(&t))
+    agent_path().is_ok_and(|p| is_our_file(&p))
 }
 
 /// `Some(on)` when running from Hoppy.app, `None` otherwise (no menu entry then).
@@ -122,18 +122,7 @@ pub fn set(on: bool) -> Result<()> {
 }
 
 fn write_agent(bundle: &std::path::Path) -> Result<()> {
-    let path = agent_path()?;
-    if path.exists() && !agent_is_ours() {
-        bail!(
-            "{} exists and is not Hoppy's: left unchanged",
-            path.display()
-        );
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    std::fs::write(&path, launch_agent_plist(bundle))
-        .with_context(|| format!("writing {}", path.display()))
+    write_marked_file(&agent_path()?, &launch_agent_plist(bundle))
 }
 
 fn remove_agent() -> Result<()> {

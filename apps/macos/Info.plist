@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Hoppy.app (built by apps/macos/build-app.sh, which replaces @VERSION@).
+<!-- Hoppy.app (built by apps/macos/build-app.sh, which replaces @VERSION@ with the numeric
+     x.y.z part of the release version, as CFBundleVersion requires).
      Kept in sync with crates/hoppy-cli/src/macos/mod.rs by a unit test. -->
 <plist version="1.0">
 <dict>

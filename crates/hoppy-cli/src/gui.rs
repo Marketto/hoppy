@@ -97,6 +97,7 @@ pub struct Strings {
     pub incoming_more: &'static str,
     pub searching: &'static str,
     pub send_header: &'static str,
+    pub send_header_more: &'static str,
     pub no_devices: &'static str,
     pub retry: &'static str,
     pub cancel: &'static str,
@@ -158,7 +159,8 @@ pub const IT: Strings = Strings {
     incoming_body: "{name} ({platform}, {ip}) vuole inviarti {n} file, {size}:",
     incoming_more: "… e altri {n}",
     searching: "Cerco dispositivi…",
-    send_header: "Invia {n} file ({size}) a:",
+    send_header: "Invia «{file}» ({size}) a:",
+    send_header_more: "Invia «{file}» +{more} ({size}) a:",
     no_devices: "Nessun dispositivo trovato — apri Hoppy sull'altro dispositivo (stessa Wi-Fi)",
     retry: "Cerca di nuovo",
     cancel: "Annulla",
@@ -220,7 +222,8 @@ pub const EN: Strings = Strings {
     incoming_body: "{name} ({platform}, {ip}) wants to send you {n} file(s), {size}:",
     incoming_more: "… and {n} more",
     searching: "Looking for devices…",
-    send_header: "Send {n} file(s) ({size}) to:",
+    send_header: "Send “{file}” ({size}) to:",
+    send_header_more: "Send “{file}” +{more} ({size}) to:",
     no_devices: "No devices found — open Hoppy on the other device (same Wi-Fi)",
     retry: "Search again",
     cancel: "Cancel",
@@ -308,6 +311,32 @@ pub fn peer_label(peer: &Peer) -> String {
         other => display_platform(other),
     };
     format!("{} · {platform}", display_name(&peer.device.name))
+}
+
+/// Longest file name shown in the send menu's header (characters).
+pub const HEADER_FILE_MAX: usize = 40;
+
+/// Header of the device menu: the first file's name (cleaned and cut like network text, so
+/// a long or odd name cannot stretch or garble the menu), "+N" for the others, total size.
+pub fn send_header(s: &Strings, files: &[PathBuf], total: u64) -> String {
+    let first = files
+        .first()
+        .and_then(|f| f.file_name())
+        .map(|n| display_text(&n.to_string_lossy(), HEADER_FILE_MAX))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "?".to_owned());
+    let size = human(total);
+    match files.len().saturating_sub(1) {
+        0 => fill(s.send_header, &[("file", &first), ("size", &size)]),
+        more => fill(
+            s.send_header_more,
+            &[
+                ("file", &first),
+                ("more", &more.to_string()),
+                ("size", &size),
+            ],
+        ),
+    }
 }
 
 /// Waits up to `max` for peers, returning early `settle` after the first one appears.
@@ -1453,10 +1482,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let state = Arc::new(Mutex::new(SendState::default()));
     spawn_search(&discovery, &state, tray.waker());
 
-    let header = fill(
-        s.send_header,
-        &[("n", &files.len().to_string()), ("size", &human(total))],
-    );
+    let header = send_header(s, &files, total);
     diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
     let mut phase = Phase::Searching;
     let mut files = Some(files);
@@ -1643,6 +1669,7 @@ mod tests {
                 s.incoming_body,
                 s.incoming_more,
                 s.send_header,
+                s.send_header_more,
                 s.waiting,
                 s.sending,
                 s.delivered,
@@ -1662,6 +1689,36 @@ mod tests {
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
             assert_eq!(placeholders(it), placeholders(en), "{it} / {en}");
         }
+    }
+
+    #[test]
+    fn send_header_names_the_first_file() {
+        let one = [PathBuf::from("/x/foto-mare.jpg")];
+        assert_eq!(
+            send_header(&IT, &one, 1536),
+            "Invia «foto-mare.jpg» (1.5 KB) a:"
+        );
+        let three = [
+            PathBuf::from("/x/foto-mare.jpg"),
+            PathBuf::from("/x/b.txt"),
+            PathBuf::from("/x/c.txt"),
+        ];
+        assert_eq!(
+            send_header(&EN, &three, 5 * 1024 * 1024),
+            "Send “foto-mare.jpg” +2 (5.0 MB) to:"
+        );
+        // Long, bidi-spoofed or control-character names are cleaned and cut.
+        let odd = [PathBuf::from(format!(
+            "/x/{}\u{202E}gpj.exe\n",
+            "a".repeat(100)
+        ))];
+        let h = send_header(&EN, &odd, 1);
+        assert!(!h.contains('\u{202E}') && !h.contains('\n'), "{h}");
+        assert!(
+            h.contains(&format!("{}…", "a".repeat(HEADER_FILE_MAX - 1))),
+            "{h}"
+        );
+        assert_eq!(send_header(&EN, &[], 0), "Send “?” (0 B) to:");
     }
 
     #[test]

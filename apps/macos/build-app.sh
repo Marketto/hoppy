@@ -45,6 +45,11 @@ sign() { # path [extra codesign args…]
 # bundle HOPPYW HOPPY APP_DIR VERSION
 bundle() {
   local gui=$1 cli=$2 app=$3 version=$4
+  # Semver only (it goes into sed and Info.plist); macOS wants plain numbers in the bundle
+  # versions, so a pre-release suffix ("-rc1") is dropped there.
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] ||
+    fail "version '$version' is not x.y.z or x.y.z-suffix"
+  local numeric=${version%%-*}
   [[ -x $gui && -x $cli ]] || fail "missing binaries: $gui $cli"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -52,7 +57,7 @@ bundle() {
   # The CLI sits next to the app's executable (lower-case "hoppy" never clashes with
   # "Hoppy" because the app executable is "hoppyw").
   cp "$cli" "$app/Contents/MacOS/hoppy"
-  sed "s/@VERSION@/$version/g" apps/macos/Info.plist >"$app/Contents/Info.plist"
+  sed "s/@VERSION@/$numeric/g" apps/macos/Info.plist >"$app/Contents/Info.plist"
   printf 'APPL????' >"$app/Contents/PkgInfo"
   cp assets/brand/macos/Hoppy.icns "$app/Contents/Resources/Hoppy.icns"
   cp -R apps/macos/en.lproj apps/macos/it.lproj "$app/Contents/Resources/"

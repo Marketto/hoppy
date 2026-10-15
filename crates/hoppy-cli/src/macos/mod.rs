@@ -145,6 +145,49 @@ pub fn is_ours(text: &str) -> bool {
     text.contains(MARKER)
 }
 
+/// `path` is a regular file (not a symlink, which is never followed) carrying [`MARKER`].
+pub fn is_our_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+        && std::fs::read_to_string(path).is_ok_and(|t| is_ours(&t))
+}
+
+/// Writes a marked file (`contents` must carry [`MARKER`]) without ever writing through
+/// something else: refuses a symlink, a directory or a file of the user's at `path`, writes
+/// a new temporary file next to it and renames it into place (atomic, replaces a symlink
+/// planted meanwhile instead of following it).
+pub fn write_marked_file(path: &Path, contents: &str) -> anyhow::Result<()> {
+    use anyhow::{Context, bail};
+    use std::io::Write;
+    debug_assert!(is_ours(contents));
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if !m.file_type().is_file() => {
+            bail!("{} is not a regular file: left unchanged", path.display())
+        }
+        Ok(_) if !is_our_file(path) => {
+            bail!(
+                "{} exists and is not Hoppy's: left unchanged",
+                path.display()
+            )
+        }
+        _ => {}
+    }
+    let dir = path.parent().context("no parent folder")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let name = path.file_name().context("no file name")?.to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp); // a leftover (or planted) entry is replaced
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(contents.as_bytes()).and_then(|()| f.sync_all()));
+    if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing {}", path.display()));
+    }
+    Ok(())
+}
+
 /// `osascript` arguments that show a notification. The texts are passed as script
 /// arguments after a fixed first argument, never inside the script: the first argument
 /// that is not an option ends option parsing, so a device name like "-e …" stays text.
@@ -253,6 +296,40 @@ mod tests {
         assert!(plist.contains("<string>/Users/x/A &amp; &lt;B&gt;/Hoppy.app</string>"));
         assert!(plist.contains(&format!("<string>{LAUNCH_AGENT_LABEL}</string>")));
         assert!(!is_ours("<plist/>"));
+    }
+
+    #[test]
+    fn marked_files_never_write_through_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = launch_agent_path(dir.path());
+        let plist = launch_agent_plist(Path::new("/Applications/Hoppy.app"));
+        write_marked_file(&path, &plist).unwrap();
+        assert!(is_our_file(&path));
+        write_marked_file(&path, &plist).unwrap(); // ours: replaced
+        let leftovers = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(leftovers, 1, "no temporary file left");
+
+        std::fs::write(&path, "<plist>the user's</plist>").unwrap();
+        assert!(!is_our_file(&path));
+        assert!(write_marked_file(&path, &plist).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "<plist>the user's</plist>"
+        );
+
+        // A symlink (even to a file of ours) is never followed or replaced.
+        let target = dir.path().join("elsewhere.plist");
+        std::fs::write(&target, &plist).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(!is_our_file(&path));
+        assert!(write_marked_file(&path, &plist).is_err());
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

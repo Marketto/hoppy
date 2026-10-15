@@ -32,7 +32,7 @@ use objc2_app_kit::{
     NSApplicationDelegate, NSControlStateValueOn, NSEvent, NSEventMask, NSEventModifierFlags,
     NSEventType, NSFont, NSFontAttributeName, NSImage, NSMenu, NSMenuDelegate, NSMenuItem,
     NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardTypeFileURL, NSSound, NSStatusBar,
-    NSStatusItem, NSVariableStatusItemLength, NSWindowCollectionBehavior,
+    NSStatusItem, NSVariableStatusItemLength, NSWindow, NSWindowCollectionBehavior,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSData, NSDate, NSDefaultRunLoopMode, NSDictionary, NSError,
@@ -169,6 +169,8 @@ thread_local! {
     /// `hoppyw --smoke-test`: no permission prompts.
     static SMOKE: Cell<bool> = const { Cell::new(false) };
     static SOUND: RefCell<Option<Retained<NSSound>>> = const { RefCell::new(None) };
+    /// The window of the open accept question (see `abort_ask`).
+    static ASK_WINDOW: RefCell<Option<Retained<NSWindow>>> = const { RefCell::new(None) };
 }
 
 /// The shared `NSApplication`: accessory (menu-bar only, no Dock icon even outside the
@@ -648,23 +650,46 @@ pub fn message_box_yes_no(title: &str, body: &str) -> bool {
         );
         let seq = ASK_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
         OPEN_ASK.store(seq, Ordering::Release);
+        ASK_WINDOW.with(|w| *w.borrow_mut() = Some(alert.window()));
         thread::spawn(move || {
             thread::sleep(ASK_TIMEOUT);
-            DispatchQueue::main().exec_async(move || {
-                if OPEN_ASK.load(Ordering::Acquire) == seq {
-                    diag::log("receive: no answer in time, declined");
-                    // SAFETY: blocks on the main queue run on the main thread.
-                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-                    NSApplication::sharedApplication(mtm).abortModal();
-                }
-            });
+            DispatchQueue::main().exec_async(move || abort_ask(seq));
         });
         activate(&app);
         let answer = alert.runModal();
         OPEN_ASK.store(0, Ordering::Release);
+        ASK_WINDOW.with(|w| w.borrow_mut().take());
         after_modal();
         answer == NSAlertSecondButtonReturn
     })
+}
+
+/// Timeout of accept question `seq` (main thread): ends it as "declined", but only while
+/// its alert is the modal window on top; under another dialog it retries a bit later, so
+/// `abortModal` never closes someone else's dialog.
+fn abort_ask(seq: u64) {
+    if OPEN_ASK.load(Ordering::Acquire) != seq {
+        return; // answered meanwhile
+    }
+    // SAFETY: called from blocks on the main queue, which run on the main thread.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let app = NSApplication::sharedApplication(mtm);
+    let on_top = ASK_WINDOW.with(|w| {
+        let ours = w.borrow();
+        match (ours.as_ref(), app.modalWindow()) {
+            (Some(ours), Some(modal)) => Retained::as_ptr(ours) == Retained::as_ptr(&modal),
+            _ => false,
+        }
+    });
+    if on_top {
+        diag::log("receive: no answer in time, declined");
+        app.abortModal();
+        return;
+    }
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(2));
+        DispatchQueue::main().exec_async(move || abort_ask(seq));
+    });
 }
 
 pub fn pick_files_unowned(title: &str) -> Result<Vec<PathBuf>, TooManyFiles> {
