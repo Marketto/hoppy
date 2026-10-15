@@ -26,8 +26,9 @@ link to Applications and `Primo avvio - First launch.txt` with these steps:
    without it no device is found), and the first time files are saved, access to the
    Downloads folder (**OK**).
 
-Every new version is a new ad-hoc signature: steps 2–3 and the privacy prompts may come back
-after an update. Running Hoppy straight from the .dmg or from Downloads works, but macOS
+Every new version is a new ad-hoc signature: the privacy prompts may come back after an
+update (an update installed by Hoppy itself is downloaded with curl, so it carries no
+quarantine flag and Gatekeeper does not block it; a .dmg downloaded by the browser does). Running Hoppy straight from the .dmg or from Downloads works, but macOS
 then runs a temporary copy (App Translocation), so "Open at login" stays off until Hoppy is
 in Applications.
 
@@ -45,9 +46,22 @@ in Applications.
 
 - **Receive**: `Hoppy.app` (= `Contents/MacOS/hoppyw`) is a menu-bar icon (the bunny,
   template image). Each offer asks with an `NSAlert`: **Rifiuta/Decline** is the first button
-  (Return), **Accetta/Accept** the second; no answer within 110 s = declined; a second offer
+  (Return), **Accetta/Accept** the second, **Coincide, accetta / They match, accept** the
+  third when there is a code to compare; no answer within 110 s = declined; a second offer
   while one is asked is declined (`gui::GuiReceiver`). Files go to `~/Downloads/Hoppy`. A
   notification "Ricevuti N file da …"; clicking it opens the folder.
+- **Device verification** (protocol v1, docs/protocol.md §7): the alert's accessory view
+  (`macos::ui::accessory`) shows the 4 emoji (Apple Color Emoji) with their names under
+  them and a **123** button that switches to the same value as 8 digits; from a phone
+  (`android`/`ios`) also the QR code (an `NSImage` from `verify::QrMatrix::bmp`, black on
+  white) "Inquadra con Hoppy sul telefono", replaced by "✓ Verificato…" once the phone
+  confirms it. The sender (`hoppyw send`) shows the same code in an alert with **Chiudi**
+  (Return) and **Coincide** while the receiver decides (no QR code: its one-time code would
+  live in the send process); it closes when the transfer ends (the send worker closes it:
+  while that alert is up the menu-bar title is not updated). A changed key gives a warning
+  alert with **Chiudi** (Return) and **Dimentica dispositivo**; *Dispositivi fidati…* in the
+  menu lists remembered devices and forgets one. Dialogs can nest (a warning over an accept
+  question); each closes only itself on timeout.
 - **Send**: Finder → select files → right-click → **Services → Invia con Hoppy** (Finder
   menu → Services works too), or drop files on the Hoppy icon (Applications, Launchpad
   shortcut, Finder sidebar), or *Open With → Hoppy*, or the menu-bar icon → *Invia file…*.
@@ -65,9 +79,22 @@ in Applications.
 - **Single instance**: an exclusive lock on `tray.lock` next to `device.json`. A second
   launch asks the running one to show itself through Launch Services (`open -b
   app.hoppy.desktop` → `applicationShouldHandleReopen:` → "Hoppy is already running").
-- **Updates**: like Linux, notify + link to the portal (*Download Hoppy X…*), never
-  download or install: an unsigned app replaced in place would trip Gatekeeper anyway. A
-  release counts only once `Hoppy-macos-universal.dmg` and `SHA256SUMS.txt` are attached.
+- **Updates** (`crates/hoppy-cli/src/unix/selfupdate.rs`): a release counts only once
+  `Hoppy-macos-universal.dmg` and `SHA256SUMS.txt` are attached. Installed as
+  `/Applications/Hoppy.app` or `~/Applications/Hoppy.app` in a folder this user can write
+  (probed at tray start): *Aggiorna a X…* downloads the .dmg of **that** release
+  (`releases/download/vX.Y.Z/`) with curl into a fresh private temporary folder, keeps it
+  only if its SHA-256 matches `SHA256SUMS.txt`, then `hdiutil attach -nobrowse -readonly`
+  on a private mount point, `ditto` Hoppy.app into a hidden `.hoppy-update-…` folder next to
+  the installed app, `hdiutil detach`, checks the copy (`codesign --verify --deep --strict`,
+  ad-hoc signatures pass; `CFBundleIdentifier` = `app.hoppy.desktop` and
+  `CFBundleShortVersionString` = X via PlistBuddy), swaps it in with two renames (old app →
+  `.hoppy-old-…`, put back if the second rename fails) and removes the old one; a helper
+  (`/bin/sh`, the path as a positional parameter) waits for the tray to exit and runs `open
+  -n Hoppy.app`. Errors: "Aggiornamento non riuscito" (click = portal), the installed app is
+  unchanged. Elsewhere (Downloads, the .dmg, a folder without write access, a bare binary):
+  notify + *Scarica Hoppy X…* → portal. Leftover hidden folders older than an hour are
+  removed at tray start.
 - **Log**: `~/Library/Logs/Hoppy/hoppy.log` (Console.app shows it; menu *About &
   diagnostics…* opens it in TextEdit; `hoppy log` from Terminal).
 - **CLI**: `Hoppy.app/Contents/MacOS/hoppy`. Optional: `sudo ln -s
@@ -90,8 +117,9 @@ Only CI secrets are missing (docs/release.md "Signing"): with `APPLE_CERT_P12_BA
 `APPLE_CERT_PASSWORD`, `release.yml` imports the certificate into a temporary keychain and
 `build-app.sh` signs with the hardened runtime and a timestamp; with `APPLE_ID`,
 `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` it also notarizes and staples the .dmg. Then
-Gatekeeper opens Hoppy with a single confirmation, privacy grants survive updates, and an
-in-app updater (like Windows) becomes possible.
+Gatekeeper opens Hoppy with a single confirmation and privacy grants survive updates (the
+in-app updater then installs a Developer ID–signed app; `codesign --verify` already checks
+it).
 
 ### Limits (product facts)
 
@@ -117,7 +145,8 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
 3. **Menu bar**: bunny icon tinted correctly in light and dark menu bars and on a
    non-Retina display (2015 MacBook Air); left and right click open the menu at once under
    the icon; entries: header, Invia file…, Apri cartella ricevuti, ♪ Suono a fine invio,
-   Apri all'accesso, Informazioni e diagnostica…, Esci; no Dock icon, no app menu.
+   Apri all'accesso, Dispositivi fidati…, Informazioni e diagnostica…, Esci; no Dock icon,
+   no app menu.
 4. **Receive**: phone → Mac: alert in front of other apps (also over a full-screen app and on
    another Space), Return = Rifiuta, Accetta saves to
    `~/Downloads/Hoppy`; notification "Ricevuti…" opens the folder on click; no answer for
@@ -136,10 +165,23 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
    one bunny.
 8. **Firewall**: turn the macOS firewall on; first receive prompts; *Deny* → a phone can
    still deliver via callback ("provo un'altra strada…" on the sender).
-9. **Update notice** (release build, older version installed): notification + *Scarica
-   Hoppy X…* open the portal.
+9. **Update** (release build, older version in /Applications, admin user): notification
+   *Hoppy X è disponibile* → *Aggiorna a X…* → % in the title → "Installo Hoppy X…" → the
+   bunny disappears and comes back on X (About, `hoppy --version`) with no Gatekeeper
+   prompt; Login Items still lists Hoppy (macOS 13+) and *Apri all'accesso* is still on;
+   notifications/Local Network may be asked again (new ad-hoc signature). A standard
+   (non-admin) user with Hoppy in /Applications, or Hoppy run from Downloads: *Scarica
+   Hoppy X…* opens the portal. Pull the network during the download → "Aggiornamento non
+   riuscito", app unchanged, no `.hoppy-*` folder left in /Applications.
 10. **Notifications off** in System Settings: no notification at all; turning them back on
     restores them.
+11. **Verification**: phone → Mac: the alert shows the 4 colour emoji with names, *123*
+    toggles to digits and back, the QR code scans with the phone's Hoppy and turns into ✓,
+    *Coincide, accetta* → next time the device shows ✓ in the send menu; Mac → PC: the code
+    alert matches the PC's dialog, *Coincide* → ✓; reinstall the phone → warning alert,
+    *Dimentica dispositivo*; *Dispositivi fidati…*; VoiceOver reads the emoji names and the
+    digits; a warning arriving while the accept alert is open stacks on top, and each one
+    times out on its own.
 
 ## iPhone / iPad
 

@@ -2,7 +2,9 @@
 // own temporary folder (APFS clones, nothing is loaded into memory: extensions are killed
 // above ~120 MB), runs its own send-only Rust node (ephemeral UDP port, unicast sweep), lets
 // the user tap a device and streams the files. No App Group, no URL-scheme hand-off to the
-// app (ADR 0009).
+// app (ADR 0009). Protocol v1 (ADR 0010): it is its own device to others ("iPad (Condividi)"),
+// with a stable id, key and trust store in its own container, and shows the verification
+// code ("Coincide" / "Più tardi"; no QR: extensions cannot use the camera and it never receives).
 import SwiftUI
 import UIKit
 
@@ -42,10 +44,15 @@ final class ShareModel: ObservableObject {
     @Published private(set) var loading = true
     @Published private(set) var peers: [HoppyPeer] = []
     @Published private(set) var status: SendStatus = .idle
+    @Published private(set) var security: HoppySecurity?
+    @Published var checkHidden = false
+    @Published private(set) var note: String?
+    @Published var keyChanged: KeyChangedAlert?
+    @Published var banner: String?
     var close: (Bool) -> Void = { _ in }
 
     private var node: HoppyNode?
-    private var transfer: (id: UInt64, peer: String)?
+    private var transfer: (id: UInt64, peerId: String, peer: String)?
 
     var sending: Bool {
         switch status {
@@ -64,14 +71,17 @@ final class ShareModel: ObservableObject {
     }
 
     private func startNode() {
-        var config = HoppyConfig(id: Identity.deviceId, name: Identity.deviceName) // own defaults: own id
-        config.udp_port = 0 // never take 47470 from the app
-        config.receive = false
-        config.seeds = Identity.seeds
-        node = try? HoppyNode(config: config) { [weak self] event in
+        // Own container: own id, key and trust store; named "<model> (Condividi)".
+        let seeds = Identity.seeds
+        node = try? Identity.startNode(name: Identity.shareExtensionName, configure: { config in
+            config.udp_port = 0 // never take 47470 from the app
+            config.receive = false
+            config.seeds = seeds
+        }, onEvent: { [weak self] event in
             DispatchQueue.main.async { self?.handle(event) }
-        }
+        })
         if node == nil { status = .failed(L("send_failed", L("not_running"))) }
+        if let warning = node?.info?.trust_warning { banner = L("trust_problem", warning) }
     }
 
     func send(to peer: HoppyPeer) {
@@ -81,8 +91,28 @@ final class ShareModel: ObservableObject {
             status = .failed(L("nothing_to_send"))
             return
         }
-        transfer = (id, peer.name)
+        transfer = (id, peer.id, peer.name)
+        security = nil
+        checkHidden = false
+        note = nil
         status = .waiting(peer.name)
+    }
+
+    /// "Coincide": both screens show the same code.
+    func confirmMatch() {
+        guard let node = node, let peer = security?.peer else { return }
+        if node.verify(peer) {
+            security?.trust = "verified"
+            note = L("sec_verified_now", peer.name)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            note = L("sec_verify_failed", peer.name)
+        }
+    }
+
+    func forget(_ peerId: String) {
+        node?.forget(peerId)
+        keyChanged = nil
     }
 
     func refresh() { node?.refresh() }
@@ -117,14 +147,27 @@ final class ShareModel: ObservableObject {
             case .delivered:
                 status = .delivered(t.peer)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                    self?.shutdown()
-                    self?.close(true)
+                // A code still open for comparison keeps the sheet up ("Fine" closes it).
+                if !((security?.needsCheck ?? false) && !checkHidden) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                        self?.shutdown()
+                        self?.close(true)
+                    }
                 }
             case .declined: status = .declined(t.peer)
             case .unreachable: status = .failed(L("send_unreachable", t.peer))
+            case .keyChanged:
+                status = .failed(L("send_key_changed", t.peer))
+                security = nil
+                keyChanged = KeyChangedAlert(peerId: t.peerId, name: t.peer)
+            case .unencrypted: status = .failed(L("send_unencrypted", t.peer))
             case .error: status = .failed(L("send_failed", message ?? "?"))
             }
+        case let .sendSession(id, sec):
+            guard let t = transfer, t.id == id else { return }
+            security = sec
+        case let .trustNotSaved(error):
+            banner = L("trust_not_saved", error)
         default:
             break // send-only: no offers, no receiving
         }
@@ -140,6 +183,9 @@ struct ShareView: View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    if let text = model.banner {
+                        BannerView(text: text, palette: palette, onClose: { model.banner = nil })
+                    }
                     HStack {
                         Spacer()
                         Image(isDelivered ? "MascotHappy" : "Mascot")
@@ -162,6 +208,12 @@ struct ShareView: View {
                     }
                     if case let .progress(_, percent) = model.status {
                         ProgressView(value: Double(percent), total: 100).accessibilityHidden(true)
+                    }
+                    if let security = model.security {
+                        SecurityPanel(security: security, peerName: peerName(security), palette: palette,
+                                      collapsed: model.checkHidden, note: model.note,
+                                      onMatch: { model.confirmMatch() },
+                                      onLater: { model.checkHidden = true })
                     }
                     Text(L("send_to")).font(.headline).foregroundColor(palette.text).padding(.top, 6)
                         .accessibilityAddTraits(.isHeader)
@@ -203,6 +255,21 @@ struct ShareView: View {
         }
         .navigationViewStyle(.stack)
         .tint(palette.accent)
+        .alert(L("key_changed_title", model.keyChanged?.name ?? ""),
+               isPresented: Binding(get: { model.keyChanged != nil }, set: { if !$0 { model.keyChanged = nil } }),
+               presenting: model.keyChanged) { alert in
+            Button(L("forget_device"), role: .destructive) { model.forget(alert.peerId) }
+            Button(L("ok"), role: .cancel) { model.keyChanged = nil }
+        } message: { alert in
+            Text(L("key_changed_text", alert.name))
+        }
+    }
+
+    private func peerName(_ security: HoppySecurity) -> String {
+        switch model.status {
+        case let .waiting(n), let .fallback(n), let .progress(n, _), let .delivered(n), let .declined(n): return n
+        default: return security.peer?.name ?? "?"
+        }
     }
 
     private var isDelivered: Bool {

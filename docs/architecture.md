@@ -59,6 +59,10 @@ A peer carries ranked endpoints; the engine tries them in order and may upgrade 
 
 ## Security model
 
-v0: trusted LAN only, no encryption (ADR 0003), explicit accept by default.
-v1: device key pairs, Noise/TLS 1.3, pairing code on first contact, account-signed device
-keys for "my devices". Relays only ever see ciphertext.
+v1 (ADR 0010, spec §7): each device has a static X25519 key; every session runs a Noise XX
+handshake (mutual authentication, forward secrecy) and carries the v0 exchange inside
+ChaCha20-Poly1305. Keys are remembered on first use (TOFU) and can be verified with a
+4-emoji / 8-digit code or a QR code; a changed key blocks the transfer. Old v0 apps still
+work in plaintext, flagged in the UI, until the transition switch is turned off. Explicit
+accept by default. Later: account-signed device keys for "my devices"; relays only ever see
+ciphertext.

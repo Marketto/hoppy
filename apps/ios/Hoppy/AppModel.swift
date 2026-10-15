@@ -1,7 +1,8 @@
 // The app's state: one Rust node while the app is in the foreground (iOS gives no
 // background listening without special entitlements), receive toggle, sends, the accept
-// question and the last received files. Used only on the main thread (events are posted
-// there with DispatchQueue.main.async, which keeps their order).
+// question, the last received files, device verification (spec §7: code, QR, KeyChanged)
+// and the update notice. Used only on the main thread (events are posted there with
+// DispatchQueue.main.async, which keeps their order).
 import AVFoundation
 import SwiftUI
 import UIKit
@@ -23,8 +24,30 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(soundOn, forKey: Self.soundKey) }
     }
 
+    // Verification (spec §7, ADR 0010)
+    /// Which screen a verification action belongs to: the incoming offer or the running send.
+    enum Session { case offer, send }
+    /// Security of the running send (from `send_session`).
+    @Published private(set) var sendSecurity: HoppySecurity?
+    @Published var sendCheckHidden = false
+    @Published var offerCheckHidden = false
+    /// Result of "Coincide" / a QR scan, shown in the panel of `noteFor`.
+    @Published private(set) var securityNote: String?
+    @Published private(set) var noteFor: Session?
+    /// The camera scanner is open for this session.
+    @Published var scanningFor: Session?
+    /// "Mostra il mio QR" is open (payload) over this session's screen.
+    @Published private(set) var myQR: (payload: String, over: Session)?
+    @Published var keyChanged: KeyChangedAlert?
+    @Published var banner: String?
+    /// A newer release to announce (UpdateCheck).
+    @Published private(set) var update: String?
+
     private var node: HoppyNode?
-    private var transfer: (id: UInt64, peer: String, files: [URL])?
+    private var transfer: (id: UInt64, peerId: String, peer: String, files: [URL])?
+    private var pendingScan: (id: UInt64, session: Session, name: String)?
+    /// Receiving was turned on only so a scan of "my QR" can reach us.
+    private var receivingForQR = false
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var inForeground = false
     private var player: AVAudioPlayer?
@@ -65,6 +88,9 @@ final class AppModel: ObservableObject {
             // Back from a system prompt (Local Network) or a short trip away: sweep again.
             node?.refresh()
         }
+        if !isTesting {
+            UpdateCheck.runIfDue { [weak self] version in self?.update = version }
+        }
     }
 
     /// Stops the node at once unless a transfer runs: then iOS gives us ~30 s to finish.
@@ -102,15 +128,18 @@ final class AppModel: ObservableObject {
     func startNode() {
         guard node == nil, !isTesting else { return }
         removeStaleParts()
-        var config = HoppyConfig(id: Identity.deviceId, name: deviceName)
-        config.receive_dir = receiveDir.path
-        config.receive = receiving
-        config.seeds = Identity.seeds
+        let dir = receiveDir.path, receive = receiving, seeds = Identity.seeds
         do {
-            node = try HoppyNode(config: config) { [weak self] event in
+            // Persistent key + trust store (Application Support), id bound to the key.
+            node = try Identity.startNode(name: deviceName, configure: { config in
+                config.receive_dir = dir
+                config.receive = receive
+                config.seeds = seeds
+            }, onEvent: { [weak self] event in
                 DispatchQueue.main.async { self?.handle(event) }
-            }
+            })
             startError = nil
+            if let warning = node?.info?.trust_warning { banner = L("trust_problem", warning) }
         } catch {
             startError = error.localizedDescription
         }
@@ -138,6 +167,12 @@ final class AppModel: ObservableObject {
         if case .preparing = sendStatus { sendStatus = .idle }
         if let t = transfer { Outbox.remove(t.files) }
         transfer = nil
+        sendSecurity = nil
+        pendingScan = nil
+        scanningFor = nil
+        myQR = nil
+        receivingForQR = false
+        securityNote = nil
     }
 
     private func restartNode() {
@@ -199,7 +234,10 @@ final class AppModel: ObservableObject {
             Outbox.remove(files)
             return
         }
-        transfer = (id, peer.name, files)
+        transfer = (id, peer.id, peer.name, files)
+        sendSecurity = nil
+        sendCheckHidden = false
+        clearNote(.send)
         sendStatus = .waiting(peer.name)
         UIApplication.shared.isIdleTimerDisabled = true
     }
@@ -221,6 +259,110 @@ final class AppModel: ObservableObject {
 
     func clearReceived() { lastReceived = [] }
 
+    // MARK: verification (spec §7)
+
+    private func security(of session: Session) -> HoppySecurity? {
+        session == .offer ? offer?.security : sendSecurity
+    }
+
+    /// The session on screen is now verified (✓) if it is this key.
+    private func markVerified(_ key: HoppyPeerKey) {
+        if var o = offer, o.security.peer?.id == key.id, o.security.peer?.fingerprint == key.fingerprint {
+            o.security.trust = "verified"
+            offer = o
+        }
+        if var s = sendSecurity, s.peer?.id == key.id, s.peer?.fingerprint == key.fingerprint {
+            s.trust = "verified"
+            sendSecurity = s
+        }
+    }
+
+    private func note(_ text: String, _ session: Session) {
+        securityNote = text
+        noteFor = session
+    }
+
+    private func clearNote(_ session: Session) {
+        if noteFor == session { securityNote = nil; noteFor = nil }
+    }
+
+    /// "Coincide": both screens show the same code.
+    func confirmMatch(_ session: Session) {
+        guard let node = node, let sec = security(of: session), let peer = sec.peer else { return }
+        if node.verify(peer) {
+            markVerified(peer)
+            note(L("sec_verified_now", peer.name), session)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            note(L("sec_verify_failed", peer.name), session)
+        }
+    }
+
+    func later(_ session: Session) {
+        if session == .offer { offerCheckHidden = true } else { sendCheckHidden = true }
+    }
+
+    /// "Verifica con QR": camera if allowed, otherwise compare the code.
+    func startScan(_ session: Session) {
+        CameraAccess.request { [weak self] ok in
+            guard let self = self else { return }
+            if ok {
+                self.scanningFor = session
+            } else {
+                self.note(L(CameraAccess.hasCamera ? "camera_denied" : "camera_unavailable"), session)
+            }
+        }
+    }
+
+    func cancelScan() { scanningFor = nil }
+
+    func scanned(_ payload: String) {
+        guard let session = scanningFor else { return }
+        scanningFor = nil
+        guard let node = node else { return }
+        let live = security(of: session)?.peer
+        let id = node.qrScan(payload, live: live)
+        if id == 0 {
+            note(L("qr_invalid"), session)
+        } else {
+            pendingScan = (id, session, live?.name ?? "?")
+            note(L("qr_checking"), session)
+        }
+    }
+
+    /// "Mostra il mio QR": the other device's scan reaches us through the receiver, so it is
+    /// turned on while the code is shown.
+    func showMyQR(over session: Session) {
+        guard let node = node else { return }
+        if !receiving {
+            receivingForQR = node.setReceiving(true) != nil
+        }
+        if let payload = node.qrBegin() { myQR = (payload, session) }
+    }
+
+    func closeMyQR() {
+        guard myQR != nil else { return }
+        myQR = nil
+        node?.qrEnd()
+        if receivingForQR {
+            receivingForQR = false
+            if !(UserDefaults.standard.object(forKey: Self.receiveKey) as? Bool ?? true) {
+                node?.setReceiving(false)
+            }
+        }
+    }
+
+    /// "Dimentica dispositivo": its next contact is New (trust on first use again).
+    func forget(_ peerId: String) {
+        node?.forget(peerId)
+        keyChanged = nil
+    }
+
+    func dismissUpdate() {
+        if let v = update { UpdateCheck.dismiss(v) }
+        update = nil
+    }
+
     // MARK: events
 
     private func handle(_ event: HoppyEvent) {
@@ -229,10 +371,14 @@ final class AppModel: ObservableObject {
         case let .peers(list):
             peers = list
             Identity.remember(list)
+        case .peerLost:
+            break // the `peers` event before it already updated the list
         case let .receiving(on, _):
             receiving = on
         case let .offer(o):
             offer = o
+            offerCheckHidden = false
+            clearNote(.offer)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
         case let .offerClosed(id):
             if offer?.id == id { offer = nil }
@@ -267,10 +413,50 @@ final class AppModel: ObservableObject {
                 sendStatus = .declined(t.peer)
             case .unreachable:
                 sendStatus = .failed(L("send_unreachable", t.peer))
+            case .keyChanged:
+                sendStatus = .failed(L("send_key_changed", t.peer))
+                sendSecurity = nil
+                keyChanged = KeyChangedAlert(peerId: t.peerId, name: t.peer)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            case .unencrypted:
+                sendStatus = .failed(L("send_unencrypted", t.peer))
             case .error:
                 sendStatus = .failed(L("send_failed", message ?? "?"))
             }
+            // The send panel stays (the code can still be compared) until the next send.
             transferEnded()
+        case let .sendSession(id, security):
+            guard let t = transfer, t.id == id else { return }
+            sendSecurity = security
+        case let .blocked(id, name, _, reason):
+            if reason == "key_changed" {
+                keyChanged = KeyChangedAlert(peerId: id, name: name)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            } else {
+                banner = L("plain_refused", name)
+            }
+        case let .verified(peer):
+            markVerified(peer)
+            banner = L("sec_verified_now", peer.name)
+            closeMyQR()
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case let .handshakeAborts(from, recent):
+            banner = L("aborts_banner", from, recent)
+        case let .trustNotSaved(error):
+            banner = L("trust_not_saved", error)
+        case let .qrDone(scan, ok, local, _, error):
+            guard let p = pendingScan, p.id == scan else { return }
+            pendingScan = nil
+            if ok {
+                note(L("sec_verified_now", p.name), p.session)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } else if local {
+                note(L("qr_local_only", p.name, error ?? "?"), p.session)
+            } else {
+                note(L("qr_mismatch", error ?? "?"), p.session)
+            }
+            if local, let key = security(of: p.session)?.peer { markVerified(key) }
+            if noteFor == .send && sendSecurity == nil, let text = securityNote { banner = text }
         }
     }
 

@@ -6,7 +6,7 @@ then **only** the skill/doc the router points you to. Humans: see `README.md`.
 Hoppy sends files between nearby devices (Windows, macOS, Linux, Android, iPhone)
 as simply as possible: "Send to → Hoppy", tap a device, done. Current stage:
 **PoC — Windows + Ubuntu + macOS desktop app + Android app + iPhone/iPad app (sideloaded),
-LAN only, protocol v0 (unencrypted)**.
+LAN only, protocol v1 (Noise XX end-to-end encryption, ADR 0010) with a flagged v0 fallback**.
 
 ## 1. Task router
 
@@ -35,7 +35,7 @@ touches bytes on the wire or files written to disk.
 ## 2. Repository map
 
 ```
-crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, sanitize.rs
+crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, sanitize.rs, crypto.rs/session.rs (v1 Noise), trust.rs (TOFU)
 crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` tray/Send GUI (Windows + Linux + macOS)
 crates/hoppy-ffi/      C ABI over hoppy-core (staticlib → HoppyFFI.xcframework) for the iOS app
 apps/android/core/     Pure-JVM Kotlin: same protocol for Android (unit + interop tested)
@@ -70,7 +70,9 @@ assets/music/          Generated desktop music (WAV) + manifest
 5. **No network work on the Android main thread**; `DiscoveryNode` already hops threads.
 6. **Mascots, music and fonts are generated**: edit `tools/gen_mascots.py` /
    `tools/gen_music.py` / run `tools/fonts.py`, never edit the XML/SVG/OGG/WAV/TTF outputs.
-7. **v0 is unencrypted** (ADR 0003). Do not ship outside trusted LANs; v1 adds encryption.
+7. **Encrypt by default** (ADR 0010). v1↔v1 is always encrypted; plaintext only with v0 peers and
+   always flagged in the UI; never send to or auto-accept from a KeyChanged device; never weaken the
+   SAS commit/reveal; no internet relay until plaintext is switched off.
 8. **Original art only.** Mascots must not resemble existing characters or brands; music
    must not quote or imitate existing tunes (game, anime, pop).
 9. **Public repo: never commit sensitive data** — credentials, tokens, keystores, `.env`,

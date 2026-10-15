@@ -48,3 +48,19 @@ open behind other windows under Wayland focus rules. Tested here: unit tests, an
 runs in a private D-Bus session against a fake notification server + StatusNotifierWatcher
 (menu read and clicked over dbusmenu, accept/decline/cancel actions, single instance,
 fallbacks); a real GNOME/KDE session is still needed (`docs/platforms/linux.md`).
+
+## Amendment (2026-10-15): self-update and device verification
+The product owner asked that the desktop apps fetch, verify and install new versions
+themselves. A copy installed from the .deb (`/usr/bin/hoppyw`) now downloads the release's
+.deb, checks its SHA-256 against `SHA256SUMS.txt` and runs `/usr/bin/pkexec
+/usr/lib/hoppy/install-update <sha256> <file>` (the user types the password in the
+desktop's polkit dialog; no silent root), then restarts. The helper is root-owned and
+shipped in the package: because the download sits in a folder the user's processes can
+write, root never installs that file but a copy in a root-only folder whose SHA-256 and
+package name it re-checks (a check done only by the unprivileged tray would let any
+process of the user swap the file and get root). Programs are called by absolute path.
+Without pkexec or a polkit agent the .deb is handed to the software installer.
+Other copies keep the portal link. The protocol v1 verification UI (ADR 0010) uses zenity
+with Pango markup for the large emoji and a QR code drawn with Unicode half blocks; zenity
+dialogs cannot change while open, so the code toggle and the ✓ after a QR scan re-open them.
+Details: `docs/platforms/linux.md` "Updates" and "Device verification".

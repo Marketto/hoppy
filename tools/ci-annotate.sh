@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # Turns a failed cargo log into GitHub annotations: agents can read annotations but not CI
-# logs. Used by the Windows and macOS jobs in .github/workflows/ci.yml (Git Bash on
-# windows-latest, bash on macos-latest) and by release.yml.
+# logs. Used by the Linux (`dev.py all`: cargo, Python selftest, interop, Gradle), Windows and
+# macOS jobs in .github/workflows/ci.yml (Git Bash on windows-latest, bash on macos-latest)
+# and by release.yml.
 #
-#   bash tools/ci-annotate.sh LABEL LOGFILE
+#   bash tools/ci-annotate.sh LABEL LOGFILE [TAIL_LINES]   (TAIL_LINES default 40)
 #
 # GitHub shows at most 10 error annotations per step, so this emits, in priority order:
 #   - one annotation per failing test (up to 5): its whole "---- <test> stdout ----" block,
 #     panic message included, anchored at the panic location when known;
 #   - diagnostics ("path:line:col: error…" from --message-format=short, panics outside such
-#     blocks, "error:" lines) until 9 annotations are used;
-#   - 1 annotation with the last 40 log lines, passing "test … ok" lines left out
+#     blocks, "error:" lines, and from tools/dev.py: "✗ …", Python tracebacks, selftest/interop
+#     "FAIL" lines, Gradle "What went wrong") until 9 annotations are used;
+#   - 1 annotation with the last TAIL_LINES log lines, passing "test … ok" lines left out
 #     (newlines encoded as %0A).
 set -u
 label=$1
 log=$2
+tail_lines=${3:-40}
 max_blocks=5
 max_block_lines=40
 used=0
@@ -89,7 +92,7 @@ done <"$log"
 flush
 
 # 2. Other diagnostics (panics already reported in a block are skipped).
-grep -E '^[^ ]+:[0-9]+:[0-9]+: (error|warning)|panicked at|^error(\[|:)' "$log" |
+grep -E '^[^ ]+:[0-9]+:[0-9]+: (error|warning)|panicked at|^error(\[|:)|^✗ |^ *FAIL|^Traceback|^[A-Za-z]*Error: |What went wrong|^e: ' "$log" |
   { if ((blocks > 0)); then grep -v 'panicked at'; else cat; fi; } |
   head -n $((9 - used)) |
   while IFS= read -r line; do
@@ -107,5 +110,5 @@ grep -E '^[^ ]+:[0-9]+:[0-9]+: (error|warning)|panicked at|^error(\[|:)' "$log" 
 tail_text=""
 while IFS= read -r line; do
   tail_text+="$(escape "$line")%0A"
-done < <(tr -d '\r' <"$log" | grep -vE '^test .* \.\.\. ok$' | tail -n 40)
-printf '::error title=%s::%s\n' "$(prop "$label (last 40 log lines)")" "$tail_text"
+done < <(tr -d '\r' <"$log" | grep -vE '^test .* \.\.\. ok$' | tail -n "$tail_lines")
+printf '::error title=%s::%s\n' "$(prop "$label (last $tail_lines log lines)")" "$tail_text"

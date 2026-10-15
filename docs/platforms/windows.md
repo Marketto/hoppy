@@ -9,17 +9,21 @@
 - Two binaries: `hoppyw.exe` (GUI, never opens a console) is what users see; `hoppy.exe` is
   the CLI for scripts and tests. Without `hoppyw.exe`, `hoppy install` falls back to the
   console flow (`hoppy send --pause`, `hoppy receive` minimized).
-- Receive: the tray icon (tooltip "Hoppy · *device name*") means Hoppy is ready. A Yes/No
-  dialog appears for each incoming transfer (default button **No**, so a stray Enter does
-  not accept); while it is open, further offers are declined. It shows file names as they
-  will be saved (§4 sanitizer) and strips control/bidi characters from names. Files go to
-  `Downloads\Hoppy`; a notification says what arrived and opens the folder when clicked.
-  `hoppy receive --yes` (CLI) skips the question (trusted networks only).
+- Receive: the tray icon (tooltip "Hoppy · *device name*") means Hoppy is ready. A Hoppy
+  dialog appears for each incoming transfer: who sends what, how the connection is
+  protected and, for a device not verified yet, the 4-emoji code to compare (see
+  [Device verification](#device-verification)); buttons **Decline** (default, so a stray
+  Enter or Esc does not accept), **Accept** and, with a code, **They match, accept**. No
+  answer within 110 s = declined; while it is open, further offers are declined. It shows
+  file names as they will be saved (§4 sanitizer) and strips control/bidi characters from
+  names. Files go to `Downloads\Hoppy`; a notification says what arrived and opens the
+  folder when clicked. `hoppy receive --yes` (CLI) skips the question (trusted networks
+  only).
 - Tray menu (left or right click; it opens at the point Windows reports for the click):
   *Send files…*, *Open received folder*, *♪ Sound when delivered* (check mark = on), on
   Windows 11 *"Send with Hoppy" directly on right-click (classic menu)* (check mark = on),
-  *About & diagnostics…*, *Quit*. When an update is available, a bold *Update to X.Y.Z…*
-  comes first.
+  *Trusted devices…*, *About & diagnostics…*, *Quit*. When an update is available, a bold
+  *Update to X.Y.Z…* comes first.
 - The tray's UI thread never does file, registry or network I/O: `device.json` (roaming
   AppData, often redirected to a network share on company PCs) is cached and re-read by a
   worker whenever the menu opens; opening folders, starting processes, UAC prompts and
@@ -41,7 +45,9 @@
 - Installer upgrades/uninstalls stop only the `hoppy.exe`/`hoppyw.exe` running from the
   install folder (PowerShell, path-filtered), not same-named programs elsewhere.
 - Send: right-click one or more files → *Send with Hoppy* (or *Send to* → *Hoppy*, or drop
-  them on the desktop icon) → a menu at the mouse lists nearby devices → click one.
+  them on the desktop icon) → a menu at the mouse lists nearby devices (✓ verified,
+  🔒 encrypted, "⚠ not encrypted" for old apps) → click one. For a device not verified
+  yet a small window shows the same code as the receiver's dialog, with **They match**.
   Progress is in the tray icon tooltip; a notification confirms delivery (or the refusal).
   Folders are refused with a message (not supported yet).
 - Sound (only on the sender): the *Send to* flow is silent while it searches, shows the
@@ -168,12 +174,45 @@ the transfer fails with a connect timeout to port 47471.
   `netsh advfirewall firewall add rule name="Hoppy (hoppyw)" dir=in action=allow program="<path>\hoppyw.exe" profile=private,domain protocol=TCP localport=47471`
   (and the same with `protocol=UDP localport=47470`).
 
+## Device verification
+
+Protocol v1 (docs/protocol.md §7, ADR 0010) encrypts every session with a v1 peer and
+remembers device keys. The dialogs are a small window of Hoppy's own
+(`platform::win::show_dialog`, `crates/hoppy-cli/src/platform.rs`), described by
+`verify::DialogView` (shared with Linux and macOS):
+
+- **Code**: the 4 emoji in *Segoe UI Emoji* (GDI draws them in one colour, so each has its
+  name under it, Italian or English) and a **123** button that shows the same value as
+  8 digits ("1234 5678") and back (**Emoji**). Screen readers read the names and digits as
+  text.
+- **Receiver** (tray): the accept dialog above. *They match, accept* = accept + mark the
+  sender verified. When the sender is a phone (`android`/`ios`) the dialog also shows a QR
+  code (`Local::begin_qr`, painted module by module, black on white) — "Or scan this code
+  with Hoppy on the phone"; when the phone confirms it (spec §7.7) the QR code is replaced
+  by "✓ Verified: the phone confirmed the code" and a notification says so.
+- **Sender** (`hoppyw send`): after the handshake with a New/Known device, a window with the
+  same code, **Close** (default) and **They match** (marks the receiver verified); it closes
+  by itself when the transfer ends. No QR code there: its one-time code would live in the
+  short-lived send process, while a phone's confirmation reaches the tray.
+- **Key changed** (a remembered device answers with another key): the sender refuses before
+  the offer, the receiver declines without asking (spec §7.5); both show a warning dialog
+  with **Close** (default) and **Forget device** (the next contact is a new device).
+- **Trusted devices…** (tray menu): remembered devices (✓ = verified, start of the key
+  fingerprint to tell same-named devices apart); picking one asks "Forget X?".
+- Warnings as notifications: a new device using the name of a known one (in the accept
+  dialog too), sessions abandoned mid-handshake (someone may be guessing codes; at most one
+  a minute), a damaged `trust.json` set aside, a trust change that could not be saved.
+
+The dialog runs its own message loop on a worker thread (never the tray thread), Topmost,
+centred on the work area, `IsDialogMessageW` for Tab / Enter (= default button) / Esc
+(= closed = default answer); it polls its `DialogLive` (verified / close) every 200 ms.
+
 ## Known limits
 - Windows 11's new (compact) context menu only lists `IExplorerCommand` handlers from a
   signed MSIX package (roadmap); until then *Send with Hoppy* is there only with the
   classic-menu option, otherwise under "Show more options".
 - The Windows 11 **Share** sheet ("Condividi") only lists packaged apps with a share
   target, so Hoppy needs an MSIX package to appear there (roadmap).
-- Accept dialog is a plain `MessageBoxW`; a themed picker/accept window is planned.
+- Emoji in the dialogs are monochrome (GDI); the names under them keep look-alikes apart.
 - Network profile "Public" blocks Hoppy (our rules exclude it on purpose): set the Wi-Fi to
   Private; the tray says so.

@@ -19,12 +19,19 @@ import app.hoppy.Prefs
 import app.hoppy.R
 import app.hoppy.core.CallbackReceiver
 import app.hoppy.core.Offer
+import app.hoppy.core.PeerKey
 import app.hoppy.core.Protocol
 import app.hoppy.core.ReceiveHandler
+import app.hoppy.core.SessionInfo
 import app.hoppy.core.TransferServer
+import app.hoppy.core.TrustState
+import app.hoppy.core.Warning
+import app.hoppy.security.PendingVerifications
+import app.hoppy.security.Security
 import app.hoppy.ui.MainActivity
 import app.hoppy.ui.Format
 import app.hoppy.ui.SafeText
+import app.hoppy.ui.VerifyActivity
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -66,11 +73,13 @@ class ReceiveService : Service() {
         Node.acquire(this)
         // Senders that cannot reach our TCP port ask us to connect back (spec §6); the
         // node only honours this while receivePort != 0. Same sink and decision path.
-        val me = Prefs.device(this)
         Node.callbackHandler = { request ->
             var socket: Socket? = null
             try {
-                serve { CallbackReceiver.answer(request, me, sink, it) { s -> socket = s; track(s) } }
+                // Encrypted like direct connections (spec §7.2); the Local is read per connection.
+                // No usable key: refuse the session (logged; the home screen tells the user).
+                val local = localOrNull()
+                if (local != null) serve { CallbackReceiver.answer(request, local, sink, it) { s -> socket = s; track(s) } }
             } finally {
                 socket?.let { sockets -= it }
             }
@@ -121,7 +130,8 @@ class ReceiveService : Service() {
             runCatching {
                 pool.execute {
                     try {
-                        serve { TransferServer.handle(client, sink, it) }
+                        val local = localOrNull()
+                        if (local == null) runCatching { client.close() } else serve { TransferServer.handle(client, sink, it, local) }
                     } finally {
                         sockets -= client
                     }
@@ -129,6 +139,10 @@ class ReceiveService : Service() {
             }.onFailure { sockets -= client; runCatching { client.close() } } // pool shut down
         }
     }
+
+    /** This device for a session, or null if the device key cannot be loaded (never a silent new key). */
+    private fun localOrNull(): app.hoppy.core.Local? =
+        runCatching { Security.local(this) }.onFailure { android.util.Log.e("HoppyReceive", "no device key", it) }.getOrNull()
 
     /** Registers a transfer socket; one opened after [onDestroy] began is closed at once. */
     private fun track(s: Socket) {
@@ -155,14 +169,43 @@ class ReceiveService : Service() {
     /** One incoming connection; [accepted] marks it as an active receive (music stays off). */
     private inner class Connection : ReceiveHandler {
         @Volatile var accepted = false
+        /** Accepted by the auto-accept option, not by a person: the sender's key is not remembered. */
+        @Volatile private var auto = false
 
-        override fun decide(offer: Offer, from: InetAddress): Boolean {
-            val ok = Prefs.autoAccept(this@ReceiveService) || askOneAtATime(offer)
+        override fun decide(offer: Offer, from: InetAddress, session: SessionInfo): Boolean {
+            auto = Prefs.autoAccept(this@ReceiveService)
+            val ok = auto || askOneAtATime(offer, session)
             if (ok) {
                 accepted = true
                 receiveStarted()
             }
             return ok
+        }
+
+        override fun autoAccepts(): Boolean = auto
+
+        override fun onBlocked(from: InetAddress, offer: Offer, session: SessionInfo, reason: String) {
+            val name = SafeText.label(offer.sender.name)
+            if (reason == "key_changed") {
+                val open = VerifyActivity.keyChangedIntent(this@ReceiveService, offer.sender.id, offer.sender.name)
+                notifySecurity(getString(R.string.blocked_key_changed, name), getString(R.string.blocked_key_changed_detail), open)
+            } else {
+                notifySecurity(getString(R.string.blocked_plaintext, name), getString(R.string.blocked_plaintext_detail), null)
+            }
+        }
+
+        override fun onVerified(from: InetAddress, peer: PeerKey) {
+            Security.notifyVerified(peer)
+            notifySecurity(getString(R.string.verified_by_qr, SafeText.label(peer.name)), null, null)
+        }
+
+        override fun onWarning(from: InetAddress, warning: Warning) {
+            when (warning) {
+                is Warning.HandshakeAborts ->
+                    notifySecurity(getString(R.string.aborts_title), getString(R.string.aborts_text, warning.recent), null)
+                is Warning.TrustNotSaved ->
+                    notifySecurity(getString(R.string.trust_not_saved, SafeText.label(warning.message, 200)), null, null)
+            }
         }
 
         override fun onProgress(from: InetAddress, done: Long, total: Long) {
@@ -229,18 +272,51 @@ class ReceiveService : Service() {
         )
     }
 
+    /**
+     * A security notification (channel "Security warnings"): refused senders, code-guessing
+     * warnings (rate-limited by the core), QR verifications. [open] runs on tap.
+     */
+    private fun notifySecurity(title: String, text: String?, open: Intent?) {
+        val id = nextId.incrementAndGet()
+        val builder = base(HoppyApp.CH_SECURITY)
+            .setContentTitle(title)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+        if (text != null) builder.setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text))
+        if (open != null) {
+            builder.setContentIntent(
+                PendingIntent.getActivity(this, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT),
+            )
+        }
+        notify(id, builder.build())
+    }
+
+    /** The session line of the offer notification: encrypted or not, trust, code (spec §7.6). */
+    private fun securityLine(session: SessionInfo, verifiedNow: Boolean): String {
+        val sas = session.sas
+        return when {
+            !session.encrypted || sas == null -> getString(R.string.incoming_plain)
+            verifiedNow || session.trust == TrustState.VERIFIED -> getString(R.string.incoming_secure_verified)
+            session.trust == TrustState.NEW -> getString(R.string.incoming_secure_new, sas.text, sas.digits)
+            else -> getString(R.string.incoming_secure_known, sas.text, sas.digits)
+        }
+    }
+
     /** One prompt at a time: an offer arriving while another awaits a decision is declined. */
-    private fun askOneAtATime(offer: Offer): Boolean {
+    private fun askOneAtATime(offer: Offer, session: SessionInfo): Boolean {
         if (!deciding.compareAndSet(false, true)) return false
         try {
-            return askUser(offer)
+            return askUser(offer, session)
         } finally {
             deciding.set(false)
         }
     }
 
-    /** Shows Accept/Decline actions and blocks this connection's thread for up to 60 s. */
-    private fun askUser(offer: Offer): Boolean {
+    /**
+     * Shows Accept/Decline (+ "Verify" for an unverified encrypted sender, which opens the
+     * code full screen) and blocks this connection's thread for up to 60 s (then: decline).
+     */
+    private fun askUser(offer: Offer, session: SessionInfo): Boolean {
         if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) return false
         val id = nextId.incrementAndGet()
         val future = CompletableFuture<Boolean>()
@@ -256,29 +332,46 @@ class ReceiveService : Service() {
         val names = offer.files.take(3).joinToString(", ") { SafeText.offeredFileName(it.name) } +
             if (offer.files.size > 3) " +${offer.files.size - 3}" else ""
         val sender = SafeText.label(offer.sender.name)
-        notify(
-            id,
-            base(HoppyApp.CH_INCOMING)
+        val canVerify = session.encrypted && session.sas != null && session.peer != null &&
+            (session.trust == TrustState.NEW || session.trust == TrustState.KNOWN)
+        val postedAt = System.currentTimeMillis()
+        fun show(verifiedNow: Boolean) {
+            val text = securityLine(session, verifiedNow) + "\n" + names +
+                if (session.nameMatchesKnown && !verifiedNow) "\n" + getString(R.string.verify_name_warning) else ""
+            val left = DECISION_TIMEOUT_S * 1000 - (System.currentTimeMillis() - postedAt)
+            val n = base(HoppyApp.CH_INCOMING)
                 .setContentTitle(
                     resources.getQuantityString(
                         R.plurals.incoming_title, offer.files.size, sender, offer.files.size,
                         Format.size(offer.totalSize),
                     ),
                 )
-                .setContentText(names)
+                .setContentText(securityLine(session, verifiedNow))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setTimeoutAfter(DECISION_TIMEOUT_S * 1000)
+                .setOnlyAlertOnce(true)
+                .setTimeoutAfter(left.coerceAtLeast(1_000L))
                 .addAction(0, getString(R.string.decline), action(false))
-                .addAction(0, getString(R.string.accept), action(true))
-                .build(),
-        )
+            if (canVerify && !verifiedNow) {
+                val verify = PendingIntent.getActivity(
+                    this, id, VerifyActivity.pendingIntent(this, id),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                n.addAction(0, getString(R.string.verify_action), verify)
+            }
+            n.addAction(0, getString(R.string.accept), action(true))
+            notify(id, n.build())
+        }
+        if (canVerify) PendingVerifications.put(id, PendingVerifications.Entry(session) { show(verifiedNow = true) })
+        show(verifiedNow = false)
         return try {
             future.get(DECISION_TIMEOUT_S, TimeUnit.SECONDS)
         } catch (e: Exception) {
             false
         } finally {
             pending.remove(id)
+            PendingVerifications.remove(id)
             getSystemService(NotificationManager::class.java).cancel(id)
         }
     }

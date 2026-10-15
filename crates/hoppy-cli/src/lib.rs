@@ -5,7 +5,9 @@
 //!
 //! Win32 FFI lives only in `platform.rs`; the Linux desktop backend in `linux/`, the macOS
 //! one in `macos/` (AppKit FFI only in its `#[cfg(target_os = "macos")]` modules); `gui.rs`
-//! is safe, platform-neutral Rust on top of `platform::ui`.
+//! is safe, platform-neutral Rust on top of `platform::ui`. `verify.rs` describes the
+//! verification dialogs every backend draws; `unix/selfupdate.rs` installs a downloaded update
+//! on macOS and Linux (Windows runs the installer).
 
 pub mod config;
 pub mod diag;
@@ -23,6 +25,7 @@ pub mod platform;
 #[cfg(not(windows))]
 pub mod unix;
 pub mod update;
+pub mod verify;
 
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -32,7 +35,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result};
 use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::transfer::serve;
-use hoppy_core::{DeviceInfo, Discovery, DiscoveryConfig, ReceiveHandler, Sweep, accept_callbacks};
+use hoppy_core::{
+    DeviceInfo, Discovery, DiscoveryConfig, Local, ReceiveHandler, Sweep, accept_callbacks,
+};
 
 /// `--seed` values: `IP` or `IP:PORT` (discovery port by default).
 pub fn parse_seeds(raw: &[String]) -> Result<Vec<SocketAddr>> {
@@ -121,10 +126,11 @@ pub fn receive_forever(
     listener: TcpListener,
     discovery: &Discovery,
     dir: PathBuf,
+    local: Local,
     handler: Arc<dyn ReceiveHandler>,
 ) -> ! {
-    accept_callbacks(discovery, dir.clone(), Arc::clone(&handler));
-    serve(listener, dir, handler)
+    accept_callbacks(discovery, dir.clone(), local.clone(), Arc::clone(&handler));
+    serve(listener, dir, local, handler)
 }
 
 /// Where received files go unless `--dir` says otherwise: `Downloads/Hoppy`.

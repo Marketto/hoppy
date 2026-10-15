@@ -7,10 +7,11 @@
 //! `Hoppy-Setup-x64.exe`, `Hoppy-linux-amd64.deb`, `Hoppy-macos-universal.dmg` and
 //! `SHA256SUMS.txt` stable (docs/release.md).
 //!
-//! Linux and macOS only announce a new version and link to the download portal (the .deb
-//! is installed by the system's software installer, with the user's password; the Mac app
-//! is not notarized, so each new copy goes through Gatekeeper's first-launch steps): no
-//! download.
+//! Installing: Windows runs the downloaded installer (`INSTALLER_ARGS`); macOS replaces
+//! `/Applications/Hoppy.app` with the one in the downloaded .dmg and Linux installs the .deb
+//! through pkexec (`unix::selfupdate`). Copies that cannot update themselves (portable zip,
+//! an app outside Applications or in a folder the user cannot write, a hand-built Linux
+//! binary) only announce the version and link to the download portal.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -241,6 +242,20 @@ impl fmt::Display for HashMismatch {
 
 impl std::error::Error for HashMismatch {}
 
+/// What the update worker hands back to the tray once a download is verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateReady {
+    /// Windows: run this verified installer with `INSTALLER_ARGS`, then exit.
+    RunInstaller(PathBuf),
+    /// macOS/Linux: the new version is installed; start it after this process exits.
+    Restart,
+    /// The user dismissed the password prompt (Linux): nothing changed.
+    Cancelled,
+    /// The package was handed to the system's software installer (Linux without a polkit
+    /// agent): the user finishes there.
+    OpenedInstaller,
+}
+
 /// Downloads the installer of `release` into `dir`, verifying it against the release's
 /// `SHA256SUMS.txt`. Written as `*.part` and renamed only when the hash matches; on any
 /// error nothing is left behind. `progress` gets 0..=100 when the size is known.
@@ -250,14 +265,44 @@ pub fn download(
     dir: &Path,
     progress: &mut dyn FnMut(u64),
 ) -> Result<PathBuf> {
+    download_as(
+        http,
+        release,
+        INSTALLER_ASSET,
+        &release.installer_file_name(),
+        dir,
+        progress,
+    )
+}
+
+/// Like [`download`] for any asset of the release (the .dmg, the .deb), saved under its
+/// own name (asset names are fixed ASCII names, safe as file names).
+pub fn download_asset(
+    http: &dyn Http,
+    release: &Release,
+    asset: &str,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    download_as(http, release, asset, asset, dir, progress)
+}
+
+fn download_as(
+    http: &dyn Http,
+    release: &Release,
+    asset: &str,
+    file_name: &str,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
     let sums = get_small(http, &release.asset_url(SUMS_ASSET), MAX_SUMS)?;
     let sums = String::from_utf8_lossy(&sums);
-    let expected = expected_sha256(&sums, INSTALLER_ASSET)
-        .with_context(|| format!("{INSTALLER_ASSET} is not listed in {SUMS_ASSET}"))?;
+    let expected = expected_sha256(&sums, asset)
+        .with_context(|| format!("{asset} is not listed in {SUMS_ASSET}"))?;
 
-    let dest = dir.join(release.installer_file_name());
-    let part = dir.join(format!("{}.part", release.installer_file_name()));
-    let result = fetch_to(http, &release.asset_url(INSTALLER_ASSET), &part, progress);
+    let dest = dir.join(file_name);
+    let part = dir.join(format!("{file_name}.part"));
+    let result = fetch_to(http, &release.asset_url(asset), &part, progress);
     // `fetch_to` closed the file: Windows cannot rename or delete open files.
     let verified = result.and_then(|actual| {
         if actual != expected {
@@ -281,12 +326,29 @@ pub fn download_fresh(
     temp: &Path,
     progress: &mut dyn FnMut(u64),
 ) -> Result<PathBuf> {
+    in_fresh_dir(temp, |dir| download(http, release, dir, progress))
+}
+
+/// [`download_asset`] into a new private folder under `temp` (see [`download_fresh`]).
+pub fn download_asset_fresh(
+    http: &dyn Http,
+    release: &Release,
+    asset: &str,
+    temp: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    in_fresh_dir(temp, |dir| {
+        download_asset(http, release, asset, dir, progress)
+    })
+}
+
+fn in_fresh_dir(temp: &Path, job: impl FnOnce(&Path) -> Result<PathBuf>) -> Result<PathBuf> {
     let dir = temp.join(format!(
         "{UPDATE_DIR_PREFIX}{}",
         uuid::Uuid::new_v4().simple()
     ));
     create_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let result = download(http, release, &dir, progress);
+    let result = job(&dir);
     if result.is_err() {
         let _ = fs::remove_dir_all(&dir);
     }
@@ -593,6 +655,34 @@ mod tests {
         let err = download_fresh(&bad, &release, temp.path(), &mut |_| {}).unwrap_err();
         assert!(err.is::<HashMismatch>());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn downloads_other_assets_under_their_own_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let deb = b"!<arch> fake package";
+        let mut http = fake("v0.2.0", b"MZ", &hex(b"MZ"));
+        let base = format!("{DOWNLOAD_BASE}/v0.2.0");
+        http.0.insert(format!("{base}/{DEB_ASSET}"), deb.to_vec());
+        http.0.insert(
+            format!("{base}/{SUMS_ASSET}"),
+            format!(
+                "{}  {DEB_ASSET}\n{}  {INSTALLER_ASSET}\n",
+                hex(deb),
+                hex(b"MZ")
+            )
+            .into_bytes(),
+        );
+        let release = check(&http, "0.1.0").unwrap().unwrap();
+        let path =
+            download_asset_fresh(&http, &release, DEB_ASSET, temp.path(), &mut |_| {}).unwrap();
+        assert_eq!(path.file_name().unwrap(), DEB_ASSET);
+        assert_eq!(fs::read(&path).unwrap(), deb);
+        // An asset missing from the sums is never accepted.
+        let err = download_asset_fresh(&http, &release, MACOS_ASSET, temp.path(), &mut |_| {})
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("not listed"));
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]

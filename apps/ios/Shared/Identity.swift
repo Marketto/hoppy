@@ -1,6 +1,8 @@
-// Device identity and discovery seeds, persisted in UserDefaults. The app and the Share
-// extension have separate defaults (no App Group with a free signature, ADR 0009), so the
-// extension keeps its own id and uses the device model ("iPad") as its name.
+// Device identity and discovery seeds, persisted in UserDefaults, and the protocol v1 key and
+// trust store (spec §7.5) in Application Support. The app and the Share extension have
+// separate containers (no App Group or shared keychain with a free signature, ADR 0009/0010):
+// the extension is a separate device to others, with its own stable id, key and trust store,
+// named "<model> (Condividi)", so desktops never see one id with two keys (KeyChanged).
 import Foundation
 import UIKit
 import UniformTypeIdentifiers
@@ -10,14 +12,74 @@ enum Identity {
     private static let nameKey = "hoppy.device.name"
     private static let recentKey = "hoppy.recent.ips"
     private static let manualKey = "hoppy.manual.ips"
+    /// Fingerprint of the key the current id is bound to.
+    private static let fingerprintKey = "hoppy.key.fingerprint"
     static let maxRecent = 16
 
     static var deviceId: String {
         let d = UserDefaults.standard
         if let id = d.string(forKey: idKey), !id.isEmpty { return id }
+        return newDeviceId()
+    }
+
+    @discardableResult
+    private static func newDeviceId() -> String {
         let id = UUID().uuidString.lowercased()
-        d.set(id, forKey: idKey)
+        UserDefaults.standard.set(id, forKey: idKey)
         return id
+    }
+
+    /// The Share extension's name: its container cannot read the name set in the app.
+    static var shareExtensionName: String { L("share_device_name", UIDevice.current.model) }
+
+    // MARK: protocol v1 key and trust store
+
+    /// `Library/Application Support/Hoppy` of this container: private (not in Documents, which
+    /// Files shows), excluded from backups so a restored or cloned device never shares a key.
+    static func keyDirectory() throws -> URL {
+        let fm = FileManager.default
+        var dir = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("Hoppy", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true,
+                               attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+        return dir
+    }
+
+    /// Starts a node with this container's persistent key (`identity.key`) and trust store
+    /// (`trust.json`). The device id is bound to the key: when the key is new (first run, a
+    /// restore from backup, a damaged key file the core replaced) the id is new too, so other
+    /// devices see a New device instead of blocking a known id as KeyChanged.
+    static func startNode(name: String, configure: (inout HoppyConfig) -> Void,
+                          onEvent: @escaping (HoppyEvent) -> Void) throws -> HoppyNode {
+        let dir = try keyDirectory()
+        let keyFile = dir.appendingPathComponent("identity.key")
+        let trustFile = dir.appendingPathComponent("trust.json")
+        let d = UserDefaults.standard
+        let bound = d.string(forKey: fingerprintKey)
+        let hadKey = FileManager.default.fileExists(atPath: keyFile.path)
+        if !hadKey || bound == nil { newDeviceId() }
+        var base = HoppyConfig(id: "", name: name)
+        base.key_file = keyFile.path
+        base.trust_file = trustFile.path
+        configure(&base)
+        func make() throws -> HoppyNode {
+            var config = base
+            config.id = deviceId
+            return try HoppyNode(config: config, onEvent: onEvent)
+        }
+        var node = try make()
+        if let fp = node.info?.fingerprint {
+            if hadKey, let bound = bound, bound != fp {
+                node.stop()
+                newDeviceId()
+                node = try make()
+            }
+            d.set(fp, forKey: fingerprintKey)
+        }
+        return node
     }
 
     /// iOS 16+ only reveals the generic model ("iPad") without a special entitlement, so the

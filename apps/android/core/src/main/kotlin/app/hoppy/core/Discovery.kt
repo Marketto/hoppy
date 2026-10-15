@@ -16,7 +16,23 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-data class Peer(val device: DeviceInfo, val address: InetAddress, val port: Int)
+/**
+ * A device to send to. [crypto]: `crypto` of its last datagram — 1 = speaks encrypted
+ * sessions (v1), 0 = an old v0 app, null = not discovered (an address typed by the user).
+ */
+data class Peer(val device: DeviceInfo, val address: InetAddress, val port: Int, val crypto: Int? = null) {
+    /** Advertised encrypted sessions (spec §7.1). */
+    val encrypts: Boolean get() = (crypto ?: 0) >= Protocol.CRYPTO_VERSION
+
+    companion object {
+        /** A peer known only by its address (no id: no callback, no trust lookup). */
+        fun at(address: InetAddress, port: Int): Peer {
+            val host = address.hostAddress?.substringBefore('%') ?: "?"
+            val shown = if (address is Inet6Address) "[$host]:$port" else "$host:$port"
+            return Peer(DeviceInfo("", shown, "?"), address, port, null)
+        }
+    }
+}
 
 /**
  * A validated, rate-limited request from a sender to connect back to it (spec §6).
@@ -42,7 +58,7 @@ interface CallbackTicket : AutoCloseable {
 }
 
 /**
- * LAN discovery (spec §2), pure java.net. On Android the caller must hold a
+ * LAN discovery (spec §2), pure java.net. Every datagram carries `"crypto":1` (spec §7.1). On Android the caller must hold a
  * WifiManager.MulticastLock while this runs.
  *
  * [transferPort] can change at runtime: 0 = send-only node (queries, never announces).
@@ -153,7 +169,7 @@ class DiscoveryNode(
      */
     fun requestCallback(peer: Peer, port: Int, token: String): CallbackTicket {
         val key = nextTicket.getAndIncrement()
-        val data = DiscoveryMessage(DiscoveryMessage.CALLBACK, me, port, token, peer.device.id).encode()
+        val data = DiscoveryMessage(DiscoveryMessage.CALLBACK, me, port, token, peer.device.id, Protocol.CRYPTO_VERSION).encode()
         pending[key] = Pending(peer.device.id, peer.address, data)
         val fallback = InetSocketAddress(peer.address, Protocol.DISCOVERY_PORT)
         val ticket = object : CallbackTicket {
@@ -220,12 +236,12 @@ class DiscoveryNode(
                     }
                     if (msg.port != 0) {
                         val isNew = !peers.containsKey(msg.device.id)
-                        val peer = Peer(msg.device, packet.address, msg.port)
+                        val peer = Peer(msg.device, packet.address, msg.port, msg.crypto ?: 0)
                         val old = peers.put(msg.device.id, peer to System.currentTimeMillis())
                         if (isNew || old?.first != peer) notifyListeners()
                     }
                     if (msg.type == DiscoveryMessage.QUERY && transferPort != 0) {
-                        val reply = DiscoveryMessage(DiscoveryMessage.ANNOUNCE, me, transferPort).encode()
+                        val reply = DiscoveryMessage(DiscoveryMessage.ANNOUNCE, me, transferPort, crypto = Protocol.CRYPTO_VERSION).encode()
                         val to = packet.socketAddress
                         runCatching { io?.execute { runCatching { s.send(DatagramPacket(reply, reply.size, to)) } } }
                     }
@@ -258,7 +274,7 @@ class DiscoveryNode(
     }
 
     private fun sendNow(s: MulticastSocket, type: String) {
-        val data = DiscoveryMessage(type, me, transferPort).encode()
+        val data = DiscoveryMessage(type, me, transferPort, crypto = Protocol.CRYPTO_VERSION).encode()
         val targets = ArrayList<InetSocketAddress>(seeds)
         if (useMulticast) {
             targets += InetSocketAddress(InetAddress.getByName(Protocol.MULTICAST_GROUP), Protocol.DISCOVERY_PORT)

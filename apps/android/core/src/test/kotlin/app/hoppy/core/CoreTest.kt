@@ -102,9 +102,12 @@ class CoreTest {
         for (bad in v["invalid_datagrams"] as List<String>) assertNull(DiscoveryMessage.decode(bad.toByteArray()), bad)
         val hello = Json.decodeObject(v["hello_json"] as String)
         val out = ByteArrayOutputStream()
-        Protocol.writeCallbackHello(out, hello["id"] as String, hello["token"] as String)
+        Protocol.writeCallbackHello(out, hello["id"] as String, hello["token"] as String, crypto = false)
         assertEquals(v["hello_hex"], out.toByteArray().joinToString("") { "%02x".format(it) })
-        assertEquals(hello["id"] to hello["token"], Protocol.readCallbackHello(ByteArrayInputStream(out.toByteArray())))
+        assertEquals(
+            CallbackHello(hello["id"] as String, hello["token"] as String, null),
+            Protocol.readCallbackHello(ByteArrayInputStream(out.toByteArray())),
+        )
         assertFailsWith<ProtocolException> { Protocol.readCallbackHello(ByteArrayInputStream("HOPY\u0000".toByteArray())) }
         // Announces stay unchanged on the wire.
         assertFalse(String(DiscoveryMessage(DiscoveryMessage.ANNOUNCE, me, 1).encode()).contains("token"))
@@ -167,7 +170,7 @@ class CoreTest {
         rx.transferPort = closed // announced, but nothing listens: stands in for a firewall
         rx.start()
         val rec = Recorder(accept = true)
-        CallbackReceiver.install(rx, DirectorySink(dst), rec)
+        CallbackReceiver.install(rx, DirectorySink(dst), rec, Local.ephemeral(rx.me))
         val tx = DiscoveryNode(
             me, bindPort = 0, useMulticast = false,
             seeds = listOf(InetSocketAddress(InetAddress.getLoopbackAddress(), rx.localPort)),
@@ -178,18 +181,27 @@ class CoreTest {
         val peer = tx.peers().single()
         var fallbacks = 0
         var bytesBeforeFallback = false
+        var session: SessionInfo? = null
         val outcome = TransferClient.sendToPeer(
-            peer, me, listOf(FileSource(File(src, "cb.bin"))), tx, onFallback = { fallbacks++ },
-        ) { _, _ -> if (fallbacks == 0) bytesBeforeFallback = true }
+            peer, local, listOf(FileSource(File(src, "cb.bin"))), tx,
+            object : SendListener {
+                override fun onFallback() { fallbacks++ }
+                override fun onSession(info: SessionInfo) { session = info }
+                override fun onProgress(done: Long, total: Long) { if (fallbacks == 0) bytesBeforeFallback = true }
+            },
+        )
         assertEquals(SendOutcome.Delivered, outcome)
         assertEquals(1, fallbacks, "fallback signalled once when direct TCP failed")
         assertFalse(bytesBeforeFallback)
+        assertEquals(1, peer.crypto, "v1 announce")
+        assertTrue(session!!.encrypted, "callback sessions are encrypted too")
+        assertEquals(session!!.sas, rec.session?.sas, "same code on both ends")
         val end = System.currentTimeMillis() + 3_000
         while (rec.saved == null && System.currentTimeMillis() < end) Thread.sleep(20)
         assertNull(rec.error)
         assertContentEquals(data, File(dst, "cb.bin").readBytes())
         assertFailsWith<PeerUnreachableException> {
-            TransferClient.sendToPeer(peer, me, listOf(FileSource(File(src, "cb.bin"))), node = null)
+            TransferClient.sendToPeer(peer, local, listOf(FileSource(File(src, "cb.bin"))), node = null)
         }
         tx.stop()
         rx.stop()
@@ -228,7 +240,8 @@ class CoreTest {
         File(src, "x.txt").writeText("x")
         var outcome: Any? = null
         val sender = thread {
-            outcome = runCatching { TransferClient.sendToPeer(peer, me, listOf(FileSource(File(src, "x.txt"))), tx) }
+            // The fake receiver announces as v0 (no `crypto`): a plaintext session (spec §7.1).
+            outcome = runCatching { TransferClient.sendToPeer(peer, local, listOf(FileSource(File(src, "x.txt"))), tx) }
         }
         val cb = nextCallback(fakeRx)!!
         val token = cb.token!!
@@ -246,7 +259,7 @@ class CoreTest {
             Socket().use { s ->
                 s.bind(InetSocketAddress(other, 0))
                 s.connect(target)
-                runCatching { Protocol.writeCallbackHello(s.getOutputStream(), "rx", token) }
+                runCatching { Protocol.writeCallbackHello(s.getOutputStream(), "rx", token, crypto = false) }
                 s.soTimeout = 5_000
                 assertEquals(-1, runCatching { s.getInputStream().read() }.getOrDefault(-1), "other IP dropped")
             }
@@ -273,7 +286,7 @@ class CoreTest {
         assertTrue(closesWithin(6_000, hdr + byteArrayOf(0, 0, 0, 0x58) + "{\"id\"".toByteArray(), slow = true), "slow hello")
 
         Socket(lo, cb.port).use { s ->
-            Protocol.writeCallbackHello(s.getOutputStream(), "rx", token)
+            Protocol.writeCallbackHello(s.getOutputStream(), "rx", token, crypto = false)
             val input = s.getInputStream()
             Protocol.readHello(input)
             assertEquals("x.txt", Offer.from(Protocol.readJson(input)).files.single().name)
@@ -285,19 +298,42 @@ class CoreTest {
         fakeRx.close()
     }
 
-    private class Recorder(val accept: Boolean) : ReceiveHandler {
+    private class Recorder(val accept: Boolean, val auto: Boolean = false) : ReceiveHandler {
         @Volatile var saved: List<String>? = null
         @Volatile var error: String? = null
-        override fun decide(offer: Offer, from: InetAddress) = accept
+        @Volatile var session: SessionInfo? = null
+        @Volatile var asked = 0
+        val blocked = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val verified = java.util.concurrent.CopyOnWriteArrayList<PeerKey>()
+        val warnings = java.util.concurrent.CopyOnWriteArrayList<Warning>()
+        override fun decide(offer: Offer, from: InetAddress, session: SessionInfo): Boolean {
+            asked++
+            this.session = session
+            return accept
+        }
+        override fun autoAccepts() = auto
         override fun onFinished(from: InetAddress, offer: Offer, saved: List<String>, error: String?) {
             this.error = error
             this.saved = saved
         }
+        override fun onBlocked(from: InetAddress, offer: Offer, session: SessionInfo, reason: String) { blocked += reason }
+        override fun onVerified(from: InetAddress, peer: PeerKey) { verified += peer }
+        override fun onWarning(from: InetAddress, warning: Warning) { warnings += warning }
     }
 
-    private fun serveOnce(dir: File, handler: ReceiveHandler): Pair<Int, Thread> {
+    private val local = Local.ephemeral(me)
+    private val rxLocal = Local.ephemeral(DeviceInfo("rx", "Receiver", "windows"))
+
+    private fun serveOnce(dir: File, handler: ReceiveHandler, rx: Local = rxLocal): Pair<Int, Thread> {
         val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
-        val t = thread { server.use { TransferServer.handle(it.accept(), DirectorySink(dir), handler) } }
+        val t = thread { server.use { TransferServer.handle(it.accept(), DirectorySink(dir), handler, rx) } }
+        return server.localPort to t
+    }
+
+    /** Serves [n] connections, one after another. */
+    private fun serveMany(dir: File, handler: ReceiveHandler, rx: Local, n: Int): Pair<Int, Thread> {
+        val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        val t = thread { server.use { repeat(n) { _ -> TransferServer.handle(it.accept(), DirectorySink(dir), handler, rx) } } }
         return server.localPort to t
     }
 
@@ -313,15 +349,30 @@ class CoreTest {
         val (port, t) = serveOnce(dst, rec)
         var last = 0L
         var fallbacks = 0
+        var session: SessionInfo? = null
         val peer = Peer(DeviceInfo("rx", "Receiver", "windows"), InetAddress.getLoopbackAddress(), port)
         val outcome = TransferClient.sendToPeer(
-            peer, me, listOf(FileSource(File(src, "big.bin")), FileSource(File(src, "empty.txt"))),
-            node = null, onFallback = { fallbacks++ },
-        ) { done, _ -> last = done }
+            peer, local, listOf(FileSource(File(src, "big.bin")), FileSource(File(src, "empty.txt"))),
+            node = null,
+            listener = object : SendListener {
+                override fun onFallback() { fallbacks++ }
+                override fun onSession(info: SessionInfo) { session = info }
+                override fun onProgress(done: Long, total: Long) { last = done }
+            },
+        )
         t.join(5_000)
         assertEquals(SendOutcome.Delivered, outcome)
         assertEquals(0, fallbacks, "no fallback signal on a direct send")
         assertEquals(big.size.toLong(), last)
+        // Encrypted (unknown crypto: v1 first), same code on both ends, keys pinned (spec §7.5).
+        assertTrue(session!!.encrypted)
+        assertEquals(TrustState.NEW, session!!.trust)
+        assertEquals(session!!.sas, rec.session!!.sas)
+        assertEquals(rxLocal.fingerprint, session!!.peer!!.fingerprint)
+        assertEquals(local.fingerprint, rec.session!!.peer!!.fingerprint)
+        assertEquals(TrustState.KNOWN, local.trust.state("rx", rxLocal.fingerprint), "sender pins on accept")
+        assertEquals("127.0.0.1:$port", local.trust.get("rx")!!.addr)
+        assertEquals(TrustState.KNOWN, rxLocal.trust.state(me.id, local.fingerprint), "receiver pins on a person's accept")
         assertNull(rec.error)
         assertContentEquals(big, File(dst, "big (1).bin").readBytes())
         assertEquals("old", File(dst, "big.bin").readText())
@@ -335,9 +386,10 @@ class CoreTest {
         File(src, "x.txt").writeText("x")
         val dst = Files.createTempDirectory("dst").toFile()
         val (port, t) = serveOnce(dst, Recorder(accept = false))
-        val outcome = TransferClient.send(InetAddress.getLoopbackAddress(), port, me, listOf(FileSource(File(src, "x.txt"))))
+        val outcome = TransferClient.send(InetAddress.getLoopbackAddress(), port, local, listOf(FileSource(File(src, "x.txt"))))
         t.join(5_000)
         assertEquals(SendOutcome.Declined("declined"), outcome)
+        assertNull(local.trust.get("rx"), "a declined first contact pins nothing")
         assertEquals(0, dst.listFiles()!!.size)
     }
 
@@ -347,7 +399,7 @@ class CoreTest {
         File(src, "x.txt").writeText("x")
         val port = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
         assertFailsWith<PeerUnreachableException> {
-            TransferClient.send(InetAddress.getLoopbackAddress(), port, me, listOf(FileSource(File(src, "x.txt"))))
+            TransferClient.send(InetAddress.getLoopbackAddress(), port, local, listOf(FileSource(File(src, "x.txt"))))
         }
     }
 
@@ -387,6 +439,7 @@ class CoreTest {
         while ((a.peers().isEmpty() || b.peers().isEmpty()) && System.currentTimeMillis() < deadline) Thread.sleep(50)
         assertEquals("Alpha", b.peers().single().device.name)
         assertEquals(1111, b.peers().single().port)
+        assertEquals(Protocol.CRYPTO_VERSION, b.peers().single().crypto, "v1 nodes announce crypto")
         assertEquals("Beta", a.peers().single().device.name)
         b.stop()
         Thread.sleep(300)

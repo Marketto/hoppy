@@ -19,8 +19,16 @@
 //!   per selected file: the first collects the others' files (`platform::gather_send_files`).
 //!   Without files (desktop shortcut double-clicked) it opens the file picker first.
 //! - Updates: the tray checks GitHub Releases 30 s after start and then daily (`update.rs`);
-//!   "Update to X…" downloads the installer, verifies SHA256SUMS.txt, runs it silently and
-//!   exits (the installer restarts the tray). Portable copies only link to the portal.
+//!   "Update to X…" downloads this platform's package, verifies SHA256SUMS.txt and installs
+//!   it (`platform::fetch_update`): Windows runs the installer silently and exits (the
+//!   installer restarts the tray); macOS replaces /Applications/Hoppy.app and Linux installs
+//!   the .deb through pkexec, then a helper restarts the tray (`unix::selfupdate`). Copies
+//!   that cannot update themselves only link to the portal.
+//! - Device verification (protocol v1, spec §7): the accept question shows the 4-emoji code
+//!   (with a "123" switch and "They match, accept") and, for phones, this device's QR code;
+//!   the sender shows the same code while the receiver decides; a changed key is a blocking
+//!   warning with "Forget device"; "Trusted devices…" lists remembered devices. The dialogs
+//!   are `verify::DialogView`s built here and drawn by `ui::show_dialog` / `ui::ask_offer`.
 //! - Firewall (`firewall.rs`): the tray checks at start whether other devices can reach it;
 //!   if not, a balloon (once per version) and a menu item offer to add the rules (UAC →
 //!   `hoppyw firewall --apply`) or to set a Public network to Private.
@@ -53,13 +61,15 @@ use anyhow::{Result, bail};
 use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
 use hoppy_core::{
-    Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, accept_callbacks,
+    Discovery, Error, Local, Offer, Peer, PeerKey, Progress, ReceiveHandler, SendOutcome,
+    SessionInfo, Trust, TrustEntry, TrustState, TrustStore, Warning, accept_callbacks,
     send_to_peer,
 };
 
 use crate::firewall::{self, Verdict};
 use crate::platform::ui::{self, Tray, Waker};
 use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent};
+use crate::verify::{CodeView, DialogLive, DialogView, QrMatrix, QrView};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
     display_file_name, display_name, display_platform, display_text, human, start_discovery,
@@ -141,6 +151,51 @@ pub struct Strings {
     pub accept: &'static str,
     pub decline: &'static str,
     pub no_dialog_tool: &'static str,
+    // Protocol v1 security: verification dialogs (spec §7.5–7.7, `verify.rs`).
+    /// Emoji names in Italian (`Sas::words`).
+    pub italian: bool,
+    pub sec_code: &'static str,
+    pub sec_verified: &'static str,
+    pub sec_plain: &'static str,
+    pub sec_new: &'static str,
+    pub sec_known: &'static str,
+    pub to_digits: &'static str,
+    pub to_emoji: &'static str,
+    pub match_accept: &'static str,
+    pub match_only: &'static str,
+    pub verify_details: &'static str,
+    pub qr_caption: &'static str,
+    pub qr_verified: &'static str,
+    pub code_title: &'static str,
+    pub code_text: &'static str,
+    pub waiting_code: &'static str,
+    pub waiting_plain: &'static str,
+    pub key_changed_title: &'static str,
+    pub key_changed_text: &'static str,
+    pub forget_device: &'static str,
+    pub forgotten: &'static str,
+    pub forget_failed: &'static str,
+    pub plain_refused_title: &'static str,
+    pub verified_title: &'static str,
+    pub sec_name_clash: &'static str,
+    pub aborts_title: &'static str,
+    pub aborts_text: &'static str,
+    pub trust_problem: &'static str,
+    pub menu_trusted: &'static str,
+    pub trusted_header: &'static str,
+    pub trusted_none: &'static str,
+    pub trusted_none_text: &'static str,
+    pub trusted_verified: &'static str,
+    pub trusted_unverified: &'static str,
+    pub forget_title: &'static str,
+    pub forget_text: &'static str,
+    pub forget: &'static str,
+    pub dev_verified: &'static str,
+    pub dev_encrypted: &'static str,
+    pub dev_plain: &'static str,
+    pub update_installing: &'static str,
+    pub update_cancelled: &'static str,
+    pub update_opened: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -204,6 +259,49 @@ pub const IT: Strings = Strings {
     accept: "Accetta",
     decline: "Rifiuta",
     no_dialog_tool: "Per scegliere file e dispositivi Hoppy usa zenity: installalo con «sudo apt install zenity».",
+    italian: true,
+    sec_code: "🔒 Cifrato · {state}. Per essere sicuro che sia davvero {name}, controlla che sul suo schermo ci siano le stesse 4 immagini:",
+    sec_verified: "🔒 Cifrato · ✓ {name} è un dispositivo verificato",
+    sec_plain: "⚠ Non cifrato: {name} usa una versione di Hoppy senza cifratura",
+    sec_new: "dispositivo nuovo",
+    sec_known: "già visto, non verificato",
+    to_digits: "123",
+    to_emoji: "Emoji",
+    match_accept: "Coincide, accetta",
+    match_only: "Coincide",
+    verify_details: "Verifica…",
+    qr_caption: "Oppure inquadra questo codice con Hoppy sul telefono",
+    qr_verified: "✓ Verificato: il telefono ha confermato il codice",
+    code_title: "Hoppy — verifica {name}",
+    code_text: "Invio a {name} ({state}) con connessione cifrata 🔒.\nControlla che sull'altro schermo ci siano le stesse 4 immagini, poi premi «Coincide».",
+    waiting_code: "In attesa che {name} accetti… codice {digits}",
+    waiting_plain: "In attesa che {name} accetti… (non cifrato)",
+    key_changed_title: "Attenzione: la chiave di sicurezza di «{name}» è cambiata",
+    key_changed_text: "Il trasferimento è stato bloccato: {name} si è presentato con una chiave di sicurezza diversa da quella che Hoppy ricorda.\n\nSe {name} è stato reinstallato o ripristinato, scegli «Dimentica dispositivo» e riprova: tornerà a essere un dispositivo nuovo e potrai verificarlo con il codice.\n\nAltrimenti qualcuno sulla rete potrebbe fingersi {name}: chiudi senza dimenticarlo.",
+    forget_device: "Dimentica dispositivo",
+    forgotten: "«{name}» dimenticato: al prossimo invio sarà un dispositivo nuovo",
+    forget_failed: "Impossibile dimenticare «{name}»",
+    plain_refused_title: "{name} ha provato a inviare senza cifratura: rifiutato",
+    verified_title: "{name} è ora verificato ✓",
+    sec_name_clash: "⚠ Un dispositivo che conosci usa già questo nome: potrebbe essere qualcuno che si spaccia per lui",
+    aborts_title: "Connessioni interrotte sospette ({n})",
+    aborts_text: "Qualcuno su questa rete potrebbe provare a indovinare il codice di verifica: i tentativi vengono rallentati.",
+    trust_problem: "Elenco dei dispositivi conosciuti: {error}",
+    menu_trusted: "Dispositivi fidati…",
+    trusted_header: "Dispositivi ricordati — scegline uno per dimenticarlo:",
+    trusted_none: "Nessun dispositivo ricordato",
+    trusted_none_text: "Hoppy ricorda un dispositivo quando accetti un suo invio o lo verifichi.",
+    trusted_verified: "✓ {name} · {fp}",
+    trusted_unverified: "{name} · {fp} · non verificato",
+    forget_title: "Dimenticare «{name}»?",
+    forget_text: "Al prossimo contatto Hoppy lo tratterà come un dispositivo nuovo e mostrerà di nuovo il codice di verifica.",
+    forget: "Dimentica",
+    dev_verified: "✓ {label}",
+    dev_encrypted: "🔒 {label}",
+    dev_plain: "{label} · ⚠ non cifrato",
+    update_installing: "Installo Hoppy {version}…",
+    update_cancelled: "Aggiornamento annullato",
+    update_opened: "Completa l'installazione nel programma di installazione del sistema",
 };
 
 pub const EN: Strings = Strings {
@@ -267,6 +365,49 @@ pub const EN: Strings = Strings {
     accept: "Accept",
     decline: "Decline",
     no_dialog_tool: "Hoppy needs zenity to pick files and devices: install it with \"sudo apt install zenity\".",
+    italian: false,
+    sec_code: "🔒 Encrypted · {state}. To be sure it really is {name}, check that its screen shows the same 4 pictures:",
+    sec_verified: "🔒 Encrypted · ✓ {name} is a verified device",
+    sec_plain: "⚠ Not encrypted: {name} runs a version of Hoppy without encryption",
+    sec_new: "new device",
+    sec_known: "seen before, not verified",
+    to_digits: "123",
+    to_emoji: "Emoji",
+    match_accept: "They match, accept",
+    match_only: "They match",
+    verify_details: "Verify…",
+    qr_caption: "Or scan this code with Hoppy on the phone",
+    qr_verified: "✓ Verified: the phone confirmed the code",
+    code_title: "Hoppy — verify {name}",
+    code_text: "Sending to {name} ({state}) over an encrypted connection 🔒.\nCheck that the other screen shows the same 4 pictures, then press “They match”.",
+    waiting_code: "Waiting for {name} to accept… code {digits}",
+    waiting_plain: "Waiting for {name} to accept… (not encrypted)",
+    key_changed_title: "Warning: the security key of “{name}” has changed",
+    key_changed_text: "The transfer was blocked: {name} presented a different security key from the one Hoppy remembers.\n\nIf {name} was reinstalled or reset, choose “Forget device” and try again: it becomes a new device and you can verify it with the code.\n\nOtherwise someone on the network may be pretending to be {name}: close without forgetting it.",
+    forget_device: "Forget device",
+    forgotten: "“{name}” forgotten: it will be a new device next time",
+    forget_failed: "Could not forget “{name}”",
+    plain_refused_title: "{name} tried to send without encryption: refused",
+    verified_title: "{name} is now verified ✓",
+    sec_name_clash: "⚠ A device you already know uses this name: someone may be pretending to be it",
+    aborts_title: "Suspicious interrupted connections ({n})",
+    aborts_text: "Someone on this network may be trying to guess the verification code: their attempts are being slowed down.",
+    trust_problem: "List of known devices: {error}",
+    menu_trusted: "Trusted devices…",
+    trusted_header: "Remembered devices — pick one to forget it:",
+    trusted_none: "No remembered devices",
+    trusted_none_text: "Hoppy remembers a device when you accept a transfer from it or verify it.",
+    trusted_verified: "✓ {name} · {fp}",
+    trusted_unverified: "{name} · {fp} · not verified",
+    forget_title: "Forget “{name}”?",
+    forget_text: "Next time Hoppy treats it as a new device and shows the verification code again.",
+    forget: "Forget",
+    dev_verified: "✓ {label}",
+    dev_encrypted: "🔒 {label}",
+    dev_plain: "{label} · ⚠ not encrypted",
+    update_installing: "Installing Hoppy {version}…",
+    update_cancelled: "Update cancelled",
+    update_opened: "Finish the installation in the system's software installer",
 };
 
 pub fn strings() -> &'static Strings {
@@ -383,6 +524,204 @@ pub fn offer_body(s: &Strings, offer: &Offer, from: SocketAddr) -> String {
     body
 }
 
+/// Buttons of the verification and warning dialogs (`verify::DialogView`).
+pub const BTN_DECLINE: u32 = 1;
+pub const BTN_ACCEPT: u32 = 2;
+/// "They match": accept (receiver) and mark the other device verified.
+pub const BTN_MATCH: u32 = 3;
+pub const BTN_CLOSE: u32 = 4;
+pub const BTN_FORGET: u32 = 5;
+
+/// How long the accept question waits (the sender gives up 130 s after its hello).
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(110);
+/// At most one "suspicious interrupted connections" balloon this often.
+const ABORTS_BALLOON_EVERY: Duration = Duration::from_secs(60);
+
+/// Phones and tablets: they have a camera and Hoppy there scans QR codes (spec §7.7).
+pub fn is_mobile(platform: &str) -> bool {
+    matches!(platform, "android" | "ios")
+}
+
+fn state_word(s: &Strings, trust: Option<TrustState>) -> &'static str {
+    if trust == Some(TrustState::New) {
+        s.sec_new
+    } else {
+        s.sec_known
+    }
+}
+
+/// How the session is protected, for the accept question and the code window: encrypted
+/// and verified, encrypted with a code to compare, or not encrypted (old app); plus the
+/// warning about a new device reusing a known name.
+pub fn security_note(s: &Strings, session: &SessionInfo, name: &str) -> String {
+    let line = match (session.encrypted, session.trust) {
+        (true, Some(TrustState::Verified)) => fill(s.sec_verified, &[("name", name)]),
+        (true, trust) => fill(
+            s.sec_code,
+            &[("state", state_word(s, trust)), ("name", name)],
+        ),
+        (false, _) => fill(s.sec_plain, &[("name", name)]),
+    };
+    if session.name_matches_known {
+        format!("{line}\n{}", s.sec_name_clash)
+    } else {
+        line
+    }
+}
+
+/// The code to compare: only for an encrypted session with a New or Known device.
+pub fn code_view(s: &Strings, session: &SessionInfo) -> Option<CodeView> {
+    match (session.encrypted, session.trust, &session.sas) {
+        (true, Some(TrustState::New | TrustState::Known), Some(sas)) => {
+            Some(CodeView::new(sas, s.italian, s.to_digits, s.to_emoji))
+        }
+        _ => None,
+    }
+}
+
+/// The receiver's accept question. Decline is the first (default) button; "They match,
+/// accept" appears with a code. `qr`: this device's verification payload
+/// (`Local::begin_qr`), shown when the sender is a phone that can scan it.
+pub fn offer_dialog(
+    s: &Strings,
+    offer: &Offer,
+    from: SocketAddr,
+    session: &SessionInfo,
+    qr: Option<&str>,
+) -> DialogView {
+    let name = display_name(&offer.sender.name);
+    let code = code_view(s, session);
+    let mut buttons = vec![
+        (BTN_DECLINE, s.decline.to_owned()),
+        (BTN_ACCEPT, s.accept.to_owned()),
+    ];
+    if code.is_some() {
+        buttons.push((BTN_MATCH, s.match_accept.to_owned()));
+    }
+    let qr = qr
+        .filter(|_| code.is_some())
+        .and_then(QrMatrix::encode)
+        .map(|matrix| QrView {
+            matrix,
+            caption: s.qr_caption.to_owned(),
+            verified: s.qr_verified.to_owned(),
+        });
+    DialogView {
+        title: s.incoming_title.to_owned(),
+        text: offer_body(s, offer, from),
+        note: security_note(s, session, &name),
+        details: code.is_some().then(|| s.verify_details.to_owned()),
+        code,
+        qr,
+        buttons,
+        timeout: Some(ASK_TIMEOUT),
+    }
+}
+
+/// The sender's code window while the receiver decides (New/Known devices only): the same
+/// 4 emoji as on the other screen, "They match" marks the receiver verified here.
+pub fn code_dialog(s: &Strings, name: &str, session: &SessionInfo) -> Option<DialogView> {
+    let code = code_view(s, session)?;
+    let state = state_word(s, session.trust);
+    Some(DialogView {
+        title: fill(s.code_title, &[("name", name)]),
+        text: fill(s.code_text, &[("name", name), ("state", state)]),
+        note: if session.name_matches_known {
+            s.sec_name_clash.to_owned()
+        } else {
+            String::new()
+        },
+        code: Some(code),
+        buttons: vec![
+            (BTN_CLOSE, s.close.to_owned()),
+            (BTN_MATCH, s.match_only.to_owned()),
+        ],
+        ..Default::default()
+    })
+}
+
+/// A remembered device answered with another key (spec §7.5): blocked; "Forget device"
+/// is offered but never the default.
+pub fn key_changed_dialog(s: &Strings, name: &str) -> DialogView {
+    DialogView {
+        title: fill(s.key_changed_title, &[("name", name)]),
+        text: fill(s.key_changed_text, &[("name", name)]),
+        buttons: vec![
+            (BTN_CLOSE, s.close.to_owned()),
+            (BTN_FORGET, s.forget_device.to_owned()),
+        ],
+        ..Default::default()
+    }
+}
+
+/// "Forget X?" from the trusted-devices list.
+pub fn forget_dialog(s: &Strings, name: &str) -> DialogView {
+    DialogView {
+        title: fill(s.forget_title, &[("name", name)]),
+        text: s.forget_text.to_owned(),
+        buttons: vec![
+            (BTN_CLOSE, s.cancel.to_owned()),
+            (BTN_FORGET, s.forget.to_owned()),
+        ],
+        ..Default::default()
+    }
+}
+
+/// A device in the send menu: ✓ verified, 🔒 encrypted (it announces v1 or its key is
+/// remembered), "⚠ not encrypted" for an old app.
+pub fn device_label(s: &Strings, peer: &Peer, known: Option<&TrustEntry>) -> String {
+    let label = peer_label(peer);
+    let template = match known {
+        Some(entry) if entry.verified => s.dev_verified,
+        Some(_) => s.dev_encrypted,
+        None if peer.crypto.is_some_and(|c| c >= 1) => s.dev_encrypted,
+        None => s.dev_plain,
+    };
+    fill(template, &[("label", &label)])
+}
+
+/// A remembered device in the "Trusted devices" list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedDevice {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+}
+
+/// Remembered devices, by name: "✓ Pixel · ABCD EFGH" (start of the key fingerprint, to
+/// tell two devices with the same name apart).
+pub fn trusted_devices(s: &Strings, store: &TrustStore) -> Vec<TrustedDevice> {
+    let mut list: Vec<TrustedDevice> = store
+        .peers
+        .iter()
+        .map(|(id, entry)| {
+            let name = display_name(&entry.name);
+            let fp: String = entry.fingerprint.chars().take(8).collect();
+            let fp = match fp.char_indices().nth(4) {
+                Some((i, _)) => format!("{} {}", &fp[..i], &fp[i..]),
+                None => fp,
+            };
+            let template = if entry.verified {
+                s.trusted_verified
+            } else {
+                s.trusted_unverified
+            };
+            TrustedDevice {
+                id: id.clone(),
+                label: fill(template, &[("name", &name), ("fp", &fp)]),
+                name,
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.id.cmp(&b.id))
+    });
+    list
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -461,25 +800,87 @@ struct GuiReceiver {
     s: &'static Strings,
     waker: Waker,
     notices: Arc<Mutex<VecDeque<Notice>>>,
+    /// This device (QR codes) and its trust store ("They match", "Forget device").
+    local: Local,
     /// Sender names by connection, remembered at accept time for the final balloon.
     names: Mutex<HashMap<SocketAddr, String>>,
     /// One accept dialog at a time; offers arriving meanwhile are declined.
     asking: AtomicBool,
+    /// The open accept question: the sender's key fingerprint and the dialog's handle, so a
+    /// QR scan by that phone (`verified`: same key) turns its QR code into ✓.
+    open: Mutex<Option<(String, DialogLive)>>,
+    /// Last "suspicious interrupted connections" balloon.
+    last_aborts: Mutex<Option<Instant>>,
+}
+
+/// One key-change warning dialog at a time (the core already limits them to one a minute
+/// per device).
+static WARNING_OPEN: AtomicBool = AtomicBool::new(false);
+
+impl GuiReceiver {
+    fn notice(&self, title: String, text: String, error: bool) {
+        lock(&self.notices).push_back(Notice {
+            title,
+            text,
+            error,
+            action: BalloonAction::Nothing,
+        });
+        self.waker.wake();
+    }
 }
 
 impl ReceiveHandler for GuiReceiver {
-    fn decide(&self, offer: &Offer, from: SocketAddr) -> bool {
+    fn decide(&self, offer: &Offer, from: SocketAddr, session: &SessionInfo) -> bool {
         let Some(_asking) = DialogGuard::try_take(&self.asking) else {
             diag::log(format!("receive: offer from {} declined (busy)", from.ip()));
             return false; // another offer is waiting for an answer
         };
-        let body = offer_body(self.s, offer, from);
-        let accepted = ui::message_box_yes_no(self.s.incoming_title, &body);
+        // A phone can scan this device's QR code instead of comparing (spec §7.7). The
+        // platform of an encrypted session comes from the authenticated handshake.
+        let platform = session
+            .peer
+            .as_ref()
+            .map_or(offer.sender.platform.as_str(), |p| p.platform.as_str());
+        let qr = (is_mobile(platform) && code_view(self.s, session).is_some())
+            .then(|| self.local.begin_qr());
+        let view = offer_dialog(self.s, offer, from, session, qr.as_deref());
+        let live = DialogLive::new();
+        if let Some(peer) = &session.peer {
+            *lock(&self.open) = Some((peer.fingerprint.clone(), live.clone()));
+        }
+        let answer = ui::ask_offer(&view, &live).unwrap_or(BTN_DECLINE);
+        *lock(&self.open) = None;
+        if qr.is_some() {
+            self.local.trust.end_qr();
+        }
+        let accepted = matches!(answer, BTN_ACCEPT | BTN_MATCH);
         diag::log(format!(
-            "receive: offer of {} file(s) from {}: accepted={accepted}",
+            "receive: offer of {} file(s) from {}: accepted={accepted} encrypted={} trust={:?} \
+             match={} qr={}",
             offer.files.len(),
-            from.ip()
+            from.ip(),
+            session.encrypted,
+            session.trust,
+            answer == BTN_MATCH,
+            qr.is_some()
         ));
+        if answer == BTN_MATCH
+            && let Some(peer) = &session.peer
+            && let Err(e) = self.local.trust.mark_verified(peer)
+        {
+            diag::log(format!(
+                "trust: marking verified failed: {}",
+                diag::error_kind(&e)
+            ));
+            self.notice(
+                fill(
+                    self.s.trust_problem,
+                    &[("error", &display_text(&e.to_string(), SHOW_TEXT_MAX))],
+                ),
+                String::new(),
+                true,
+            );
+        }
         if accepted {
             lock(&self.names).insert(from, display_name(&offer.sender.name));
         }
@@ -517,6 +918,133 @@ impl ReceiveHandler for GuiReceiver {
         lock(&self.notices).push_back(notice);
         self.waker.wake();
     }
+
+    fn blocked(&self, from: SocketAddr, offer: &Offer, session: &SessionInfo, reason: &str) {
+        let name = display_name(&offer.sender.name);
+        diag::log(format!(
+            "receive: offer from {} refused: {reason}",
+            from.ip()
+        ));
+        if reason != "key_changed" {
+            self.notice(
+                fill(self.s.plain_refused_title, &[("name", &name)]),
+                String::new(),
+                true,
+            );
+            return;
+        }
+        // A clear warning with "Forget device", on its own thread: the connection is not
+        // kept waiting for the user.
+        let id = session
+            .peer
+            .as_ref()
+            .map_or_else(|| offer.sender.id.clone(), |p| p.id.clone());
+        let (s, trust, notices, waker) = (
+            self.s,
+            self.local.trust.clone(),
+            Arc::clone(&self.notices),
+            self.waker.clone(),
+        );
+        thread::spawn(move || {
+            let Some(_open) = DialogGuard::try_take(&WARNING_OPEN) else {
+                diag::log("receive: key-change warning already open");
+                return;
+            };
+            warn_key_changed(s, &trust, &id, &name, &notices, &waker);
+        });
+    }
+
+    fn warning(&self, from: SocketAddr, warning: &Warning) {
+        let (title, text) = match warning {
+            Warning::HandshakeAborts { recent } => {
+                diag::log(format!(
+                    "receive: {recent} aborted handshakes from {}",
+                    from.ip()
+                ));
+                let mut last = lock(&self.last_aborts);
+                if last.is_some_and(|t| t.elapsed() < ABORTS_BALLOON_EVERY) {
+                    return;
+                }
+                *last = Some(Instant::now());
+                (
+                    fill(self.s.aborts_title, &[("n", &recent.to_string())]),
+                    self.s.aborts_text.to_owned(),
+                )
+            }
+            Warning::TrustNotSaved(e) => {
+                diag::log("trust: the list of known devices could not be saved");
+                (
+                    fill(
+                        self.s.trust_problem,
+                        &[("error", &display_text(e, SHOW_TEXT_MAX))],
+                    ),
+                    String::new(),
+                )
+            }
+        };
+        self.notice(title, text, true);
+    }
+
+    fn verified(&self, from: SocketAddr, peer: &PeerKey) {
+        diag::log(format!(
+            "receive: {} verified this device by QR code",
+            from.ip()
+        ));
+        if let Some((fingerprint, live)) = &*lock(&self.open)
+            && *fingerprint == peer.fingerprint
+        {
+            live.set_verified(); // the open accept question shows ✓ instead of the QR code
+        }
+        self.notice(
+            fill(
+                self.s.verified_title,
+                &[("name", &display_name(&peer.name))],
+            ),
+            String::new(),
+            false,
+        );
+    }
+}
+
+/// The blocking key-change warning (worker thread). "Forget device" removes the remembered
+/// key so the next contact is New; the result is reported as a balloon.
+fn warn_key_changed(
+    s: &'static Strings,
+    trust: &Trust,
+    id: &str,
+    name: &str,
+    notices: &Mutex<VecDeque<Notice>>,
+    waker: &Waker,
+) {
+    let answer = ui::show_dialog(&key_changed_dialog(s, name), &DialogLive::new());
+    if answer != Some(BTN_FORGET) {
+        return;
+    }
+    lock(notices).push_back(forget_device(s, trust, id, name));
+    waker.wake();
+}
+
+/// Forgets a device (worker: file I/O); the balloon to show about it.
+fn forget_device(s: &Strings, trust: &Trust, id: &str, name: &str) -> Notice {
+    let (title, error) = match trust.forget(id) {
+        Ok(_) => {
+            diag::log("trust: a device was forgotten");
+            (fill(s.forgotten, &[("name", name)]), false)
+        }
+        Err(e) => {
+            diag::log(format!(
+                "trust: forgetting failed: {}",
+                diag::error_kind(&e)
+            ));
+            (fill(s.forget_failed, &[("name", name)]), true)
+        }
+    };
+    Notice {
+        title,
+        text: String::new(),
+        error,
+        action: BalloonAction::Nothing,
+    }
 }
 
 const ID_SEND: u32 = 1;
@@ -528,6 +1056,9 @@ const ID_FIREWALL: u32 = 6;
 const ID_CLASSIC: u32 = 7;
 const ID_ABOUT: u32 = 8;
 const ID_LOGIN: u32 = 9;
+const ID_TRUSTED: u32 = 10;
+/// Entries of the trusted-devices menu: `ID_TRUSTED_FIRST + index`.
+const ID_TRUSTED_FIRST: u32 = 1000;
 
 /// What clicking the last balloon does.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -567,6 +1098,9 @@ struct Ctx {
     waker: Waker,
     prefs: Arc<Mutex<Prefs>>,
     notices: Arc<Mutex<VecDeque<Notice>>>,
+    trust: Trust,
+    /// The trusted-devices list, read by a worker, waiting to be shown by the UI thread.
+    trusted: Arc<Mutex<Option<Vec<TrustedDevice>>>>,
 }
 
 impl Ctx {
@@ -688,6 +1222,33 @@ impl Ctx {
         });
     }
 
+    fn notify(&self, notice: Notice) {
+        lock(&self.notices).push_back(notice);
+        self.waker.wake();
+    }
+
+    /// "Trusted devices…": reads the list on a worker (trust.json), then the UI thread
+    /// shows it (`show_trusted`).
+    fn load_trusted(&self) {
+        let ctx = self.clone();
+        thread::spawn(move || {
+            let list = trusted_devices(ctx.s, &ctx.trust.snapshot());
+            *lock(&ctx.trusted) = Some(list);
+            ctx.waker.wake();
+        });
+    }
+
+    /// "Forget X?" and the forgetting itself, on a worker.
+    fn confirm_forget(&self, device: TrustedDevice) {
+        let ctx = self.clone();
+        thread::spawn(move || {
+            let answer = ui::show_dialog(&forget_dialog(ctx.s, &device.name), &DialogLive::new());
+            if answer == Some(BTN_FORGET) {
+                ctx.notify(forget_device(ctx.s, &ctx.trust, &device.id, &device.name));
+            }
+        });
+    }
+
     /// Writes a summary line, then opens the log in Notepad (TextEdit on macOS, the default
     /// editor on Linux).
     fn open_about(&self, mode: UpdateMode) {
@@ -805,6 +1366,7 @@ impl TrayMenu {
         }
         items.extend([
             MenuItem::Separator,
+            MenuItem::Action(ID_TRUSTED, s.menu_trusted),
             MenuItem::Action(ID_ABOUT, s.menu_about),
             MenuItem::Action(ID_QUIT, s.menu_quit),
         ]);
@@ -820,7 +1382,12 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     };
     // Before the icon exists, so nothing is waiting on the UI thread yet.
     let identity = config::load_or_create()?;
-    let me = config::device_info(&identity);
+    let local = config::local(&identity)?;
+    let trust_warning = local.trust.take_warning();
+    if let Some(w) = &trust_warning {
+        diag::log(format!("trust: {w}"));
+    }
+    let me = local.device.clone();
     let dir = default_receive_dir()?;
     let listener = bind_receiver(TRANSFER_PORT)?;
     let discovery = start_discovery(&me, listener.local_addr()?.port(), &[])?;
@@ -838,25 +1405,42 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             login: None,
         })),
         notices: Arc::clone(&notices),
+        trust: local.trust.clone(),
+        trusted: Arc::new(Mutex::new(None)),
     };
     ctx.refresh_prefs(); // classic-menu state
+    if let Some(w) = trust_warning {
+        // e.g. a damaged trust.json was set aside: every device looks new again.
+        ctx.notify_error(
+            &fill(
+                s.trust_problem,
+                &[("error", &display_text(&w, SHOW_TEXT_MAX))],
+            ),
+            "",
+        );
+    }
     let handler = Arc::new(GuiReceiver {
         s,
         waker: tray.waker(),
         notices: Arc::clone(&notices),
+        local: local.clone(),
         names: Mutex::new(HashMap::new()),
         asking: AtomicBool::new(false),
+        open: Mutex::new(None),
+        last_aborts: Mutex::new(None),
     });
     // Same folder and handler for both paths, so `GuiReceiver::asking` covers callbacks too.
-    accept_callbacks(&discovery, dir.clone(), handler.clone());
+    accept_callbacks(&discovery, dir.clone(), local.clone(), handler.clone());
     let serve_dir = dir.clone();
-    thread::spawn(move || serve(listener, serve_dir, handler));
+    thread::spawn(move || serve(listener, serve_dir, local, handler));
 
     let updates = Arc::new(Mutex::new(Updates::default()));
     let mode = update_mode();
-    // Installers of earlier updates (their folder could not be removed while they ran).
+    // Installers of earlier updates (their folder could not be removed while they ran), and
+    // what an interrupted Mac update left next to the app.
     thread::spawn(|| {
-        update::remove_stale_update_dirs(&std::env::temp_dir(), update::STALE_UPDATE_DIR)
+        update::remove_stale_update_dirs(&std::env::temp_dir(), update::STALE_UPDATE_DIR);
+        platform::remove_update_leftovers();
     });
     if mode != UpdateMode::Off {
         spawn_update_checker(&updates, tray.waker());
@@ -908,6 +1492,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             ID_MUSIC => ctx.set_music(!shown.music),
             ID_CLASSIC => ctx.set_classic(!shown.classic.unwrap_or(false)),
             ID_LOGIN => ctx.set_login(!shown.login.unwrap_or(false)),
+            ID_TRUSTED => ctx.load_trusted(),
             ID_ABOUT => ctx.open_about(mode),
             ID_QUIT => return false,
             _ => {}
@@ -954,9 +1539,37 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                 if let Some(action) = firewall_wake(&tray, &ctx, &fw) {
                     balloon_action = action;
                 }
+                let trusted = lock(&ctx.trusted).take();
+                match trusted {
+                    Some(list) if list.is_empty() => {
+                        tray.balloon(s.trusted_none, s.trusted_none_text, false, true);
+                        balloon_action = BalloonAction::Nothing;
+                    }
+                    Some(list) => {
+                        if let Some(device) = h.modal(|| pick_trusted(&tray, s, &list)) {
+                            ctx.confirm_forget(device);
+                        }
+                    }
+                    None => {}
+                }
                 let upd = update_wake(&tray, s, &updates, mode, &ready_tip);
                 if let Some(action) = upd.balloon {
                     balloon_action = action;
+                }
+                if upd.restart {
+                    match platform::relaunch_after_exit() {
+                        Ok(()) => {
+                            diag::log("update: installed, restarting");
+                            break;
+                        }
+                        Err(e) => {
+                            diag::log(format!("update: restart failed: {e:#}"));
+                            let text = display_text(&format!("{e:#}"), SHOW_TEXT_MAX);
+                            tray.set_tip(&ready_tip);
+                            tray.balloon(s.update_failed, &text, true, true);
+                            balloon_action = BalloonAction::Nothing;
+                        }
+                    }
                 }
                 if let Some(path) = upd.launch {
                     diag::log("update: starting the verified installer and exiting");
@@ -992,6 +1605,18 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     }
     // Locals drop in reverse order: the tray icon goes first, then discovery says "bye".
     Ok(())
+}
+
+/// The trusted-devices menu (a list dialog on Linux): the device picked to forget.
+fn pick_trusted(tray: &Tray, s: &Strings, list: &[TrustedDevice]) -> Option<TrustedDevice> {
+    let mut items = vec![MenuItem::Label(s.trusted_header), MenuItem::Separator];
+    for (i, device) in list.iter().enumerate() {
+        let id = ID_TRUSTED_FIRST.checked_add(u32::try_from(i).ok()?)?;
+        items.push(MenuItem::Action(id, &device.label));
+    }
+    let picked = tray.popup_menu(&items, false, None)?;
+    let index = picked.checked_sub(ID_TRUSTED_FIRST)?;
+    list.get(usize::try_from(index).ok()?).cloned()
 }
 
 // ---------------------------------------------------------------- firewall
@@ -1170,9 +1795,10 @@ fn firewall_wake(tray: &Tray, ctx: &Ctx, fw: &Mutex<FirewallState>) -> Option<Ba
 enum UpdateMode {
     /// Dev build: never check.
     Off,
-    /// Installed by Hoppy-Setup: download, verify and run the installer.
+    /// This copy installs updates itself (`platform::can_self_update`): Windows setup
+    /// install, /Applications/Hoppy.app, the .deb. Download, verify, install.
     Setup,
-    /// Portable copy: only point to the download portal.
+    /// Portable or hand-built copy: only point to the download portal.
     Portal,
 }
 
@@ -1180,16 +1806,10 @@ fn update_mode() -> UpdateMode {
     if cfg!(debug_assertions) || update::is_dev_version(update::CURRENT_VERSION) {
         return UpdateMode::Off;
     }
-    if !cfg!(windows) {
-        return UpdateMode::Portal; // Linux, macOS: notify + portal link, never self-install
-    }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|d| d.to_string_lossy().into_owned()));
-    let local = std::env::var_os("LOCALAPPDATA").map(|l| l.to_string_lossy().into_owned());
-    match (exe_dir, local) {
-        (Some(dir), Some(local)) if update::is_setup_install(&dir, &local) => UpdateMode::Setup,
-        _ => UpdateMode::Portal,
+    if platform::can_self_update() {
+        UpdateMode::Setup
+    } else {
+        UpdateMode::Portal
     }
 }
 
@@ -1199,10 +1819,12 @@ struct Updates {
     available: Option<update::Release>,
     /// `available` changed and has not been announced with a balloon yet.
     fresh: bool,
-    /// Some(percent) while the installer is downloading.
+    /// Some(percent) while the package is downloading.
     downloading: Option<u64>,
-    /// The download thread's result: the verified installer, or a message to show.
-    finished: Option<Result<PathBuf, String>>,
+    /// macOS/Linux: the verified package is being installed (`Some(announced)`).
+    installing: Option<bool>,
+    /// The worker's result, or a message to show.
+    finished: Option<Result<update::UpdateReady, String>>,
 }
 
 /// WinHTTP on Windows, curl/wget on Linux.
@@ -1251,6 +1873,11 @@ fn spawn_update_checker(updates: &Arc<Mutex<Updates>>, waker: Waker) {
 /// Top menu entry: (clickable, text). Bold "Update to X…", or the progress while
 /// downloading.
 fn update_menu_text(s: &Strings, u: &Updates, mode: UpdateMode) -> Option<(bool, String)> {
+    if u.installing.is_some() {
+        let version = u.available.as_ref().map(|r| r.version.to_string());
+        let version = version.unwrap_or_default();
+        return Some((false, fill(s.update_installing, &[("version", &version)])));
+    }
     if let Some(pct) = u.downloading {
         return Some((false, fill(s.update_progress, &[("pct", &pct.to_string())])));
     }
@@ -1263,7 +1890,7 @@ fn update_menu_text(s: &Strings, u: &Updates, mode: UpdateMode) -> Option<(bool,
     Some((true, fill(template, &[("version", &version)])))
 }
 
-/// Starts the download (Setup) or opens the portal (portable). One download at a time.
+/// Starts the download and install (Setup) or opens the portal (portable). One at a time.
 fn start_update(
     s: &'static Strings,
     updates: &Arc<Mutex<Updates>>,
@@ -1276,7 +1903,7 @@ fn start_update(
     }
     let release = {
         let mut u = lock(updates);
-        if mode != UpdateMode::Setup || u.downloading.is_some() {
+        if mode != UpdateMode::Setup || u.downloading.is_some() || u.installing.is_some() {
             return;
         }
         let Some(release) = u.available.clone() else {
@@ -1288,17 +1915,28 @@ fn start_update(
     waker.wake(); // show 0% now
     let updates = Arc::clone(updates);
     thread::spawn(move || {
-        let temp = std::env::temp_dir();
-        let result = update::download_fresh(&NativeHttp, &release, &temp, &mut |pct| {
+        let progress = &mut |pct| {
             let mut u = lock(&updates);
             if u.downloading != Some(pct) {
                 u.downloading = Some(pct);
                 drop(u);
                 waker.wake(); // at most ~100 wake-ups
             }
-        });
+        };
+        let installing = &mut || {
+            diag::log("update: verified, installing");
+            let mut u = lock(&updates);
+            u.downloading = None;
+            u.installing = Some(false);
+            drop(u);
+            waker.wake();
+        };
+        let result = platform::fetch_update(&NativeHttp, &release, progress, installing);
+        if let Ok(ready) = &result {
+            diag::log(format!("update: {ready:?}"));
+        }
         let result = result.map_err(|e| {
-            diag::log(format!("update: download failed: {e:#}"));
+            diag::log(format!("update: failed: {e:#}"));
             if e.is::<update::HashMismatch>() {
                 s.update_mismatch.to_owned()
             } else {
@@ -1314,8 +1952,10 @@ fn start_update(
 struct UpdateWake {
     /// New action for clicks on the balloon just shown.
     balloon: Option<BalloonAction>,
-    /// Verified installer to run now.
+    /// Verified installer to run now (Windows).
     launch: Option<PathBuf>,
+    /// The new version is installed: start it and exit (macOS, Linux).
+    restart: bool,
 }
 
 /// UI-thread side of `Wake` for updates: announce, show progress, report the result.
@@ -1326,16 +1966,23 @@ fn update_wake(
     mode: UpdateMode,
     ready_tip: &str,
 ) -> UpdateWake {
-    let (announce, pct, finished) = {
+    let (announce, pct, installing, finished) = {
         let mut u = lock(updates);
+        let version = u.available.as_ref().map(|r| r.version.to_string());
         let announce = std::mem::take(&mut u.fresh)
-            .then(|| u.available.as_ref().map(|r| r.version.to_string()))
+            .then(|| version.clone())
             .flatten();
+        // Announce the install step once.
+        let installing = (u.installing == Some(false)).then(|| version.unwrap_or_default());
+        if installing.is_some() {
+            u.installing = Some(true);
+        }
         let finished = u.finished.take();
         if finished.is_some() {
             u.downloading = None;
+            u.installing = None;
         }
-        (announce, u.downloading, finished)
+        (announce, u.downloading, installing, finished)
     };
     let mut out = UpdateWake::default();
     if let Some(version) = announce {
@@ -1346,12 +1993,30 @@ fn update_wake(
         tray.balloon(&fill(template, &[("version", &version)]), "", false, true);
         out.balloon = Some(action);
     }
+    if let Some(version) = installing {
+        let text = fill(s.update_installing, &[("version", &version)]);
+        tray.set_tip(&text);
+        tray.balloon(&text, "", false, false);
+        out.balloon = Some(BalloonAction::Nothing);
+    }
     match finished {
-        Some(Ok(path)) => out.launch = Some(path),
+        Some(Ok(update::UpdateReady::RunInstaller(path))) => out.launch = Some(path),
+        Some(Ok(update::UpdateReady::Restart)) => out.restart = true,
+        Some(Ok(update::UpdateReady::Cancelled)) => {
+            tray.set_tip(ready_tip);
+            tray.balloon(s.update_cancelled, "", false, false);
+            out.balloon = Some(BalloonAction::Nothing);
+        }
+        Some(Ok(update::UpdateReady::OpenedInstaller)) => {
+            tray.set_tip(ready_tip);
+            tray.balloon(s.update_opened, "", false, true);
+            out.balloon = Some(BalloonAction::Nothing);
+        }
         Some(Err(text)) => {
             tray.set_tip(ready_tip);
             tray.balloon(s.update_failed, &text, true, true);
-            out.balloon = Some(BalloonAction::Nothing);
+            // Clicking it opens the portal: the manual way still works.
+            out.balloon = Some(BalloonAction::Portal);
         }
         None => {
             if let Some(pct) = pct {
@@ -1415,18 +2080,30 @@ impl Drop for Jingle {
 
 #[derive(Default)]
 struct SendState {
-    peers: Option<Vec<Peer>>,
+    /// Found devices with their menu labels (✓ / 🔒 / ⚠, read from the trust store).
+    peers: Option<Vec<(Peer, String)>>,
     /// The receiver said yes (first `Progress::FileStarted`).
     accepted: bool,
     pct: Option<u64>,
     /// The direct connection failed; waiting for a callback (spec §6).
     fallback: bool,
+    /// The session is set up (spec §7): what to show while waiting for "Accept".
+    session: Option<SessionInfo>,
     outcome: Option<Result<SendOutcome, SendError>>,
+    /// Balloons from workers (code window "They match", "Forget device").
+    notices: VecDeque<Notice>,
+    /// The key-change warning was closed: the process may exit now.
+    warning_closed: bool,
+    /// The open code window; the send worker closes it with the outcome (on macOS the UI
+    /// loop waits while that window is up, so it cannot do it itself).
+    code_window: Option<DialogLive>,
 }
 
 enum SendError {
     /// Neither direct nor callback reached the peer: show the firewall hint.
     Unreachable,
+    /// The peer's key is not the remembered one: nothing was sent (spec §7.5).
+    KeyChanged,
     Other(String),
 }
 
@@ -1471,8 +2148,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
         .map(|m| m.len())
         .sum();
     let identity = config::load_or_create()?;
-    let me = config::device_info(&identity);
-    let discovery = Arc::new(start_discovery(&me, 0, &[])?);
+    let local = config::local(&identity)?;
+    let discovery = Arc::new(start_discovery(&local.device, 0, &[])?);
 
     let tray = Tray::new(SEND_WINDOW, s.searching)?;
     // Linux: a Cancel button on the "Looking for devices…" notification.
@@ -1480,7 +2157,11 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     // Declared after `tray`, so it is dropped (jingle stopped) before the icon goes.
     let mut jingle = Jingle::new(identity.music);
     let state = Arc::new(Mutex::new(SendState::default()));
-    spawn_search(&discovery, &state, tray.waker());
+    spawn_search(s, &discovery, &local.trust, &state, tray.waker());
+    // A code window was shown (at most one per send).
+    let mut code_shown = false;
+    // The device chosen (its id for "Forget device").
+    let mut chosen: Option<Peer> = None;
 
     let header = send_header(s, &files, total);
     diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
@@ -1491,10 +2172,10 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
         let mut h = watch.handler(event_name(&event));
         match (event, &phase) {
             (TrayEvent::Wake, Phase::Searching) => {
-                let Some(peers) = lock(&state).peers.take() else {
+                let Some(found) = lock(&state).peers.take() else {
                     continue;
                 };
-                let labels: Vec<String> = peers.iter().map(peer_label).collect();
+                let (peers, labels): (Vec<Peer>, Vec<String>) = found.into_iter().unzip();
                 let mut items = vec![MenuItem::Label(&header), MenuItem::Separator];
                 if peers.is_empty() {
                     items.push(MenuItem::Label(s.no_devices));
@@ -1511,7 +2192,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     Some(ID_RETRY) => {
                         tray.set_tip(s.searching);
                         discovery.refresh();
-                        spawn_search(&discovery, &state, tray.waker());
+                        spawn_search(s, &discovery, &local.trust, &state, tray.waker());
                     }
                     Some(id) if id >= ID_PEER => {
                         let Some(peer) = peers.get((id - ID_PEER) as usize).cloned() else {
@@ -1522,18 +2203,35 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         tray.set_menu(&[MenuItem::Action(ID_CANCEL, s.cancel_send)]);
                         tray.set_tip(&fill(s.waiting, &[("name", &name)]));
                         let files = files.take().unwrap_or_default();
-                        spawn_send(&discovery, peer, files, &state, tray.waker());
+                        chosen = Some(peer.clone());
+                        spawn_send(&discovery, &local, peer, files, &state, tray.waker());
                         phase = Phase::Sending(name);
                     }
                     _ => break, // "Cancel" or menu dismissed
                 }
             }
             (TrayEvent::Wake, Phase::Sending(name)) => {
-                let (accepted, pct, fallback, outcome) = {
+                let (accepted, pct, fallback, session, outcome, notices) = {
                     let mut st = lock(&state);
-                    (st.accepted, st.pct, st.fallback, st.outcome.take())
+                    let session = st.session.clone();
+                    let notices = std::mem::take(&mut st.notices);
+                    (
+                        st.accepted,
+                        st.pct,
+                        st.fallback,
+                        session,
+                        st.outcome.take(),
+                        notices,
+                    )
                 };
+                for n in notices {
+                    tray.balloon(&n.title, &n.text, n.error, false);
+                }
                 if let Some(outcome) = outcome {
+                    if let Some(window) = lock(&state).code_window.take() {
+                        window.close();
+                    }
+                    let key_changed = matches!(outcome, Err(SendError::KeyChanged));
                     let delivered = matches!(outcome, Ok(SendOutcome::Delivered));
                     // Our jingle is the sound of success; skip the system one on top of it.
                     let sound = !(delivered && jingle.play());
@@ -1551,18 +2249,54 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         Err(SendError::Unreachable) => {
                             (s.unreachable_title, s.unreachable_text.to_owned(), true)
                         }
+                        Err(SendError::KeyChanged) => (
+                            s.key_changed_title,
+                            fill(s.key_changed_text, &[("name", name)]),
+                            true,
+                        ),
                         Err(SendError::Other(e)) => {
                             (s.send_failed, display_text(&e, SHOW_TEXT_MAX), true)
                         }
                     };
                     let title = fill(title, &[("name", name)]);
                     tray.set_tip(&title);
-                    tray.balloon(&title, &text, error, sound);
-                    tray.set_timer(EXIT_TIMER, EXIT_AFTER_MS);
+                    if key_changed {
+                        // A blocking warning with "Forget device"; exit once it is closed.
+                        let peer_id = chosen.as_ref().map(|p| p.device.id.clone());
+                        spawn_key_warning(s, &local, peer_id, name, &state, tray.waker());
+                    } else {
+                        tray.balloon(&title, &text, error, sound);
+                        tray.set_timer(EXIT_TIMER, EXIT_AFTER_MS);
+                    }
                     phase = Phase::Done;
                 } else if let Some(pct) = pct {
                     let pct = pct.to_string();
                     tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
+                } else if let (Some(session), false) = (&session, accepted) {
+                    let tip = match &session.sas {
+                        Some(sas) => {
+                            fill(s.waiting_code, &[("name", name), ("digits", &sas.digits)])
+                        }
+                        None => fill(s.waiting_plain, &[("name", name)]),
+                    };
+                    tray.set_tip(&tip);
+                    // New/Known receiver: the same code in a window, with "They match".
+                    // No QR code here: its one-time code would live in this short-lived
+                    // process, while a phone's confirmation reaches the tray receiver.
+                    if !code_shown
+                        && let Some(view) = code_dialog(s, name, session)
+                        && let Some(peer) = session.peer.clone()
+                    {
+                        code_shown = true;
+                        let live = DialogLive::new();
+                        let mut st = lock(&state);
+                        if st.outcome.is_none() {
+                            st.code_window = Some(live.clone());
+                            drop(st);
+                            let trust = local.trust.clone();
+                            spawn_code_window(view, live, trust, peer, &state, tray.waker());
+                        }
+                    }
                 } else if fallback && !accepted {
                     tray.set_tip(&fill(s.fallback, &[("name", name)]));
                 }
@@ -1571,6 +2305,21 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                 let items = [MenuItem::Action(ID_CANCEL, s.cancel_send)];
                 if h.modal(|| tray.popup_menu(&items, true, anchor)) == Some(ID_CANCEL) {
                     break; // closing the process aborts the transfer
+                }
+            }
+            (TrayEvent::Wake, Phase::Done) => {
+                let (notices, closed) = {
+                    let mut st = lock(&state);
+                    (
+                        std::mem::take(&mut st.notices),
+                        std::mem::take(&mut st.warning_closed),
+                    )
+                };
+                for n in notices {
+                    tray.balloon(&n.title, &n.text, n.error, false);
+                }
+                if closed {
+                    tray.set_timer(EXIT_TIMER, EXIT_AFTER_MS);
                 }
             }
             (TrayEvent::Click(anchor), Phase::Done) => {
@@ -1590,27 +2339,125 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     Ok(()) // dropping `tray` removes the icon
 }
 
-fn spawn_search(discovery: &Arc<Discovery>, state: &Arc<Mutex<SendState>>, waker: Waker) {
-    let (discovery, state) = (Arc::clone(discovery), Arc::clone(state));
+/// Searches on a worker; the labels say which devices are verified/encrypted (reading the
+/// trust store is file I/O, kept off the UI thread).
+fn spawn_search(
+    s: &'static Strings,
+    discovery: &Arc<Discovery>,
+    trust: &Trust,
+    state: &Arc<Mutex<SendState>>,
+    waker: Waker,
+) {
+    let (discovery, state, trust) = (Arc::clone(discovery), Arc::clone(state), trust.clone());
     thread::spawn(move || {
         let peers = collect_peers(&discovery, SEARCH_MAX, SEARCH_SETTLE);
-        lock(&state).peers = Some(peers);
+        let store = trust.snapshot();
+        let labelled = peers
+            .into_iter()
+            .map(|p| {
+                let label = device_label(s, &p, store.peers.get(&p.device.id));
+                (p, label)
+            })
+            .collect();
+        lock(&state).peers = Some(labelled);
+        waker.wake();
+    });
+}
+
+/// The sender's code window on a worker (a custom window on Windows, an alert on the Mac's
+/// main thread, zenity on Linux). "They match" marks the receiver verified here.
+fn spawn_code_window(
+    view: DialogView,
+    live: DialogLive,
+    trust: Trust,
+    peer: PeerKey,
+    state: &Arc<Mutex<SendState>>,
+    waker: Waker,
+) {
+    let state = Arc::clone(state);
+    let s = strings();
+    thread::spawn(move || {
+        if ui::show_dialog(&view, &live) != Some(BTN_MATCH) {
+            return;
+        }
+        let name = display_name(&peer.name);
+        let notice = match trust.mark_verified(&peer) {
+            Ok(()) => {
+                diag::log("send: receiver marked verified");
+                Notice {
+                    title: fill(s.verified_title, &[("name", &name)]),
+                    text: String::new(),
+                    error: false,
+                    action: BalloonAction::Nothing,
+                }
+            }
+            Err(e) => {
+                diag::log(format!(
+                    "send: marking verified failed: {}",
+                    diag::error_kind(&e)
+                ));
+                Notice {
+                    title: fill(
+                        s.trust_problem,
+                        &[("error", &display_text(&e.to_string(), SHOW_TEXT_MAX))],
+                    ),
+                    text: String::new(),
+                    error: true,
+                    action: BalloonAction::Nothing,
+                }
+            }
+        };
+        lock(&state).notices.push_back(notice);
+        waker.wake();
+    });
+}
+
+/// `hoppyw send` hit a changed key: the warning dialog with "Forget device" on a worker;
+/// the process exits once it is closed (`warning_closed`).
+fn spawn_key_warning(
+    s: &'static Strings,
+    local: &Local,
+    peer_id: Option<String>,
+    name: &str,
+    state: &Arc<Mutex<SendState>>,
+    waker: Waker,
+) {
+    let (trust, state, name) = (local.trust.clone(), Arc::clone(state), name.to_owned());
+    thread::spawn(move || {
+        let answer = ui::show_dialog(&key_changed_dialog(s, &name), &DialogLive::new());
+        let mut st = lock(&state);
+        if answer == Some(BTN_FORGET)
+            && let Some(id) = peer_id
+        {
+            drop(st);
+            let notice = forget_device(s, &trust, &id, &name);
+            st = lock(&state);
+            st.notices.push_back(notice);
+        }
+        st.warning_closed = true;
+        drop(st);
         waker.wake();
     });
 }
 
 fn spawn_send(
     discovery: &Arc<Discovery>,
+    local: &Local,
     peer: Peer,
     files: Vec<PathBuf>,
     state: &Arc<Mutex<SendState>>,
     waker: Waker,
 ) {
-    let (discovery, state) = (Arc::clone(discovery), Arc::clone(state));
+    let (discovery, state, local) = (Arc::clone(discovery), Arc::clone(state), local.clone());
     thread::spawn(move || {
         let mut last = None;
-        let me = discovery.me().clone();
-        let result = send_to_peer(&peer, &me, Some(&discovery), &files, &mut |p| match p {
+        let result = send_to_peer(&peer, &local, Some(&discovery), &files, &mut |p| match p {
+            Progress::Session(session) => {
+                diag::log(format!("send: encrypted={}", session.encrypted));
+                lock(&state).session = Some(session);
+                waker.wake();
+            }
+            Progress::Warning(w) => diag::log(format!("send: warning {w:?}")),
             // Direct connect failed (firewalled receiver?): asking it to connect back.
             Progress::Fallback => {
                 diag::log("send: direct connection failed, trying a callback");
@@ -1635,10 +2482,16 @@ fn spawn_send(
         if let Err(e) = &result {
             diag::log(format!("send: failed: {}", diag::error_kind(e)));
         }
-        lock(&state).outcome = Some(result.map_err(|e| match e {
+        let mut st = lock(&state);
+        if let Some(window) = st.code_window.take() {
+            window.close();
+        }
+        st.outcome = Some(result.map_err(|e| match e {
             Error::Unreachable(_) => SendError::Unreachable,
+            Error::KeyChanged(_) => SendError::KeyChanged,
             e => SendError::Other(e.to_string()),
         }));
+        drop(st);
         waker.wake();
     });
 }
@@ -1684,6 +2537,28 @@ mod tests {
                 s.menu_update,
                 s.menu_download,
                 s.update_progress,
+                s.sec_code,
+                s.sec_verified,
+                s.sec_plain,
+                s.code_title,
+                s.code_text,
+                s.waiting_code,
+                s.waiting_plain,
+                s.key_changed_title,
+                s.key_changed_text,
+                s.forgotten,
+                s.forget_failed,
+                s.plain_refused_title,
+                s.verified_title,
+                s.aborts_title,
+                s.trust_problem,
+                s.trusted_verified,
+                s.trusted_unverified,
+                s.forget_title,
+                s.dev_verified,
+                s.dev_encrypted,
+                s.dev_plain,
+                s.update_installing,
             ]
         };
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
@@ -1742,6 +2617,7 @@ mod tests {
                 platform: "android".into(),
             },
             addr: "10.0.0.2:47471".parse().unwrap(),
+            crypto: Some(1),
         };
         assert_eq!(peer_label(&peer), "Pixel & co · Android");
         let spoof = Peer {
@@ -1774,6 +2650,203 @@ mod tests {
             body,
             "Pixel (android, 10.0.0.9) wants to send you 2 file(s), 2 B:\n• agpj.exe\n• (?)"
         );
+    }
+
+    fn session(trust: Option<TrustState>, platform: &str) -> SessionInfo {
+        SessionInfo {
+            encrypted: trust.is_some(),
+            peer: trust.map(|_| PeerKey {
+                id: "id-pixel".into(),
+                name: "Pixel".into(),
+                platform: platform.into(),
+                fingerprint: "ABCDEFGHIJKL".into(),
+            }),
+            trust,
+            sas: trust.map(|_| hoppy_core::Sas::from_value(0)),
+            name_matches_known: false,
+        }
+    }
+
+    fn offer() -> Offer {
+        Offer {
+            sender: DeviceInfo {
+                id: "id-pixel".into(),
+                name: "Pixel".into(),
+                platform: "android".into(),
+            },
+            files: vec![hoppy_core::protocol::FileEntry {
+                name: "a.jpg".into(),
+                size: 3,
+            }],
+        }
+    }
+
+    #[test]
+    fn security_notes() {
+        let plain = SessionInfo::plaintext();
+        assert_eq!(
+            security_note(&EN, &plain, "Pixel"),
+            "⚠ Not encrypted: Pixel runs a version of Hoppy without encryption"
+        );
+        assert_eq!(
+            security_note(&IT, &session(Some(TrustState::New), "android"), "Pixel"),
+            "🔒 Cifrato · dispositivo nuovo. Per essere sicuro che sia davvero Pixel, controlla \
+             che sul suo schermo ci siano le stesse 4 immagini:"
+        );
+        let mut verified = session(Some(TrustState::Verified), "android");
+        assert_eq!(
+            security_note(&EN, &verified, "Pixel"),
+            "🔒 Encrypted · ✓ Pixel is a verified device"
+        );
+        verified.name_matches_known = true;
+        assert!(security_note(&EN, &verified, "Pixel").ends_with(EN.sec_name_clash));
+    }
+
+    #[test]
+    fn accept_question_offers_the_code_and_a_qr_code_for_phones() {
+        let from: SocketAddr = "10.0.0.9:1".parse().unwrap();
+        let new = session(Some(TrustState::New), "android");
+        let view = offer_dialog(&IT, &offer(), from, &new, Some("hoppy:verify:1:me:FP:00"));
+        let ids: Vec<u32> = view.buttons.iter().map(|b| b.0).collect();
+        assert_eq!(
+            ids,
+            [BTN_DECLINE, BTN_ACCEPT, BTN_MATCH],
+            "Decline is the default"
+        );
+        assert_eq!(view.buttons[2].1, "Coincide, accetta");
+        let code = view.code.as_ref().unwrap();
+        assert_eq!(code.emoji, ["🐘"; 4]);
+        assert_eq!(code.names, ["elefante"; 4]);
+        assert_eq!(code.digits, "0000 0000");
+        assert_eq!(
+            (code.to_digits.as_str(), code.to_emoji.as_str()),
+            ("123", "Emoji")
+        );
+        assert_eq!(view.qr.as_ref().unwrap().caption, IT.qr_caption);
+        assert_eq!(view.details.as_deref(), Some("Verifica…"));
+        assert_eq!(view.timeout, Some(ASK_TIMEOUT));
+        assert!(
+            view.text
+                .starts_with("Pixel (android, 10.0.0.9) vuole inviarti 1 file")
+        );
+
+        // Verified or plaintext: no code, no QR code, no "They match".
+        for s in [
+            session(Some(TrustState::Verified), "android"),
+            SessionInfo::plaintext(),
+        ] {
+            let view = offer_dialog(&EN, &offer(), from, &s, Some("hoppy:verify:1:me:FP:00"));
+            assert!(view.code.is_none() && view.qr.is_none() && view.details.is_none());
+            assert_eq!(view.buttons.len(), 2);
+            assert_eq!(view.default_id(), BTN_DECLINE);
+        }
+        // No payload (a desktop sender): code but no QR code.
+        let view = offer_dialog(&EN, &offer(), from, &new, None);
+        assert!(view.code.is_some() && view.qr.is_none());
+        assert!(is_mobile("ios") && is_mobile("android") && !is_mobile("macos"));
+    }
+
+    #[test]
+    fn sender_code_window_and_warnings_default_to_closing() {
+        let known = session(Some(TrustState::Known), "linux");
+        let view = code_dialog(&EN, "Laptop", &known).unwrap();
+        assert_eq!(view.title, "Hoppy — verify Laptop");
+        assert!(
+            view.text
+                .starts_with("Sending to Laptop (seen before, not verified)")
+        );
+        assert_eq!(view.default_id(), BTN_CLOSE);
+        assert_eq!(view.buttons[1], (BTN_MATCH, "They match".to_owned()));
+        assert!(view.timeout.is_none() && view.qr.is_none());
+        assert!(code_dialog(&EN, "x", &session(Some(TrustState::Verified), "linux")).is_none());
+        assert!(code_dialog(&EN, "x", &SessionInfo::plaintext()).is_none());
+
+        let warn = key_changed_dialog(&IT, "Pixel");
+        assert_eq!(warn.default_id(), BTN_CLOSE);
+        assert_eq!(
+            warn.buttons[1],
+            (BTN_FORGET, "Dimentica dispositivo".to_owned())
+        );
+        assert!(warn.text.contains("«Dimentica dispositivo»"));
+        assert_eq!(forget_dialog(&EN, "Pixel").default_id(), BTN_CLOSE);
+    }
+
+    #[test]
+    fn device_labels_show_trust() {
+        let peer = |crypto| Peer {
+            device: DeviceInfo {
+                id: "x".into(),
+                name: "Pixel".into(),
+                platform: "android".into(),
+            },
+            addr: "10.0.0.2:47471".parse().unwrap(),
+            crypto,
+        };
+        let entry = |verified| TrustEntry {
+            fingerprint: "F".into(),
+            name: "Pixel".into(),
+            first_seen: 0,
+            verified,
+            addr: None,
+        };
+        assert_eq!(
+            device_label(&EN, &peer(Some(1)), Some(&entry(true))),
+            "✓ Pixel · Android"
+        );
+        assert_eq!(
+            device_label(&EN, &peer(Some(1)), Some(&entry(false))),
+            "🔒 Pixel · Android"
+        );
+        assert_eq!(
+            device_label(&EN, &peer(Some(1)), None),
+            "🔒 Pixel · Android"
+        );
+        // An old app, unless its key is remembered (then the sender insists on v1).
+        assert_eq!(
+            device_label(&IT, &peer(Some(0)), None),
+            "Pixel · Android · ⚠ non cifrato"
+        );
+        assert_eq!(
+            device_label(&EN, &peer(None), None),
+            "Pixel · Android · ⚠ not encrypted"
+        );
+        assert_eq!(
+            device_label(&EN, &peer(Some(0)), Some(&entry(false))),
+            "🔒 Pixel · Android"
+        );
+    }
+
+    #[test]
+    fn trusted_devices_are_sorted_and_tell_keys_apart() {
+        let mut store = TrustStore::new();
+        for (id, name, fp, verified) in [
+            ("b", "pixel", "ZZZZYYYYXXXX", false),
+            ("a", "Mac\u{202E}", "ABCDEFGHIJKL", true),
+            ("c", "Pixel", "QQ", true),
+        ] {
+            store.peers.insert(
+                id.into(),
+                TrustEntry {
+                    fingerprint: fp.into(),
+                    name: name.into(),
+                    first_seen: 0,
+                    verified,
+                    addr: None,
+                },
+            );
+        }
+        let list = trusted_devices(&EN, &store);
+        let labels: Vec<&str> = list.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "✓ Mac · ABCD EFGH",
+                "pixel · ZZZZ YYYY · not verified",
+                "✓ Pixel · QQ"
+            ]
+        );
+        assert_eq!(list[0].id, "a");
+        assert_eq!(list[0].name, "Mac");
     }
 
     fn quiet_discovery(name: &str, transfer_port: u16, seed: Option<u16>) -> Discovery {

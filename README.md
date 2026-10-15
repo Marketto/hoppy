@@ -9,7 +9,8 @@ Obiettivo: Windows, macOS, Linux, Android e iPhone, scegliendo da solo il canale
 veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto.
 
 > **Stato: proof of concept.** Funziona tra Windows/Linux/Mac, Android e iPhone/iPad sulla stessa rete Wi-Fi.
-> Il protocollo v0 **non è cifrato**: usalo solo su reti fidate (vedi `docs/decisions/0003-v0-unencrypted.md`).
+> Dal protocollo v1 i trasferimenti tra dispositivi aggiornati sono **cifrati** (vedi `docs/decisions/0010-v1-encryption.md`);
+> con le app vecchie (v0, oggi anche Android) restano **non cifrati**: usali solo su reti fidate.
 
 ## Cosa c'è oggi
 
@@ -95,7 +96,18 @@ La firma gratuita **dura 7 giorni**: poi Hoppy non si apre più e basta ripetere
 file ricevuti restano). Hoppy riceve **solo mentre è aperto**: lascia attivo *Pronto a
 ricevere*, accetta con **Accetta** (Rifiuta è la scelta predefinita) e trovi i file in *File →
 Sul mio iPad → Hoppy*. Per inviare: *Invia file* nell'app, oppure *Condividi → Hoppy* da Foto o
-File. Dettagli, limiti e risoluzione dei problemi: [`docs/platforms/ios.md`](docs/platforms/ios.md).
+File (agli altri appare come un dispositivo a parte, «iPad (Condividi)»).
+
+*Aggiornamenti e rinnovo automatici:* se usi **SideStore** (gratuito; si installa una volta con
+Sideloadly seguendo la sua guida), aggiungi la sorgente
+`https://marketto.github.io/hoppy/sidestore.json` (link sul portale, scheda iPhone e iPad):
+SideStore rinnova la firma ogni settimana e propone le nuove versioni. Altrimenti Hoppy mostra
+«Hoppy X disponibile» e basta reinstallare con Sideloadly.
+
+*Verifica dei dispositivi:* la prima volta che invii o ricevi da un dispositivo nuovo Hoppy mostra
+4 emoji (o 8 cifre con «123»): se sono uguali sull'altro schermo tocca **Coincide**, oppure
+**Verifica con QR** e inquadra il codice dell'altro dispositivo (✓ accanto al nome). Dettagli,
+limiti e risoluzione dei problemi: [`docs/platforms/ios.md`](docs/platforms/ios.md).
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.
 

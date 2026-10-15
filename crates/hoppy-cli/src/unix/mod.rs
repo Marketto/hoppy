@@ -1,7 +1,9 @@
 //! Helpers shared by the Linux (`crate::linux`) and macOS (`crate::macos`) desktop
-//! backends: `PATH` lookup and the curl/wget HTTPS client of the update check.
+//! backends: `PATH` lookup, the curl/wget HTTPS client of the update check, and the
+//! installer of downloaded updates (`selfupdate`).
 
 pub mod http;
+pub mod selfupdate;
 
 use std::path::{Path, PathBuf};
 

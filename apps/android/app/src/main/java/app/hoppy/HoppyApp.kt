@@ -12,6 +12,7 @@ import app.hoppy.core.CallbackRequest
 import app.hoppy.core.DeviceInfo
 import app.hoppy.core.DiscoveryNode
 import app.hoppy.core.Peer
+import app.hoppy.security.Security
 import app.hoppy.ui.RecentTarget
 import app.hoppy.ui.ShareTargets
 import app.hoppy.ui.theme.HoppyTheme
@@ -32,8 +33,14 @@ class HoppyApp : Application() {
                 NotificationChannel(CH_DONE, getString(R.string.channel_done), NotificationManager.IMPORTANCE_DEFAULT),
                 // "Updates": new version available, download progress (silent), errors.
                 NotificationChannel(CH_UPDATES, getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
+                // "Security warnings": refused senders (changed key, plaintext from a device that
+                // encrypts), possible code guessing, QR verifications (docs/protocol.md §7).
+                NotificationChannel(CH_SECURITY, getString(R.string.channel_security), NotificationManager.IMPORTANCE_HIGH),
             ),
         )
+        // Before anything reads the device id: a new key comes with a new id (Security).
+        Security.loadKey(this)
+        Security.warm(this)
         Music.init(this)
         Updater.init(this)
     }
@@ -48,6 +55,7 @@ class HoppyApp : Application() {
         const val CH_INCOMING = "incoming"
         const val CH_DONE = "done"
         const val CH_UPDATES = "updates"
+        const val CH_SECURITY = "security"
     }
 }
 
@@ -61,6 +69,14 @@ object Prefs {
             p.edit().putString("device_id", it).apply()
         }
         return DeviceInfo(id, deviceName(ctx), "android")
+    }
+
+    /**
+     * A new device key was created (first run, key replaced): a new id goes with it, so peers
+     * see a New device instead of a changed key (protocol §7.5). Called by `Security` only.
+     */
+    fun resetDeviceId(ctx: Context) {
+        sp(ctx).edit().putString("device_id", UUID.randomUUID().toString()).commit()
     }
 
     fun deviceName(ctx: Context): String =

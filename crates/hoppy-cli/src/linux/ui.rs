@@ -27,6 +27,7 @@ use super::notify::{self, DEFAULT_ACTION, Note, Signal, Urgency};
 use super::sni::{Item, Sni};
 use super::{dialog, http, sound};
 use crate::platform::{COLLECT_MAX_FILES, HttpSink, MenuItem, TooManyFiles, TrayEvent};
+use crate::verify::{DialogLive, DialogView, LIVE_POLL};
 use crate::{diag, gui};
 
 /// Linux has no popup menus at the cursor: the tray menu is persistent (`set_menu`) and
@@ -181,56 +182,63 @@ pub fn message_box_error(title: &str, body: &str) {
     }
 }
 
-/// The accept question for an incoming offer (the only yes/no question `hoppyw` asks on
-/// Linux): a notification with Accept/Decline buttons where the server supports actions
-/// (GNOME, KDE…), else a zenity/kdialog question. Clicking the notification body opens the
-/// dialog. No answer within `ASK_TIMEOUT`, a dismissed notification, or no way to ask at
-/// all: declined. Blocking: called on transfer threads.
-pub fn message_box_yes_no(title: &str, body: &str) -> bool {
-    let s = gui::strings();
-    let deadline = Instant::now() + ASK_TIMEOUT;
+/// The accept question for an incoming offer: a notification with Accept / Decline (and
+/// "Verify…" when there is a code to compare, which opens [`show_dialog`]) where the server
+/// supports actions (GNOME, KDE…), else the dialog straight away. Clicking the notification
+/// body opens the dialog too. `view.buttons` = [Decline, Accept, …]. No answer within the
+/// timeout, a dismissed notification, or no way to ask at all: the default (Decline).
+/// Blocking: called on transfer threads.
+pub fn ask_offer(view: &DialogView, live: &DialogLive) -> Option<u32> {
+    let deadline = Instant::now() + view.timeout.unwrap_or(ASK_TIMEOUT);
     if let Some(n) = notify::get().filter(|n| n.has("actions")) {
-        match ask_by_notification(n, title, body, s.accept, s.decline, deadline) {
-            Some(Asked::Answer(yes)) => return yes,
+        match ask_by_notification(n, view, deadline, live) {
+            Some(Asked::Answer(id)) => return id,
             Some(Asked::Details) => {}
             None => diag::log("receive: the accept notification failed, using a dialog"),
         }
     }
-    let left = deadline.saturating_duration_since(Instant::now());
-    match dialog::ask(title, body, s.accept, s.decline, left) {
-        Some(yes) => yes,
-        None => {
-            diag::log("receive: no way to ask (no notification buttons, no zenity/kdialog)");
-            false
-        }
+    if dialog::question_tool().is_none() {
+        diag::log("receive: no way to ask (no notification buttons, no zenity/kdialog)");
+        return None;
     }
+    let mut view = view.clone();
+    view.timeout = Some(deadline.saturating_duration_since(Instant::now()));
+    show_dialog(&view, live)
 }
 
 enum Asked {
-    Answer(bool),
-    /// Body clicked: ask again with a dialog (shows the whole text).
+    Answer(Option<u32>),
+    /// Body or "Verify…" clicked: ask again with the dialog (whole text, code, QR).
     Details,
 }
 
 fn ask_by_notification(
     n: &notify::Notifier,
-    title: &str,
-    body: &str,
-    yes: &str,
-    no: &str,
+    view: &DialogView,
     deadline: Instant,
+    live: &DialogLive,
 ) -> Option<Asked> {
-    let with_details = [(DEFAULT_ACTION, ""), ("accept", yes), ("decline", no)];
-    // Without a dialog program a body click could only decline: no "default" action then.
-    let actions = if dialog::tool().is_some() {
-        &with_details[..]
-    } else {
-        &with_details[1..]
+    let (Some(decline), Some(accept)) = (view.buttons.first(), view.buttons.get(1)) else {
+        return None;
     };
+    let can_detail = dialog::tool().is_some();
+    // Without a dialog program a body click could only decline: no "default" action then.
+    let mut actions: Vec<(&str, &str)> = Vec::new();
+    if can_detail {
+        actions.push((DEFAULT_ACTION, ""));
+    }
+    actions.extend([
+        ("accept", accept.1.as_str()),
+        ("decline", decline.1.as_str()),
+    ]);
+    if let (true, Some(details)) = (can_detail, &view.details) {
+        actions.push(("details", details.as_str()));
+    }
+    let body = view.plain_text();
     let id = n.show(&Note {
-        summary: title,
-        body,
-        actions,
+        summary: &view.title,
+        body: &body,
+        actions: &actions,
         urgency: Urgency::Critical,
         timeout_ms: 0,
         ..Default::default()
@@ -238,17 +246,63 @@ fn ask_by_notification(
     let rx = n.listen(id);
     let asked = loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(Signal::Action(key)) if key == "accept" => break Asked::Answer(true),
-            Ok(Signal::Action(key)) if key == DEFAULT_ACTION => break Asked::Details,
-            Ok(Signal::Action(key)) if key == "decline" => break Asked::Answer(false),
-            Ok(Signal::Action(_)) => {}
-            Ok(Signal::Closed(_)) | Err(_) => break Asked::Answer(false),
+        if left.is_zero() || live.closed() {
+            break Asked::Answer(None);
+        }
+        match rx.recv_timeout(left.min(LIVE_POLL)) {
+            Ok(Signal::Action(key)) if key == "accept" => break Asked::Answer(Some(accept.0)),
+            Ok(Signal::Action(key)) if key == "decline" => break Asked::Answer(Some(decline.0)),
+            Ok(Signal::Action(key)) if key == DEFAULT_ACTION || key == "details" => {
+                break Asked::Details;
+            }
+            Ok(Signal::Action(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(Signal::Closed(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break Asked::Answer(None);
+            }
         }
     };
     n.unlisten(id);
     n.close(id);
     Some(asked)
+}
+
+/// The verification dialog (zenity, else kdialog): see `dialog::dialog_args`. Re-opened to
+/// switch the code between emoji and digits, and to replace the QR code with ✓ once `live`
+/// says verified; closed when `live` says so or after `view.timeout`. `None` = closed
+/// without a choice (the caller uses the default). Blocking: workers only.
+pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
+    let Some(tool) = dialog::question_tool() else {
+        diag::log("dialog: neither zenity nor kdialog is installed");
+        return None;
+    };
+    let deadline = view.timeout.map(|t| Instant::now() + t);
+    let mut state = dialog::DialogState::default();
+    loop {
+        if live.closed() {
+            return None;
+        }
+        state.verified = live.verified();
+        let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+        if left.is_some_and(|l| l.is_zero()) {
+            return None;
+        }
+        let args = dialog::dialog_args(tool, view, state, left);
+        let shown_verified = state.verified;
+        let stop = || live.closed() || (view.qr.is_some() && !shown_verified && live.verified());
+        // zenity gets a little longer than its own --timeout; kdialog has none.
+        let limit = left.map(|l| l + Duration::from_secs(2));
+        match dialog::run_watch(tool, &args, limit, &stop) {
+            dialog::Ran::Exited(code, out) => {
+                match dialog::parse_answer(tool, view, state, code, &out) {
+                    dialog::Answer::Button(id) => return Some(id),
+                    dialog::Answer::Toggle => state.digits = !state.digits,
+                    dialog::Answer::Closed => return None,
+                }
+            }
+            dialog::Ran::Stopped => {} // closed, or re-shown with ✓
+            dialog::Ran::Failed => return None,
+        }
+    }
 }
 
 /// Tells the user a dialog program is needed (device list, file picker).

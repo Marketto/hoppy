@@ -297,6 +297,9 @@ jobs:
       needs.windows.result == 'success' && needs.android.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write # dispatch the portal rebuild (SideStore source) below
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -328,10 +331,19 @@ jobs:
           > Proof of concept: protocol v0 is **not encrypted**. Use Hoppy only on networks you trust.
           > Windows may show a SmartScreen warning (the installer is not code-signed yet): More info → Run anyway.
           > macOS: unless notarized, the first launch is blocked once: System Settings → Privacy & Security → **Open Anyway** (macOS 12–14: right-click Hoppy → Open also works).
-          > iPhone/iPad: the .ipa is **unsigned**. Install it with Sideloadly (https://sideloadly.io) and your Apple ID; the free signature lasts **7 days** (then sideload again). Turn on Settings → Privacy & Security → **Developer Mode**, and trust your Apple ID under Settings → General → VPN & Device Management. Hoppy receives only while it is open. Details: docs/platforms/ios.md in the repository.
+          > iPhone/iPad: the .ipa is **unsigned**. Install it with Sideloadly (https://sideloadly.io) and your Apple ID; the free signature lasts **7 days** (then sideload again). Turn on Settings → Privacy & Security → **Developer Mode**, and trust your Apple ID under Settings → General → VPN & Device Management. Automatic updates and signature renewal: add the SideStore source shown on the download page. Hoppy receives only while it is open. Details: docs/platforms/ios.md in the repository.
           EOF
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber
           else
             gh release create "$tag" dist/* --title "Hoppy $V" --notes-file notes.md --target "${{ github.sha }}"
           fi
+      # A release created with GITHUB_TOKEN does not trigger other workflows (no
+      # `release: published` run of pages.yml), so rebuild the portal explicitly: its
+      # sidestore.json must list the new Hoppy-ios-unsigned.ipa (SideStore auto-updates).
+      - name: Rebuild the download portal (SideStore source)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run pages.yml --repo "${{ github.repository }}" --ref "${{ github.event.repository.default_branch }}" ||
+            echo "::warning::Could not start the Portal workflow; run it by hand so sidestore.json lists this release."

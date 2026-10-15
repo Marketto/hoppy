@@ -7,8 +7,11 @@ description: Use for the Windows experience - the hoppyw tray receiver, the "Sen
 
 PoC UX (no console windows):
 - **Receive**: `hoppyw.exe` starts at login as an icon in the notification area (near the
-  clock). Each incoming offer asks with a native Yes/No dialog (`MessageBoxW`); files go to
-  `Downloads\Hoppy`; a balloon/toast says "Ricevuti N file da …", clicking it opens the folder.
+  clock). Each incoming offer asks with Hoppy's own dialog (`win::show_dialog`: Rifiuta
+  default / Accetta / "Coincide, accetta" + the 4-emoji code with names, "123" → digits, a
+  QR code for phones; 110 s timeout = declined); files go to `Downloads\Hoppy`; a
+  balloon/toast says "Ricevuti N file da …", clicking it opens the folder. Verification UI:
+  docs/platforms/windows.md "Device verification".
 - **Send**: Explorer → select files → right click → **Send with Hoppy** (HKCU verb; on Win11
   top-level only with the opt-in classic menu, else *Show more options*), or **Send to →
   Hoppy**, or drop on the desktop shortcut, runs `hoppyw send FILES` (no files = Open
@@ -52,9 +55,17 @@ PoC UX (no console windows):
   and device names allowed), `UiWatch` (handler > 200 ms
   logged, watchdog line > 2 s). Init only in `hoppyw` tray/send (not `firewall`: elevated
   copy may be another user). Tray menu *About & diagnostics…* opens it in Notepad.
+- `crates/hoppy-cli/src/verify.rs` — what the verification dialogs show (`DialogView`:
+  text, `CodeView`, `QrView` with a `QrMatrix` from the `qrcode` crate, buttons — the first
+  is the default and the answer on close/timeout), `DialogLive` (verified → QR becomes ✓;
+  close). Built by `gui.rs` (`offer_dialog`, `code_dialog`, `key_changed_dialog`,
+  `forget_dialog`, `device_label`, `trusted_devices`, all unit-tested), drawn by
+  `ui::show_dialog` / `ui::ask_offer` on each platform.
 - `crates/hoppy-cli/src/update.rs` — tray update check, pure and Linux-tested: semver
   compare with `CARGO_PKG_VERSION`, `releases/latest` JSON, `SHA256SUMS.txt`, install
-  location (`%LOCALAPPDATA%\Programs\Hoppy` = setup, else portable → portal link), and
+  location (`%LOCALAPPDATA%\Programs\Hoppy` = setup, else portable → portal link;
+  `platform::can_self_update` / `fetch_update` pick the per-platform path: macOS and Linux
+  install themselves, `unix/selfupdate.rs`), and
   `download_fresh` (new `%TEMP%\Hoppy-update-<uuid>` folder via `create_dir`; `*.part`,
   hashed while written, renamed only if the SHA-256 matches; stale folders >1 day removed
   at tray start by `remove_stale_update_dirs`) over an
@@ -87,7 +98,10 @@ PoC UX (no console windows):
   `Win32_System_Registry` feature for `SHELLEXECUTEINFOW`), `no_window` (CREATE_NO_WINDOW
   for netsh/powershell children of the GUI exe), and `play_done_jingle`/`stop_sound` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`;
   only `assets/music/desktop_done.wav` is embedded, with `include_bytes!`, only in Windows
-  builds). On Linux `crate::linux::ui` and on macOS `crate::macos::ui` have the same API, so
+  builds), and `show_dialog` (verification/warning window: STATIC/BUTTON children, emoji in
+  "Segoe UI Emoji", QR painted in `WM_PAINT`, own message loop with `IsDialogMessageW`,
+  `DM_GETDEFID` = first button, thread-locals `DLG_COMMAND`/`DLG_QR`; worker threads only,
+  never the tray thread). On Linux `crate::linux::ui` and on macOS `crate::macos::ui` have the same API, so
   `gui.rs` compiles, lints and runs there; a new `win` function used by `gui.rs` needs its
   Linux and macOS twins (and vice versa).
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
@@ -133,7 +147,11 @@ PoC UX (no console windows):
 - Network text (device names, platforms, file names, remote errors) goes through
   `display_name`/`display_platform`/`display_file_name`/`display_text` (lib.rs) before
   any dialog, menu, tooltip or balloon: no control/bidi chars, capped length.
-- `&` in menu text is an accelerator: escape device names (`&&`), done in `popup_menu`.
+- `&` in menu text is an accelerator: escape device names (`&&`), done in `popup_menu`; the
+  dialog's STATIC controls use `SS_NOPREFIX` instead.
+- Dialogs never run on the tray thread (`GetMessageW(null)` in their loop would dispatch the
+  tray window's messages too): call `ui::show_dialog` from a worker; the accept question
+  runs on the transfer thread.
 - Firewall: rules are per exe path. Without our rules the first `hoppyw` receive triggers
   the Windows prompt; dismissing it creates *block* rules that beat any allow rule, hence
   `apply` deletes all inbound rules for our paths first. Values never go into a UAC command
@@ -173,4 +191,8 @@ send sound (silent until delivery, then the jingle once; "♪ Sound when deliver
 (balloon → download % → silent install → tray back; portable → portal), firewall task
 (UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`,
 callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while the tray
-runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon.
+runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon;
+verification dialogs (receiver: emoji + names legible at 100/150/200 % scaling, "123"
+toggle, Tab/Enter/Esc, Enter declines, QR scans from a phone and turns into ✓, Narrator
+reads names/digits, high-contrast theme; sender code window closes when the send ends;
+key-change warning + "Forget device"; "Trusted devices…").

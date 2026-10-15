@@ -1,13 +1,20 @@
-//! Persistent device identity and preferences: `<config dir>/hoppy/device.json`.
-//! `HOPPY_CONFIG_DIR` overrides the location (tests, portable installs).
+//! Persistent device identity and preferences (`device.json`), the protocol v1 device key
+//! (`identity.key`, owner-only) and trust store (`trust.json`), all in [`state_dir`]:
+//! the per-user config folder on Linux/macOS, the **local** (non-roaming) AppData folder on
+//! Windows, so a roaming profile never copies the private key to a server or gives two PCs
+//! the same id and key (older versions kept them in roaming AppData: moved once, see
+//! [`migrate_from_roaming`]). `HOPPY_CONFIG_DIR` overrides the location (tests, portable
+//! installs).
 //! New fields need `#[serde(default)]` so files written by older versions still load
 //! (older versions ignore unknown fields).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Once;
 
 use anyhow::{Context, Result};
-use hoppy_core::DeviceInfo;
+use hoppy_core::{DeviceInfo, DeviceKey, Local, Trust};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,9 +50,80 @@ pub fn config_dir() -> Result<PathBuf> {
         .join("hoppy"))
 }
 
+const DEVICE_FILE: &str = "device.json";
+
+/// Where `device.json`, the key and the trust store live (see the module docs).
+pub fn state_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("HOPPY_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    if cfg!(windows) {
+        return Ok(dirs::data_local_dir()
+            .context("no local AppData folder")?
+            .join("Hoppy"));
+    }
+    config_dir()
+}
+
+/// Windows: moves files of older versions from roaming to local AppData, once per process.
+/// On two PCs sharing a roaming profile the first one takes them; the second creates its
+/// own id and key (as it should: they are different devices).
+pub fn migrate_from_roaming() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("HOPPY_CONFIG_DIR").is_some() || !cfg!(windows) {
+            return;
+        }
+        let (Ok(old), Ok(new)) = (config_dir(), state_dir()) else {
+            return;
+        };
+        for name in [DEVICE_FILE, KEY_FILE, TRUST_FILE] {
+            let (from, to) = (old.join(name), new.join(name));
+            if from.exists() && !to.exists() && fs::create_dir_all(&new).is_ok() {
+                secure_dir(&new);
+                if fs::copy(&from, &to).is_ok() {
+                    let _ = fs::remove_file(&from);
+                }
+            }
+        }
+    });
+}
+
+/// Windows: limits `dir` (and what is created in it) to the current user, once (a marker
+/// file remembers it). Best effort: `%LOCALAPPDATA%` is already per-user; this also drops
+/// the inherited entries (e.g. Administrators reading the private key without asking).
+fn secure_dir(dir: &Path) {
+    if !cfg!(windows) || std::env::var_os("HOPPY_CONFIG_DIR").is_some() {
+        return;
+    }
+    let marker = dir.join(".owner-only");
+    if marker.exists() {
+        return;
+    }
+    let (Some(domain), Some(user)) = (std::env::var_os("USERDOMAIN"), std::env::var_os("USERNAME"))
+    else {
+        return;
+    };
+    let account = format!(
+        "{}\\{}:(OI)(CI)F",
+        domain.to_string_lossy(),
+        user.to_string_lossy()
+    );
+    let mut cmd = Command::new("icacls");
+    cmd.arg(dir)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(account)
+        .arg("/q");
+    crate::platform::no_window(&mut cmd);
+    if cmd.status().is_ok_and(|s| s.success()) {
+        let _ = fs::write(marker, b"");
+    }
+}
+
 /// Loads the identity, creating it on first run.
 pub fn load_or_create() -> Result<Identity> {
-    let path = config_dir()?.join("device.json");
+    migrate_from_roaming();
+    let path = state_dir()?.join(DEVICE_FILE);
     if let Ok(raw) = fs::read_to_string(&path)
         && let Ok(identity) = serde_json::from_str::<Identity>(&raw)
     {
@@ -63,12 +141,10 @@ pub fn load_or_create() -> Result<Identity> {
 }
 
 pub fn save(identity: &Identity) -> Result<()> {
-    let dir = config_dir()?;
+    let dir = state_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    fs::write(
-        dir.join("device.json"),
-        serde_json::to_vec_pretty(identity)?,
-    )?;
+    secure_dir(&dir);
+    fs::write(dir.join(DEVICE_FILE), serde_json::to_vec_pretty(identity)?)?;
     Ok(())
 }
 
@@ -104,6 +180,26 @@ pub fn device_info(identity: &Identity) -> DeviceInfo {
         name: identity.name.clone(),
         platform: DeviceInfo::current_platform().to_string(),
     }
+}
+
+/// Device key file (spec §7.5): created on first run, never leaves this machine.
+pub const KEY_FILE: &str = "identity.key";
+/// Trust store (spec §7.5): remembered and verified devices.
+pub const TRUST_FILE: &str = "trust.json";
+
+/// This device for protocol v1 sessions: `identity` + the key and trust store in
+/// [`state_dir`] (created on first use). A damaged trust store is set aside, not fatal:
+/// `local.trust.take_warning()` says so (show or log it).
+pub fn local(identity: &Identity) -> Result<Local> {
+    migrate_from_roaming();
+    let dir = state_dir()?;
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    secure_dir(&dir);
+    let key = DeviceKey::load_or_create(&dir.join(KEY_FILE))
+        .with_context(|| format!("device key in {}", dir.display()))?;
+    let trust = Trust::open(&dir.join(TRUST_FILE))
+        .with_context(|| format!("trust store {}", dir.join(TRUST_FILE).display()))?;
+    Ok(Local::new(device_info(identity), key, trust))
 }
 
 fn default_name() -> String {

@@ -8,7 +8,8 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * Protocol v0 wire format. Spec: docs/protocol.md.
+ * Wire format: v0 framing (spec §1–6) and the v1 additions (hello version 1, `crypto`
+ * fields, spec §7.1). Spec: docs/protocol.md.
  * Keep in lockstep with crates/hoppy-core/src/protocol.rs and tools/hoppy_ref.py.
  */
 object Protocol {
@@ -19,6 +20,15 @@ object Protocol {
     const val TOKEN_HEX_LEN = 32
     private val random = SecureRandom()
     const val VERSION = 0
+    /** Hello version byte of an encrypted (v1) session (spec §7.2). */
+    const val VERSION_V1 = 1
+    /** `crypto` field of v1 discovery datagrams and callback hellos (spec §7.1). */
+    const val CRYPTO_VERSION = 1
+    /**
+     * Transition period (ADR 0010): v1 nodes still talk to v0 peers (old apps) without
+     * encryption, flagged in the UI. A later release turns this off (spec §7.1).
+     */
+    const val ALLOW_PLAINTEXT_DEFAULT = true
     const val DISCOVERY_PORT = 47470
     const val TRANSFER_PORT = 47471
     const val MULTICAST_GROUP = "239.255.72.80"
@@ -34,12 +44,26 @@ object Protocol {
         out.write(VERSION)
     }
 
+    /** v0 only (what an old node accepts). */
     fun readHello(input: InputStream) {
+        if (readHelloVersion(input) != VERSION) throw ProtocolException("unsupported version 1")
+    }
+
+    /** `HOPY` + version: 0 (plaintext, §3) or 1 (encrypted, §7.2); anything else is an error. */
+    fun readHelloVersion(input: InputStream): Int {
         val buf = ByteArray(5)
         DataInputStream(input).readFully(buf)
         if (!buf.copyOfRange(0, 4).contentEquals(MAGIC)) throw ProtocolException("bad magic")
-        if (buf[4].toInt() != VERSION) throw ProtocolException("unsupported version ${buf[4]}")
+        val v = buf[4].toInt()
+        if (v != VERSION && v != VERSION_V1) throw ProtocolException("unsupported version $v")
+        return v
     }
+
+    /**
+     * `crypto` (spec §7.1): a non-negative integer, capped at 255; any other value counts as
+     * absent (null) and never makes a message invalid.
+     */
+    fun lenientCrypto(v: Any?): Int? = (v as? Long)?.takeIf { it >= 0 }?.coerceAtMost(255)?.toInt()
 
     fun isValidToken(token: String?): Boolean =
         token != null && token.length == TOKEN_HEX_LEN && token.all { it in '0'..'9' || it in 'a'..'f' }
@@ -53,24 +77,29 @@ object Protocol {
     fun tokensEqual(a: String, b: String): Boolean =
         MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
 
-    /** "HOPC" 0x00 + JSON frame {"id":receiverId,"token":token}. Spec §6. */
-    fun writeCallbackHello(out: OutputStream, receiverId: String, token: String) {
+    /**
+     * "HOPC" 0x00 + JSON frame {"id":receiverId,"token":token} (spec §6); v1 receivers
+     * append `"crypto":1` (spec §7.1).
+     */
+    fun writeCallbackHello(out: OutputStream, receiverId: String, token: String, crypto: Boolean = true) {
         out.write(CALLBACK_MAGIC)
         out.write(VERSION)
-        writeJson(out, linkedMapOf("id" to receiverId, "token" to token))
+        val body = linkedMapOf<String, Any?>("id" to receiverId, "token" to token)
+        if (crypto) body["crypto"] = CRYPTO_VERSION
+        writeJson(out, body)
     }
 
     /**
-     * Returns (receiverId, token); does not check the token. The frame is capped at
-     * [MAX_CALLBACK_HELLO_FRAME]; the caller bounds the time (spec §6 step 3).
+     * Does not check the token. The frame is capped at [MAX_CALLBACK_HELLO_FRAME]; the caller
+     * bounds the time (spec §6 step 3).
      */
-    fun readCallbackHello(input: InputStream): Pair<String, String> {
+    fun readCallbackHello(input: InputStream): CallbackHello {
         val buf = ByteArray(5)
         DataInputStream(input).readFully(buf)
         if (!buf.copyOfRange(0, 4).contentEquals(CALLBACK_MAGIC)) throw ProtocolException("bad callback magic")
         if (buf[4].toInt() != VERSION) throw ProtocolException("unsupported version ${buf[4]}")
         val m = readJson(input, MAX_CALLBACK_HELLO_FRAME)
-        return (m["id"] as? String ?: "") to (m["token"] as? String ?: "")
+        return CallbackHello(m["id"] as? String ?: "", m["token"] as? String ?: "", lenientCrypto(m["crypto"]))
     }
 
     fun writeJson(out: OutputStream, value: Map<String, Any?>) {
@@ -97,6 +126,9 @@ object Protocol {
 }
 
 class ProtocolException(message: String) : java.io.IOException(message)
+
+/** The JSON of a callback hello (spec §6); [crypto] is null for v0 receivers. */
+data class CallbackHello(val id: String, val token: String, val crypto: Int? = null)
 
 data class DeviceInfo(val id: String, val name: String, val platform: String) {
     fun toMap(): Map<String, Any?> = linkedMapOf("id" to id, "name" to name, "platform" to platform)
@@ -133,7 +165,8 @@ data class Offer(val sender: DeviceInfo, val files: List<FileEntry>) {
 
 /**
  * Discovery datagram (spec §2). [token] and [to] are set only on [CALLBACK] (spec §6),
- * where [port] is the sender's callback listener.
+ * where [port] is the sender's callback listener. [crypto]: v1 nodes send 1 (spec §7.1);
+ * null when absent or not a non-negative integer.
  */
 data class DiscoveryMessage(
     val type: String,
@@ -141,6 +174,7 @@ data class DiscoveryMessage(
     val port: Int,
     val token: String? = null,
     val to: String? = null,
+    val crypto: Int? = null,
 ) {
     fun encode(): ByteArray = Json.encode(
         linkedMapOf<String, Any?>(
@@ -149,6 +183,7 @@ data class DiscoveryMessage(
         ).apply {
             if (token != null) put("token", token)
             if (to != null) put("to", to)
+            if (crypto != null) put("crypto", crypto)
         },
     ).toByteArray(Charsets.UTF_8)
 
@@ -165,13 +200,14 @@ data class DiscoveryMessage(
             val port = m.long("port")
             val token = m["token"] as? String
             val to = m["to"] as? String
+            val crypto = Protocol.lenientCrypto(m["crypto"])
             when {
                 m.long("hoppy") != Protocol.VERSION.toLong() -> null
                 type != ANNOUNCE && type != QUERY && type != BYE && type != CALLBACK -> null
                 port !in 0..65535 || m.str("id").isEmpty() -> null
                 type == CALLBACK && (port == 0L || !Protocol.isValidToken(token) || to.isNullOrEmpty()) -> null
-                type == CALLBACK -> DiscoveryMessage(type, DeviceInfo.from(m), port.toInt(), token, to)
-                else -> DiscoveryMessage(type, DeviceInfo.from(m), port.toInt())
+                type == CALLBACK -> DiscoveryMessage(type, DeviceInfo.from(m), port.toInt(), token, to, crypto)
+                else -> DiscoveryMessage(type, DeviceInfo.from(m), port.toInt(), crypto = crypto)
             }
         } catch (e: RuntimeException) {
             null

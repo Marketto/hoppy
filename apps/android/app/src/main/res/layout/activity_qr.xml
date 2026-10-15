@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  QrActivity: this phone's verification QR code (spec §7.7) for another phone/tablet to
+  scan, or the status of a scan started from the menu. Dark modules on white whatever the
+  theme (scanners need the contrast).
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?android:colorBackground">
+
+    <app.hoppy.ui.theme.ThemeBackgroundView
+        android:id="@+id/background"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fitsSystemWindows="true"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/close"
+            style="?attr/materialIconButtonStyle"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="end"
+            android:contentDescription="@string/close"
+            app:icon="@drawable/ic_close"
+            app:iconTint="?attr/colorOnSurface" />
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:accessibilityHeading="true"
+                    android:gravity="center"
+                    android:text="@string/my_qr_title"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="22sp" />
+
+                <ImageView
+                    android:id="@+id/qr"
+                    android:layout_width="264dp"
+                    android:layout_height="264dp"
+                    android:layout_marginTop="16dp"
+                    android:background="@color/white"
+                    android:contentDescription="@string/my_qr_cd"
+                    android:padding="12dp"
+                    android:scaleType="fitCenter"
+                    android:visibility="invisible" />
+
+                <TextView
+                    android:id="@+id/hint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:gravity="center"
+                    android:text="@string/my_qr_hint"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:accessibilityLiveRegion="polite"
+                    android:gravity="center"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/fingerprint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textIsSelectable="true"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+</FrameLayout>

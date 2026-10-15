@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Receiver side of device verification (VerifyActivity): the code of an incoming offer, or
+  the "different key" warning with "Forget device". One primary action per mode.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?android:colorBackground">
+
+    <app.hoppy.ui.theme.ThemeBackgroundView
+        android:id="@+id/background"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fitsSystemWindows="true"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/close"
+            style="?attr/materialIconButtonStyle"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="end"
+            android:contentDescription="@string/close"
+            app:icon="@drawable/ic_close"
+            app:iconTint="?attr/colorOnSurface" />
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <app.hoppy.ui.theme.MascotView
+                    android:id="@+id/mascot"
+                    android:layout_width="96dp"
+                    android:layout_height="96dp"
+                    android:layout_marginBottom="12dp"
+                    android:contentDescription="@string/mascot_description" />
+
+                <include
+                    android:id="@+id/verify"
+                    layout="@layout/view_verify" />
+
+                <!-- Key changed: warning + "Forget device" (never sends, never accepts). -->
+                <LinearLayout
+                    android:id="@+id/keyChanged"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="?attr/hoppyCardBackground"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingTop="14dp"
+                    android:paddingBottom="16dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/keyChangedTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:accessibilityHeading="true"
+                        android:text="@string/key_changed_title"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/keyChangedText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="16sp" />
+
+                    <app.hoppy.ui.theme.HoppyButton
+                        android:id="@+id/forget"
+                        android:layout_width="match_parent"
+                        android:layout_height="64dp"
+                        android:layout_marginTop="16dp"
+                        android:text="@string/forget_device" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/cancel"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_horizontal"
+                        android:minHeight="48dp"
+                        android:text="@android:string/cancel"
+                        android:textColor="?attr/colorOnSurface"
+                        android:textSize="15sp" />
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+</FrameLayout>

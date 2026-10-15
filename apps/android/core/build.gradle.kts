@@ -1,5 +1,5 @@
-// Pure JVM module: protocol, discovery and transfer. No Android APIs, so it is
-// unit-tested on the JVM and interop-tested against the Rust CLI (tools/interop.sh).
+// Pure JVM module: protocol, discovery, transfer and v1 encryption. No Android APIs, so it
+// is unit-tested on the JVM and interop-tested against the Rust CLI (tools/interop.sh).
 plugins {
     alias(libs.plugins.kotlin.jvm)
 }
@@ -18,6 +18,9 @@ kotlin {
 }
 
 dependencies {
+    // X25519 and ChaCha20-Poly1305 (lightweight API, pure Java): protocol v1, spec §7.
+    // Not exposed in :core's API; the app gets it on its runtime classpath.
+    implementation(libs.bouncycastle)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
 }

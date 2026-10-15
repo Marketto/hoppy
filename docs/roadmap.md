@@ -39,7 +39,15 @@
    entitlement (sweep off), App Group (shared name for the Share extension).
 
 ## v1 — secure & resumable
-- Encryption + pairing (ADR to write), resume via per-chunk hashes.
+- Encryption + device verification (ADR 0010): phase 1 done — spec §7, Rust core, Python
+  reference, vectors, CLI (`hoppy trust`), FFI. Phase 2: Android (done: Kotlin core v1,
+  interop-tested; code panel, QR scan/show, ✓, KeyChanged dialog; awaits the CI build and a
+  device test), desktop dialogs (emoji/number switch, "Coincide", QR display),
+  iOS UI (done: persistent key/trust per container, code + «Coincide», QR scan/show,
+  KeyChanged alert; awaits the CI job `ios` and the manual plan); then switch plaintext off.
+- iPhone/iPad updates at zero cost: SideStore source `sidestore.json` on the portal + daily
+  in-app notice (ADR 0009 addendum).
+- Resume via per-chunk hashes.
 - Single engine: Rust core on Android via UniFFI (ADR 0002); iOS already uses it (ADR 0009).
 - iPhone/iPad: Wi-Fi Aware (iOS 26) when no shared network.
 

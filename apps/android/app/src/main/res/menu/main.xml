@@ -3,6 +3,9 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item android:id="@+id/theme" android:title="@string/theme" app:showAsAction="never" />
     <item android:id="@+id/rename" android:title="@string/rename" app:showAsAction="never" />
+    <!-- Device verification by QR (docs/protocol.md §7.7): show this phone's code / scan another's. -->
+    <item android:id="@+id/show_qr" android:title="@string/verify_show_mine" app:showAsAction="never" />
+    <item android:id="@+id/scan_qr" android:title="@string/scan_qr" app:showAsAction="never" />
     <item android:id="@+id/music" android:title="@string/music" android:checkable="true"
         app:showAsAction="never" />
     <item android:id="@+id/auto_accept" android:title="@string/auto_accept" android:checkable="true"

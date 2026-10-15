@@ -29,7 +29,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.14.3
-      - run: python3 tools/dev.py all
+      # Output also goes to a log that tools/ci-annotate.sh turns into annotations on failure
+      # (agents read annotations, not logs): failing tests, ✗ lines, Python tracebacks,
+      # interop/selftest FAIL lines, Gradle errors, and the last 60 lines.
+      - name: dev.py all
+        shell: bash
+        run: |
+          python3 -u tools/dev.py all 2>&1 | tee all.log ||
+            { bash tools/ci-annotate.sh "Linux dev.py all" all.log 60; exit 1; }
 
   windows:
     name: Windows · tests + hoppy.exe + hoppyw.exe

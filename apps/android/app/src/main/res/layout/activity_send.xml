@@ -106,6 +106,18 @@
                 android:text="@string/searching"
                 android:textColor="?attr/colorOnSurfaceVariant"
                 android:textSize="14sp" />
+
+            <!-- Verification code of the session (New/Known device), over the list while sending. -->
+            <ScrollView
+                android:id="@+id/verifyScroll"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone">
+
+                <include
+                    android:id="@+id/verify"
+                    layout="@layout/view_verify" />
+            </ScrollView>
         </FrameLayout>
 
         <!-- Preselected device (share shortcut / tapped on home): never sent to without this tap. -->
@@ -135,6 +147,18 @@
             android:gravity="center"
             android:textColor="?attr/colorOnSurface"
             android:textSize="16sp"
+            android:visibility="gone" />
+
+        <!-- 🔒 Encrypted / ✓ verified / ⚠ not encrypted (docs/protocol.md §7.1). -->
+        <TextView
+            android:id="@+id/security"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:accessibilityLiveRegion="polite"
+            android:gravity="center"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="14sp"
             android:visibility="gone" />
     </LinearLayout>
 </FrameLayout>

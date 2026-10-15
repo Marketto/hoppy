@@ -83,3 +83,24 @@ stated goal is one engine).
   Group for a shared name.
 - No background receiving: the sender sees "unreachable" when the iPad's Hoppy is not open;
   documented as a product fact (`docs/platforms/ios.md`).
+
+## Addendum (2026-10-15): v1 identity of the Share extension, updates
+- **Identity with protocol v1 (ADR 0010).** The app and the extension each keep a persistent
+  device key and trust store in their own `Library/Application Support/Hoppy` (excluded from
+  backups) and the device id is bound to that key (new key ⇒ new id, never KeyChanged on
+  other devices). Sharing one identity between app and extension was rejected: App Groups are
+  not available to free personal teams (Xcode refuses the capability for them; we could not
+  confirm that Sideloadly registers groups), `keychain-access-groups` needs the signer's team
+  prefix, which an unsigned .ipa cannot know and Sideloadly rebuilds from the provisioning
+  profile, and handing the files to the app needs the responder-chain URL hack. So the
+  extension is **a separate device**, «<model> (Condividi)», with its own stable id, key and
+  trust store: zero cost, nothing to configure, no KeyChanged; it is verified separately and
+  shows the code with «Coincide» (no QR: extensions cannot use the camera and it never
+  receives). With a paid account later, an App Group can merge the two identities.
+- **Updates at zero cost.** The portal publishes an AltStore-format source,
+  `sidestore.json`, built by `tools/site.py` from the latest release (portal rebuilt by
+  `release.yml` after publishing): users of SideStore (free, re-signs on the device every
+  week) get automatic renewal and updates. The app checks `releases/latest` at most daily and
+  shows «Hoppy X disponibile — aggiorna da SideStore o reinstalla con Sideloadly» with a link
+  to the portal; it never downloads (a sideloaded app cannot replace itself).
+
