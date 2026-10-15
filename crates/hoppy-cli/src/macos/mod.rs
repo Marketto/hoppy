@@ -39,6 +39,8 @@ pub use ui::ui_is_italian;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use crate::platform::MenuItem;
+
 /// `CFBundleIdentifier` in `apps/macos/Info.plist`.
 pub const BUNDLE_ID: &str = "app.hoppy.desktop";
 /// `NSMessage` of the Finder service in Info.plist: AppKit calls
@@ -242,9 +244,94 @@ pub fn status_title(tip: &str) -> String {
     }
 }
 
+/// How a menu's entries are laid out in the picker panel.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PickerLayout<'a> {
+    /// The first label: the window title.
+    pub title: &'a str,
+    /// Other labels ("No devices found…").
+    pub notes: Vec<&'a str>,
+    /// Actions before the last separator: one full-width button each (the devices).
+    pub rows: Vec<(u32, &'a str)>,
+    /// Actions after the last separator: a row of buttons at the bottom (Search again,
+    /// Cancel).
+    pub footer: Vec<(u32, &'a str)>,
+}
+
+/// Splits `items` (the `gui.rs` device menu) into the panel's parts.
+pub fn picker_layout<'a>(items: &[MenuItem<'a>]) -> PickerLayout<'a> {
+    let mut layout = PickerLayout::default();
+    // Without a separator every action is a row.
+    let last_separator = items
+        .iter()
+        .rposition(|i| matches!(i, MenuItem::Separator))
+        .unwrap_or(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let action = match *item {
+            MenuItem::Action(id, t) | MenuItem::Bold(id, t) | MenuItem::Check(id, t, _) => {
+                Some((id, t))
+            }
+            MenuItem::Label(t) if layout.title.is_empty() => {
+                layout.title = t;
+                None
+            }
+            MenuItem::Label(t) => {
+                layout.notes.push(t);
+                None
+            }
+            MenuItem::Separator => None,
+        };
+        if let Some(action) = action {
+            if i > last_separator {
+                layout.footer.push(action);
+            } else {
+                layout.rows.push(action);
+            }
+        }
+    }
+    layout
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_layout_follows_the_device_menu() {
+        let items = [
+            MenuItem::Label("Invia «a.jpg» (1 KB) a:"),
+            MenuItem::Separator,
+            MenuItem::Action(100, "Pixel · Android ✓"),
+            MenuItem::Action(101, "PC · Windows ⚠"),
+            MenuItem::Separator,
+            MenuItem::Action(1, "Cerca di nuovo"),
+            MenuItem::Action(2, "Annulla"),
+        ];
+        let l = picker_layout(&items);
+        assert_eq!(l.title, "Invia «a.jpg» (1 KB) a:");
+        assert_eq!(
+            l.rows,
+            [(100, "Pixel · Android ✓"), (101, "PC · Windows ⚠")]
+        );
+        assert_eq!(l.footer, [(1, "Cerca di nuovo"), (2, "Annulla")]);
+        assert!(l.notes.is_empty());
+
+        let none = [
+            MenuItem::Label("Invia…"),
+            MenuItem::Separator,
+            MenuItem::Label("Nessun dispositivo trovato"),
+            MenuItem::Separator,
+            MenuItem::Action(1, "Cerca di nuovo"),
+            MenuItem::Action(2, "Annulla"),
+        ];
+        let l = picker_layout(&none);
+        assert_eq!(l.notes, ["Nessun dispositivo trovato"]);
+        assert!(l.rows.is_empty());
+        assert_eq!(l.footer.len(), 2);
+
+        let flat = [MenuItem::Action(7, "Annulla invio")];
+        assert_eq!(picker_layout(&flat).rows, [(7, "Annulla invio")]);
+    }
 
     #[test]
     fn bundle_paths() {

@@ -34,15 +34,16 @@ use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSButton, NSControlStateValueOn, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSEventType, NSFont, NSFontAttributeName, NSImage, NSImageScaling,
-    NSImageView, NSMenu, NSMenuDelegate, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboard,
-    NSPasteboardTypeFileURL, NSSound, NSStatusBar, NSStatusItem, NSTextAlignment, NSTextField,
-    NSVariableStatusItemLength, NSView, NSWindow, NSWindowCollectionBehavior,
+    NSApplicationDelegate, NSBackingStoreType, NSButton, NSControlStateValueOn, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSEventType, NSFont, NSFontAttributeName, NSImage,
+    NSImageScaling, NSImageView, NSMenu, NSMenuDelegate, NSMenuItem, NSModalResponseOK,
+    NSOpenPanel, NSPanel, NSPasteboard, NSPasteboardTypeFileURL, NSResponder, NSScreen, NSSound,
+    NSStatusBar, NSStatusItem, NSTextAlignment, NSTextField, NSVariableStatusItemLength, NSView,
+    NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSData, NSDate, NSDefaultRunLoopMode, NSDictionary, NSError,
-    NSLocale, NSPoint, NSRect, NSSize, NSString, NSURL,
+    NSLocale, NSNotification, NSPoint, NSRect, NSSize, NSString, NSURL,
 };
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
@@ -135,8 +136,13 @@ fn after_modal() {
 
 /// Waits for one AppKit event (or `PUMP_TIMEOUT`) and dispatches it.
 fn pump_once(app: &NSApplication) {
+    pump_for(app, PUMP_TIMEOUT);
+}
+
+/// Waits up to `seconds` for one AppKit event and dispatches it.
+fn pump_for(app: &NSApplication, seconds: f64) {
     autoreleasepool(|_| {
-        let until = NSDate::dateWithTimeIntervalSinceNow(PUMP_TIMEOUT);
+        let until = NSDate::dateWithTimeIntervalSinceNow(seconds);
         // SAFETY: a valid run loop mode constant.
         let mode = unsafe { NSDefaultRunLoopMode };
         let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
@@ -171,6 +177,10 @@ thread_local! {
     static MENU_OPEN: Cell<bool> = const { Cell::new(false) };
     /// `menuWillOpen:` was called for the menu being shown.
     static MENU_SHOWN: Cell<bool> = const { Cell::new(false) };
+    /// The device picker panel while it runs modally (see `pick_from_panel`).
+    static PICKER: RefCell<Option<Retained<PickerPanel>>> = const { RefCell::new(None) };
+    /// Its choice buttons, in order (the smoke test clicks them).
+    static PICKER_BUTTONS: RefCell<Vec<Retained<NSButton>>> = const { RefCell::new(Vec::new()) };
     /// `hoppyw --smoke-test`: no permission prompts.
     static SMOKE: Cell<bool> = const { Cell::new(false) };
     static SOUND: RefCell<Option<Retained<NSSound>>> = const { RefCell::new(None) };
@@ -233,6 +243,13 @@ define_class!(
             }
         }
 
+        /// A button of the device picker panel.
+        #[unsafe(method(panelPicked:))]
+        fn panel_picked(&self, sender: Option<&NSButton>) {
+            let tag = sender.map(|b| b.tag());
+            end_picker(tag);
+        }
+
         /// The "123" / "Emoji" button of a verification dialog.
         #[unsafe(method(toggleCode:))]
         fn toggle_code(&self, sender: Option<&AnyObject>) {
@@ -269,6 +286,16 @@ define_class!(
         #[unsafe(method(menuWillOpen:))]
         fn menu_will_open(&self, _menu: &NSMenu) {
             MENU_SHOWN.with(|m| m.set(true));
+        }
+    }
+
+    unsafe impl NSWindowDelegate for Delegate {
+        /// The picker's close button: same as Cancel.
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            if PICKER.with(|p| p.borrow().is_some()) {
+                end_picker(None);
+            }
         }
     }
 
@@ -1086,6 +1113,12 @@ impl Tray {
     ) -> Option<u32> {
         let mtm = self.mtm;
         let app = app(mtm);
+        if !above {
+            // The device list of `hoppyw send`: a panel, not a menu at the pointer. A popup
+            // menu from this background process (started by the Finder service while the
+            // Finder is in front) closes again at once on macOS 12.
+            return pick_from_panel(mtm, items);
+        }
         let menu = build_menu(mtm, items);
         let target = delegate(mtm);
         menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
@@ -1138,6 +1171,191 @@ impl Drop for Tray {
     fn drop(&mut self) {
         NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
     }
+}
+
+// ---------------------------------------------------------------- device picker panel
+
+define_class!(
+    /// The device picker window: a titled panel that takes the keyboard (Esc = cancel).
+    #[unsafe(super(NSPanel, NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "HoppyPickerPanel"]
+    struct PickerPanel;
+
+    impl PickerPanel {
+        /// Esc (and Cmd-.).
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            end_picker(None);
+        }
+
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+    }
+);
+
+/// Picker width and margins (points).
+const PICKER_WIDTH: f64 = 340.0;
+const PICKER_MARGIN: f64 = 16.0;
+const PICKER_ROW: f64 = 32.0;
+
+/// Ends the running picker with `tag` (a button) or `None` (Esc, close button). Main thread.
+fn end_picker(tag: Option<isize>) {
+    let Some(panel) = PICKER.with(|p| p.borrow_mut().take()) else {
+        return;
+    };
+    PICKED.with(|p| p.set(tag));
+    // SAFETY: only ever called on the main thread (actions, delegate, main-queue blocks).
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let app = NSApplication::sharedApplication(mtm);
+    app.stopModal();
+    panel.orderOut(None);
+    // `stopModal` takes effect when the modal loop handles its next event.
+    post_wake_event(mtm);
+}
+
+/// Makes Hoppy the active app so its window gets the keyboard and stays up: a process
+/// started by the Finder service is in the background. Waits up to 1 s; returns whether
+/// macOS made it active (logged).
+fn bring_to_front(app: &NSApplication) -> bool {
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    activate(app);
+    if super::login::at_least(14) {
+        app.activate(); // macOS 14+ cooperative activation
+    }
+    let start = std::time::Instant::now();
+    while !app.isActive() && start.elapsed() < Duration::from_secs(1) {
+        pump_for(app, 0.05);
+    }
+    let active = app.isActive();
+    diag::log(format!(
+        "activation: active={active} after {} ms",
+        start.elapsed().as_millis()
+    ));
+    active
+}
+
+fn picker_button(mtm: MainThreadMarker, id: u32, title: &str, frame: NSRect) -> Retained<NSButton> {
+    let target = delegate(mtm);
+    let target: &AnyObject = &target;
+    // SAFETY: the delegate implements `panelPicked:` and lives as long as the app.
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(title),
+            Some(target),
+            Some(sel!(panelPicked:)),
+            mtm,
+        )
+    };
+    button.setTag(id as isize);
+    button.setFrame(frame);
+    button
+}
+
+/// Builds the picker panel for `items` (not shown), positioned near the mouse pointer.
+fn build_picker(mtm: MainThreadMarker, items: &[MenuItem<'_>]) -> Retained<PickerPanel> {
+    let layout = super::picker_layout(items);
+    let (w, m) = (PICKER_WIDTH, PICKER_MARGIN);
+    let mut views: Vec<Retained<NSView>> = Vec::new();
+    let mut buttons = Vec::new();
+    // Bottom-up: footer buttons right-aligned, then the device rows, then the notes.
+    let mut y = m;
+    let mut x = w - m;
+    for &(id, title) in layout.footer.iter().rev() {
+        let bw = (title.chars().count() as f64 * 8.0 + 32.0).clamp(90.0, 160.0);
+        x -= bw;
+        let b = picker_button(mtm, id, title, rect(x, y, bw, PICKER_ROW));
+        x -= 8.0;
+        views.push(Retained::into_super(Retained::into_super(b.clone())));
+        buttons.push(b);
+    }
+    if !layout.footer.is_empty() {
+        y += PICKER_ROW + 12.0;
+    }
+    for &(id, title) in layout.rows.iter().rev() {
+        let b = picker_button(mtm, id, title, rect(m, y, w - 2.0 * m, PICKER_ROW));
+        y += PICKER_ROW + 6.0;
+        views.push(Retained::into_super(Retained::into_super(b.clone())));
+        buttons.push(b);
+    }
+    for note in layout.notes.iter().rev() {
+        let l = label(mtm, note, rect(m, y, w - 2.0 * m, 36.0), 12.0, true);
+        y += 42.0;
+        views.push(Retained::into_super(Retained::into_super(l)));
+    }
+    let height = y + m - 6.0;
+    // Built bottom-up; reversed, they follow `items`: device rows, then the footer.
+    buttons.reverse();
+    PICKER_BUTTONS.with(|b| *b.borrow_mut() = buttons);
+
+    let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+    let this = PickerPanel::alloc(mtm).set_ivars(());
+    // SAFETY: NSWindow's designated initialiser.
+    let panel: Retained<PickerPanel> = unsafe {
+        msg_send![super(this), initWithContentRect: rect(0.0, 0.0, w, height),
+            styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
+    };
+    // SAFETY: we keep our own reference; AppKit must not release it on close.
+    unsafe { panel.setReleasedWhenClosed(false) };
+    panel.setTitle(&NSString::from_str(layout.title));
+    panel.setHidesOnDeactivate(false);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    let target = delegate(mtm);
+    panel.setDelegate(Some(ProtocolObject::from_ref(&*target)));
+    if let Some(content) = panel.contentView() {
+        for v in &views {
+            content.addSubview(v);
+        }
+    }
+    // Top-left corner at the pointer, kept on the screen.
+    let mouse = NSEvent::mouseLocation();
+    let size = panel.frame().size;
+    let mut top_left = NSPoint::new(mouse.x - 24.0, mouse.y + 12.0);
+    if let Some(screen) = NSScreen::mainScreen(mtm) {
+        let v = screen.visibleFrame();
+        top_left.x = top_left
+            .x
+            .min(v.origin.x + v.size.width - size.width)
+            .max(v.origin.x);
+        top_left.y = top_left
+            .y
+            .max(v.origin.y + size.height)
+            .min(v.origin.y + v.size.height);
+    }
+    panel.setFrameTopLeftPoint(top_left);
+    panel
+}
+
+/// Shows the device picker as a modal panel; `None` = Esc, close button or Cancel-less
+/// dismissal. Main thread.
+fn pick_from_panel(mtm: MainThreadMarker, items: &[MenuItem<'_>]) -> Option<u32> {
+    let app = app(mtm);
+    let active = bring_to_front(&app);
+    let panel = build_picker(mtm, items);
+    let rows = super::picker_layout(items).rows.len();
+    PICKED.with(|p| p.set(None));
+    PICKER.with(|p| *p.borrow_mut() = Some(panel.clone()));
+    diag::log(format!(
+        "picker: shown with {rows} device row(s), active={active}"
+    ));
+    panel.makeKeyAndOrderFront(None);
+    app.runModalForWindow(&panel);
+    // Normally `end_picker` did this already.
+    PICKER.with(|p| p.borrow_mut().take());
+    PICKER_BUTTONS.with(|b| b.borrow_mut().clear());
+    panel.orderOut(None);
+    after_modal();
+    let picked = PICKED
+        .with(Cell::take)
+        .and_then(|t| u32::try_from(t).ok())
+        .filter(|&id| id != 0);
+    diag::log(format!("picker: closed, choice={picked:?}"));
+    picked
 }
 
 /// An `NSMenu` for `items`; picks land in `PICKED` (target `menuPicked:`).
@@ -1210,6 +1428,29 @@ fn bold(text: &str) -> Retained<NSAttributedString> {
 
 // ---------------------------------------------------------------- CI smoke test
 
+/// Runs `action` on the main thread as soon as the picker panel is open (polled from a
+/// worker, so it also works when the panel is not up yet).
+fn smoke_when_picker_open(action: fn()) {
+    thread::spawn(move || {
+        for _ in 0..100 {
+            thread::sleep(Duration::from_millis(100));
+            let done = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            DispatchQueue::main().exec_sync(move || {
+                if PICKER.with(|p| p.borrow().is_some()) {
+                    action();
+                    flag.store(true, Ordering::Release);
+                }
+            });
+            if done.load(Ordering::Acquire) {
+                return;
+            }
+        }
+        eprintln!("smoke: the picker panel never opened");
+        std::process::exit(3);
+    });
+}
+
 /// `hoppyw --smoke-test` (CI on macos-latest, debug build: objc2 checks every message's
 /// types against the runtime): exercises the AppKit pieces that do not need a person.
 /// Panics on failure.
@@ -1240,6 +1481,38 @@ pub fn smoke_test() -> i32 {
         NSSound::initWithData(NSSound::alloc(), &NSData::with_bytes(DONE_JINGLE)).is_some(),
         "jingle WAV"
     );
+
+    // Device picker panel (`hoppyw send`): shown modally, ended by a click on a device, by
+    // Esc and by the close button, each simulated from the main queue once it is up.
+    let items = [
+        MenuItem::Label("Invia «foto-mare.jpg» +1 (3,4 MB) a:"),
+        MenuItem::Separator,
+        MenuItem::Action(100, "Pixel di Marco · Android ✓"),
+        MenuItem::Action(101, "PC-Ufficio · Windows ⚠"),
+        MenuItem::Separator,
+        MenuItem::Action(1, "Cerca di nuovo"),
+        MenuItem::Action(2, "Annulla"),
+    ];
+    smoke_when_picker_open(|| {
+        PICKER_BUTTONS.with(|b| {
+            assert_eq!(b.borrow().len(), 4, "2 devices + 2 footer buttons");
+            // SAFETY: a plain click on our own button.
+            unsafe { b.borrow()[1].performClick(None) };
+        });
+    });
+    assert_eq!(send.popup_menu(&items, false, None), Some(101));
+    smoke_when_picker_open(|| {
+        let panel = PICKER.with(|p| p.borrow().clone()).expect("picker");
+        // SAFETY: the Esc key's action on our panel.
+        let _: () = unsafe { msg_send![&*panel, cancelOperation: std::ptr::null::<AnyObject>()] };
+    });
+    assert_eq!(send.popup_menu(&items, false, None), None);
+    smoke_when_picker_open(|| {
+        let panel = PICKER.with(|p| p.borrow().clone()).expect("picker");
+        panel.performClose(None);
+    });
+    assert_eq!(send.popup_menu(&items, false, None), None);
+    println!("picker panel: click, Esc and close OK");
 
     // Verification dialog pieces (not run modally): code, toggle, QR image, ✓.
     let sas = hoppy_core::Sas::from_value(0x05_1234);
