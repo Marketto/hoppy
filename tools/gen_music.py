@@ -911,7 +911,7 @@ Loops are sample-exact and seamless; `done` jingles are one-shots. Playback rule
 | --- | --- | --- | --- | --- | --- | --- | --- |
 {rows}
 
-Licence: original compositions by the Hoppy contributors, MIT like the rest of the repo.
+Licence: original compositions by Marco Ricupero, MIT like the rest of the repo.
 """
 
 

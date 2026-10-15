@@ -3,6 +3,7 @@ name = "hoppy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 # `cargo run -p hoppy` keeps meaning the CLI; `hoppyw` is the Windows tray/GUI binary.
 default-run = "hoppy"
 
@@ -55,8 +56,8 @@ winresource = "0.1.34"
 # Debian/Ubuntu package (release.yml linux job, gated by the ENABLE_LINUX repo variable).
 [package.metadata.deb]
 name = "hoppy"
-maintainer = "The Hoppy contributors"
-copyright = "The Hoppy contributors"
+maintainer = "Marco Ricupero <Marketto@users.noreply.github.com>"
+copyright = "2026 Marco Ricupero"
 extended-description = "Send files to nearby devices (Windows, Android, Linux) over the local network."
 section = "net"
 priority = "optional"

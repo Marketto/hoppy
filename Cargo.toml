@@ -6,6 +6,7 @@ members = ["crates/hoppy-core", "crates/hoppy-cli"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+authors = ["Marco Ricupero"]
 
 [profile.release]
 lto = true

@@ -37,4 +37,4 @@ Loops are sample-exact and seamless; `done` jingles are one-shots. Playback rule
 | `portal.ogg` | portal | loop | Eb major (maj7/add9) | 96 | 16 | 40000 | 32000 |
 | `portal.mp3` | portal | loop | Eb major (maj7/add9) | 96 | 16 | 40000 | 32000 |
 
-Licence: original compositions by the Hoppy contributors, MIT like the rest of the repo.
+Licence: original compositions by Marco Ricupero, MIT like the rest of the repo.
