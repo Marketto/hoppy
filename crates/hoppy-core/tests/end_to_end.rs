@@ -568,14 +568,26 @@ fn callback_receiver_filters_and_dedupes() {
     assert!(accept_within(500).is_none(), "callback for another id");
 
     // A connect-back that fails (nothing listens yet) does not burn the token: the
-    // sender's next re-send with the same token is answered.
+    // sender's next re-send with the same token is answered. Re-send like a real sender
+    // until a deadline: on Windows a connect to a closed loopback port is not refused at
+    // once but retried for ~2 s (up to CALLBACK_CONNECT_TIMEOUT), and re-sends arriving
+    // while that attempt is outstanding are ignored by design.
     let refused = DiscoveryMessage::callback(&s_dev, closed_port(), &token, "rx");
     udp.send_to(&refused.encode(), r_addr).unwrap();
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(200));
 
     let good = DiscoveryMessage::callback(&s_dev, port, &token, "rx");
-    udp.send_to(&good.encode(), r_addr).unwrap();
-    let mut s = accept_within(2000).expect("receiver connects back");
+    let end = std::time::Instant::now() + Duration::from_secs(15);
+    let mut s = loop {
+        udp.send_to(&good.encode(), r_addr).unwrap();
+        if let Some(s) = accept_within(300) {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < end,
+            "receiver never connected back after the failed attempt"
+        );
+    };
     s.set_nonblocking(false).unwrap();
     let hello = protocol::read_callback_hello(&mut s).unwrap();
     assert_eq!(
@@ -585,10 +597,6 @@ fn callback_receiver_filters_and_dedupes() {
             token: token.clone()
         }
     );
-
-    // A re-send of the same token (e.g. after our next announce) is ignored.
-    udp.send_to(&good.encode(), r_addr).unwrap();
-    assert!(accept_within(500).is_none(), "duplicate token");
 
     // The rest is plain spec §3, and the receiver still decides (here: declines).
     protocol::write_hello(&mut s).unwrap();
@@ -605,6 +613,11 @@ fn callback_receiver_filters_and_dedupes() {
     let mut rest = Vec::new();
     let _ = s.read_to_end(&mut rest);
     assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+
+    // The token connected back, so a later re-send (e.g. after our next announce) is ignored.
+    thread::sleep(Duration::from_millis(300)); // let the receiver release this source IP
+    udp.send_to(&good.encode(), r_addr).unwrap();
+    assert!(accept_within(1000).is_none(), "duplicate token");
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {
