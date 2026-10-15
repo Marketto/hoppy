@@ -11,7 +11,7 @@ Commands (each prints what it runs and exits non-zero on failure):
   android-test   :core JVM unit tests via Gradle
   android-build  assemble the debug APK (needs Android SDK)
   mascots        regenerate mascot SVG + Android vectors from tools/gen_mascots.py
-  music          regenerate theme music (Android OGG + desktop WAV) from tools/gen_music.py
+  music          regenerate music (Android OGG, desktop WAV, portal OGG/MP3) from tools/gen_music.py
                  (needs numpy + soundfile; `python3 tools/gen_music.py --check` verifies)
   docs           lint AI docs: links in AGENTS.md/skills exist, skill frontmatter valid
   secrets        scan tracked + new files for credentials and personal e-mails

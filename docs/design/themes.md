@@ -96,6 +96,15 @@ edit the outputs; run `python3 tools/dev.py music`. Lengths and tempi for code:
   never jumps in volume.
 - Original compositions only: no quotes or imitations of game, anime or pop tunes.
 
+**Download portal** (`site/`): its own track `portal` — Eb major, 96 BPM, 16 bars (40 s),
+a relaxing, cozy, gently bouncy "home" tune (soft pulse lead with vibrato, round FM bass,
+brushed drums, maj7/add9 chords, flute + bell join on the second half). Quieter than the
+app (RMS ≈ −22 dBFS) and warmer (5.2 kHz low-pass). Generated to `site/music/portal.ogg`
+(Vorbis, preferred) and `portal.mp3` (fallback), 32 kHz mono, plus `portal.json` (exact
+loop length) for the player. The page's floating ♪ button is **off by default** (no
+autoplay, WCAG 1.4.2); a remembered "on" starts only at the visitor's first interaction;
+it pauses when the tab is hidden. See `.claude/skills/hoppy-release/SKILL.md`.
+
 ## Code map (Android)
 
 `apps/android/app/src/main/java/app/hoppy/ui/theme/`: `HoppyTheme` (enum + style +

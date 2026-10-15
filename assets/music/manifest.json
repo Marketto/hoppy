@@ -252,6 +252,36 @@
       "ms": 2000.0,
       "bpm": 160,
       "key": "D major"
+    },
+    {
+      "file": "site/music/portal.ogg",
+      "resource": "portal.ogg",
+      "theme": "portal",
+      "kind": "loop",
+      "loop": true,
+      "sample_rate": 32000,
+      "samples": 1280000,
+      "ms": 40000.0,
+      "bpm": 96,
+      "key": "Eb major (maj7/add9)",
+      "bars": 16,
+      "beats_per_bar": 4,
+      "bar_ms": 2500.0
+    },
+    {
+      "file": "site/music/portal.mp3",
+      "resource": "portal.mp3",
+      "theme": "portal",
+      "kind": "loop",
+      "loop": true,
+      "sample_rate": 32000,
+      "samples": 1280000,
+      "ms": 40000.0,
+      "bpm": 96,
+      "key": "Eb major (maj7/add9)",
+      "bars": 16,
+      "beats_per_bar": 4,
+      "bar_ms": 2500.0
     }
   ]
 }

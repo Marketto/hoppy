@@ -16,8 +16,9 @@ Outputs (generated, committed, never edit by hand):
   assets/music/desktop_<idle|transfer|done>.wav   Purikura only, PCM u8 mono 16 kHz (PlaySoundW)
   assets/music/manifest.json                      lengths, tempo, bars (for integrators)
   assets/music/README.md                          what/how/licence
+  site/music/portal.{ogg,mp3,json}                download-portal loop (quieter, 32 kHz) + player data
 
-Usage:  python3 tools/gen_music.py [--theme NAME] [--out DIR] [--check]
+Usage:  python3 tools/gen_music.py [--theme NAME|portal] [--out DIR] [--check]
         (or: python3 tools/dev.py music)
   --out DIR   write under DIR (same relative layout) instead of the repo
   --check     re-render and verify the committed outputs are up to date (WAV: bytes;
@@ -59,7 +60,9 @@ ANDROID_SR = 22050
 DESKTOP_SR = 16000
 OVERSAMPLE = 2                         # synthesise at 2x, band-limit + decimate in one FFT
 PEAK = 10 ** (-3 / 20)                 # -3 dBFS ceiling
-TARGET_RMS = 10 ** (-19 / 20)          # loudness match across themes (simple RMS)
+# Loudness: app tracks are matched at -19 dB RMS (Part.rms_db); the portal loop is quieter.
+MP3_QUALITY = 0.55                     # libsndfile compression_level for LAME VBR (0 best .. 1 smallest)
+WEB_SR = 32000
 VORBIS_QUALITY = 0.30                  # libsndfile compression_level = 1 - quality
 DESKTOP_TRANSFER_BARS = 8              # desktop transfer loop is shortened to fit ~250 KB
 THEMES = ("purikura", "showa", "manga", "yume", "night")
@@ -281,6 +284,10 @@ def drum(kind: str, sr: int) -> np.ndarray:
         t = np.arange(int(0.3 * sr)) / sr
         f = 115 + 90 * np.exp(-t / 0.05)
         return 0.75 * np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t / 0.11)
+    if kind == "brush":   # soft brushed snare: slow-ish attack, airy band of noise
+        t = np.arange(int(0.25 * sr)) / sr
+        env = np.minimum(t / 0.01, 1) * np.exp(-t / 0.07)
+        return 0.4 * _shape_noise(len(t), sr, 1800, 7000, seed) * env
     if kind == "crash":
         t = np.arange(int(1.4 * sr)) / sr
         return 0.3 * _shape_noise(len(t), sr, 3500, 13000, seed) * np.exp(-t / 0.45)
@@ -317,6 +324,8 @@ class Part:
     bars: int = 8
     beats_per_bar: int = 4
     seconds: float = 0.0              # >0: one-shot jingle of this length
+    lowpass: float = 0.0              # master low-pass Hz (0 = default for the sample rate)
+    rms_db: float = -19.0             # loudness target (simple RMS, dBFS)
 
 
 @dataclass(frozen=True)
@@ -387,7 +396,7 @@ def _resolve(tr: Track, tok: str, ch: Chord) -> list[int]:
     return v[:npcs] if tok == "c" else [v[int(tok) - 1]]
 
 
-def render(theme: Theme, which: str, sr: int, bars: int | None = None) -> np.ndarray:
+def render(theme, which: str, sr: int, bars: int | None = None) -> np.ndarray:
     """Render one piece at `sr`. Loops are circular: exact length, tails wrapped."""
     part: Part = getattr(theme, which)
     if bars:
@@ -453,7 +462,7 @@ def render(theme: Theme, which: str, sr: int, bars: int | None = None) -> np.nda
         h += part.echo[1] ** (k - 1) * (damp ** k) * np.exp(-2j * np.pi * fr * k * delay / isr)
     spec = np.fft.rfft(dry) + np.fft.rfft(wet) * h * part.echo[2]
     # Master: DC/rumble high-pass, gentle low-pass, band-limit and decimate to `sr`.
-    lp = 8500 if sr >= 22050 else 6200
+    lp = part.lowpass or (8500 if sr >= 22050 else 6200)
     spec *= 1 / np.sqrt(1 + (fr / lp) ** 4) / np.sqrt(1 + (28 / np.maximum(fr, 1e-3)) ** 4)
     spec[0] = 0
     m = n_fft // OVERSAMPLE
@@ -495,9 +504,9 @@ def limit(x: np.ndarray, loop: bool, sr: int, thr: float) -> np.ndarray:
     return x * g
 
 
-def normalize(x: np.ndarray, loop: bool, sr: int) -> np.ndarray:
+def normalize(x: np.ndarray, loop: bool, sr: int, rms_db: float = -19.0) -> np.ndarray:
     """Match loudness (RMS) across themes, limit peaks, guarantee the -3 dBFS ceiling."""
-    x = limit(x * (TARGET_RMS / loudness(x, loop, sr)), loop, sr, PEAK * 0.97)
+    x = limit(x * (10 ** (rms_db / 20) / loudness(x, loop, sr)), loop, sr, PEAK * 0.97)
     return x * min(1.0, PEAK / np.abs(x).max())
 
 
@@ -750,8 +759,52 @@ def night() -> Theme:
                  tuple(D_MIN), idle, transfer, done)
 
 
+def portal() -> Theme:
+    """Download-portal loop: relaxing, cozy, gently bouncy "home overworld" feel. Original."""
+    chords = join("Ebmaj7 | Cm7 | Abmaj7 | Bb7sus4 Bb7 | Ebmaj7 | Gm7 | Abmaj7 Fm7 | Bb7sus4 Bb",
+                  "Abmaj7 | Gm7 | Fm7 | Bb7 | Ebadd9 | Cm7 | Fm7 Bb7 | Ebmaj7")
+    a = """
+        Bb5 - G5  Bb5 C6  - Bb5 .   |
+        G5  - Eb5 -   -   . F5  G5  |
+        Ab5 - C6  -   Eb6 - D6  C6  |
+        Bb5 - -   -   Ab5 - .   .   |
+        Bb5 - G5  Bb5 Eb6 - D6  .   |
+        D6  - Bb5 -   G5  - F5  G5  |
+        C6  - Ab5 -   F5  - Ab5 G5  |
+        F5  - -   -   -   . .   .
+    """
+    b = """
+        Eb6 - -   C6  -   Ab5 G5 Ab5 |
+        Bb5 - -   G5  -   D5  -  .   |
+        C6  - -   Ab5 -   F5  Eb5 F5 |
+        D5  - F5  -   Ab5 -   G5 F5  |
+        G5  - -   Bb5 -   F5  -  G5  |
+        Eb6 - D6  -   C6  -   Bb5 G5 |
+        Ab5 - C6  -   Bb5 -   Ab5 -  |
+        G5  - -   -   -   -   .  .
+    """
+    lead = replace(PULSE25, a=0.015, d=0.3, s=0.55, r=0.12, vib=(13, 5.0, 0.22), detune=6, gain=0.24)
+    pad = Inst(wave="tri", a=0.4, d=1.2, s=0.75, r=0.5, gate=1.0, detune=9, gain=0.10)
+    idle = Part(
+        bpm=96, chords=chords, bars=16, lowpass=5200, rms_db=-22.0, echo=(0.75, 0.35, 0.35),
+        tracks=(Track("notes", lead, join(a, b), send=0.55),
+                Track("notes", replace(FM_FLUTE, gain=0.13), join(rests(8), b), transpose=-12, send=0.4),
+                Track("notes", replace(FM_BELL, gain=0.07), join(rests(8), b), transpose=12, send=0.7),
+                Track("arp", replace(PULSE12, a=0.006, gate=0.45, gain=0.12), ". c . c . c . c", low=58, send=0.2),
+                Track("arp", pad, "c - - - - - - -", low=51),
+                Track("bass", replace(FM_BASS, index=1.2, index_end=0.3, gain=0.5), "R . . 5 8 . 5 .", low=39)),
+        drums={"kick": ["x.......x......."], "brush": ["....x.......x..."],
+               "shaker": ["x.g.x.g.x.g.x.gg"]},
+        drum_gain={"kick": 0.45, "brush": 0.3, "shaker": 0.16},
+    )
+    return Theme("portal", "Eb major (maj7/add9)", "relaxing, cozy, gently bouncy", (3, 5, 7, 8, 10, 0, 2),
+                 idle, None, None)
+
+
 ALL = {t.name: t for t in (purikura(), showa(), manga(), yume(), night())}
 assert tuple(ALL) == THEMES
+PIECES = {**ALL, "portal": portal()}
+SITE_MUSIC = "site/music"
 
 # ------------------------------------------------------------------------- outputs & checks
 
@@ -766,6 +819,13 @@ def wav_u8(x: np.ndarray, sr: int, seed: int) -> bytes:
         w.setsampwidth(1)
         w.setframerate(sr)
         w.writeframes(q.tobytes())
+    return buf.getvalue()
+
+
+def mp3_bytes(x: np.ndarray, sr: int) -> bytes:
+    buf = io.BytesIO()
+    sf.write(buf, x.astype(np.float32), sr, format="MP3", subtype="MPEG_LAYER_III",
+             compression_level=MP3_QUALITY, bitrate_mode="VARIABLE")
     return buf.getvalue()
 
 
@@ -801,22 +861,26 @@ def seam_stats(x: np.ndarray) -> tuple[float, float]:
 
 def plan(themes: list[str]):
     """Yield (relative path, theme, which, sr, bars, format)."""
-    for name in themes:
+    for name in (t for t in themes if t in ALL):
         for which in ("idle", "transfer", "done"):
             yield f"{RAW}/music_{name}_{which}.ogg", name, which, ANDROID_SR, None, "ogg"
     if "purikura" in themes:
         for which, bars in (("idle", None), ("transfer", DESKTOP_TRANSFER_BARS), ("done", None)):
             yield f"{DESK}/desktop_{which}.wav", "purikura", which, DESKTOP_SR, bars, "wav"
+    if "portal" in themes:
+        for fmt in ("ogg", "mp3"):
+            yield f"{SITE_MUSIC}/portal.{fmt}", "portal", "idle", WEB_SR, None, fmt
 
 
 def meta(rel: str, name: str, which: str, sr: int, bars: int | None) -> dict:
-    t = ALL[name]
+    t = PIECES[name]
     p: Part = getattr(t, which)
     loop = p.seconds == 0
     nbars = bars or p.bars
     beats = nbars * p.beats_per_bar
     n = round(beats * 60 / p.bpm * sr) if loop else round(p.seconds * sr)
-    d = {"file": rel, "resource": Path(rel).stem, "theme": name, "kind": which, "loop": loop,
+    d = {"file": rel, "resource": Path(rel).name if name == "portal" else Path(rel).stem, "theme": name,
+         "kind": "loop" if name == "portal" else which, "loop": loop,
          "sample_rate": sr, "samples": n, "ms": round(n * 1000 / sr, 3), "bpm": p.bpm, "key": t.key}
     if loop:
         d |= {"bars": nbars, "beats_per_bar": p.beats_per_bar, "bar_ms": round(p.beats_per_bar * 60000 / p.bpm, 3)}
@@ -837,7 +901,9 @@ Original 16-bit-style chiptunes, one set per theme, synthesised from note data b
 
 Needs `pip install numpy soundfile`. Android files live in
 `apps/android/app/src/main/res/raw/` (Vorbis, 22050 Hz mono); the desktop set here is the
-Purikura music as 8-bit 16 kHz WAV for `PlaySoundW`. `manifest.json` lists exact lengths.
+Purikura music as 8-bit 16 kHz WAV for `PlaySoundW`. The download portal's quieter `portal`
+loop is in `site/music/` (Vorbis + MP3, 32 kHz mono, with `portal.json` for the player).
+`manifest.json` lists exact lengths.
 Loops are sample-exact and seamless; `done` jingles are one-shots. Playback rules are in
 `docs/design/themes.md` ("Music").
 
@@ -851,19 +917,20 @@ Licence: original compositions by the Hoppy contributors, MIT like the rest of t
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--theme", choices=THEMES, action="append")
+    ap.add_argument("--theme", choices=(*THEMES, "portal"), action="append")
     ap.add_argument("--out", type=Path, default=ROOT)
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
-    themes = args.theme or list(THEMES)
+    themes = args.theme or [*THEMES, "portal"]
     out: Path = args.out
     errs: list[str] = []
     stale: list[str] = []
     total = 0
     for rel, name, which, sr, bars, fmt in plan(themes):
-        x = render(ALL[name], which, sr, bars)
-        loop = getattr(ALL[name], which).seconds == 0
-        x = normalize(x, loop, sr)
+        part = getattr(PIECES[name], which)
+        x = render(PIECES[name], which, sr, bars)
+        loop = part.seconds == 0
+        x = normalize(x, loop, sr, part.rms_db)
         errs += verify(rel, x, loop)
         want = meta(rel, name, which, sr, bars)["samples"]
         if len(x) != want:
@@ -892,18 +959,26 @@ def main() -> None:
         if fmt == "wav":
             path.write_bytes(data)
         else:
-            path.write_bytes(ogg_bytes(x, sr))
+            blob = ogg_bytes(x, sr) if fmt == "ogg" else mp3_bytes(x, sr)
+            # Ogg serial numbers are random: keep the old file if it decodes to the same audio.
+            same = path.exists() and np.array_equal(sf.read(io.BytesIO(blob))[0], sf.read(str(path))[0])
+            if not same:
+                path.write_bytes(blob)
             y, _ = sf.read(str(path), dtype="float64")
             if len(y) != len(x):
-                errs.append(f"{rel}: Vorbis decodes to {len(y)} samples, expected {len(x)}")
+                errs.append(f"{rel}: {fmt} decodes to {len(y)} samples, expected {len(x)}")
         size = path.stat().st_size
         total += size
         seam = f" seam {seam_stats(x)[0]:.4f}" if loop else ""
         print(f"  {rel:58s} {len(x) / sr:6.2f}s {size / 1024:6.1f} KiB "
               f"peak {20 * math.log10(np.abs(x).max()):5.1f} dB rms {20 * math.log10(loudness(x, loop, sr)):5.1f} dB{seam}")
-    entries = [meta(rel, n, w, sr, b) for rel, n, w, sr, b, _ in plan(list(THEMES))]
+    entries = [meta(rel, n, w, sr, b) for rel, n, w, sr, b, _ in plan([*THEMES, "portal"])]
     manifest = json.dumps({"generator": "tools/gen_music.py", "files": entries}, indent=2) + "\n"
-    docs = {f"{DESK}/manifest.json": manifest, f"{DESK}/README.md": readme(entries)}
+    web = next(e for e in entries if e["theme"] == "portal")
+    player = {k: web[k] for k in ("sample_rate", "samples", "ms", "bpm", "bars", "bar_ms")}
+    player["files"] = {"ogg": "music/portal.ogg", "mp3": "music/portal.mp3"}
+    docs = {f"{DESK}/manifest.json": manifest, f"{DESK}/README.md": readme(entries),
+            f"{SITE_MUSIC}/portal.json": json.dumps(player, indent=2) + "\n"}
     for rel, text in docs.items():
         p = out / rel
         if args.check:
