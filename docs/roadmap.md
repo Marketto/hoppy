@@ -14,8 +14,12 @@
   Decline-by-default accept alert, Finder service "Send with Hoppy", drops on the app icon,
   device menu at the pointer, notifications, jingle, update notice; universal
   `Hoppy-macos-universal.dmg` for macOS 12+ (Intel 2015+ and Apple silicon), ad-hoc signed.
+- iPhone/iPad (ADR 0009): SwiftUI app + Share extension over the Rust core
+  (`crates/hoppy-ffi`), unicast discovery sweep (no multicast entitlement), receive while
+  open with Decline-by-default alert, Files integration; unsigned `Hoppy-ios-unsigned.ipa`
+  sideloaded with Sideloadly (free Apple ID, 7 days), iOS 15+.
 - Five animated themes (Purikura, Showa, Manga, Yume, Night) with a first-run picker (ADR 0005).
-- Release pipeline (Windows installer, Android APK, Ubuntu .deb, macOS .dmg; iOS gated) and download portal.
+- Release pipeline (Windows installer, Android APK, Ubuntu .deb, macOS .dmg, iOS unsigned .ipa) and download portal.
 - Agentic setup: AGENTS.md router, skills, subagents, `tools/dev.py`, CI.
 
 ## Next — usable beta
@@ -30,11 +34,14 @@
    Finder Sync / Share extension (`.appex`) for a top-level entry and the Share menu.
 6. Linux: top-level Nautilus entry (nautilus-python extension), arm64 .deb, Flatpak (needs
    the portal APIs instead of zenity/autostart files).
+7. iPhone/iPad: run the manual test plan (`docs/platforms/ios.md`) on the iPad Air; theme
+   picker (five themes) and idle music; with a Developer account: TestFlight, multicast
+   entitlement (sweep off), App Group (shared name for the Share extension).
 
 ## v1 — secure & resumable
 - Encryption + pairing (ADR to write), resume via per-chunk hashes.
-- Single engine: Rust core on Android via UniFFI (ADR 0002).
-- iPhone (Share extension, Wi-Fi Aware).
+- Single engine: Rust core on Android via UniFFI (ADR 0002); iOS already uses it (ADR 0009).
+- iPhone/iPad: Wi-Fi Aware (iOS 26) when no shared network.
 
 ## v2 — beyond the LAN
 - BLE discovery, Wi-Fi Aware / Direct, optional account with "my devices", remote P2P + relay.

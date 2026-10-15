@@ -8,7 +8,7 @@ Trasferisci file tra i tuoi dispositivi nel modo più semplice possibile:
 Obiettivo: Windows, macOS, Linux, Android e iPhone, scegliendo da solo il canale più
 veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto.
 
-> **Stato: proof of concept.** Funziona tra Windows/Linux/Mac e Android sulla stessa rete Wi-Fi.
+> **Stato: proof of concept.** Funziona tra Windows/Linux/Mac, Android e iPhone/iPad sulla stessa rete Wi-Fi.
 > Il protocollo v0 **non è cifrato**: usalo solo su reti fidate (vedi `docs/decisions/0003-v0-unencrypted.md`).
 
 ## Cosa c'è oggi
@@ -19,6 +19,7 @@ veloce (Wi-Fi locale, Wi-Fi diretto, Bluetooth, internet), in locale o in remoto
 | **Android** | *Condividi → Hoppy* o pulsante *Invia file* | interruttore *Pronto a ricevere*, conferma da notifica |
 | **Ubuntu / Linux** | tasto destro su uno o più file → *Script → Invia con Hoppy* (File/Nautilus), *Invia con Hoppy* (Dolphin, Nemo), *Apri con → Hoppy*, o clic sull'icona → *Invia file…* | icona nella barra in alto, conferma con *Accetta/Rifiuta* nella notifica |
 | **macOS** (12 o successivo, Mac Intel dal 2015 e chip Apple) | Finder: tasto destro sui file → *Servizi → Invia con Hoppy*, file trascinati sull'icona di Hoppy, *Apri con → Hoppy*, o clic sul coniglietto → *Invia file…* | coniglietto nella barra dei menu, conferma *Rifiuta/Accetta* |
+| **iPhone / iPad** (iOS/iPadOS 15 o successivo, installazione con Sideloadly) | *Condividi → Hoppy* da Foto, File e altre app, o pulsante *Invia file* nell'app | con Hoppy aperto e *Pronto a ricevere* attivo, conferma *Rifiuta/Accetta*; i file finiscono in *File → Sul mio iPad → Hoppy* |
 
 Cinque temi animati da scegliere al primo avvio: **Purikura** (predefinito), **Showa**,
 **Manga** (proposto con il contrasto elevato), **Yume** e **Notte** (proposto con il tema scuro).
@@ -75,6 +76,26 @@ accanto al puntatore; l'avanzamento è accanto al secondo coniglietto. Quando qu
 dei file compare una finestra **Rifiuta / Accetta** (Invio = Rifiuta); i file vanno in
 `Download/Hoppy`. Dettagli e risoluzione dei problemi:
 [`docs/platforms/macos-ios.md`](docs/platforms/macos-ios.md).
+
+**iPhone e iPad** (iOS/iPadOS 15 o successivo) — Hoppy non è sull'App Store: si installa
+gratis dal PC con **Sideloadly** e il tuo Apple ID, senza account sviluppatore.
+
+1. Sul PC Windows installa **iTunes** (versione dal sito Apple) e **Sideloadly**
+   (sideloadly.io); scarica `Hoppy-ios-unsigned.ipa` dalla pagina Release.
+2. Collega l'iPad con il cavo, sbloccalo e tocca **Autorizza** («Considera attendibile questo
+   computer»).
+3. In Sideloadly trascina il file .ipa, scegli l'iPad, scrivi il tuo **Apple ID** e premi
+   **Start** (password e codice di verifica quando richiesti).
+4. Sull'iPad: **Impostazioni → Generali → VPN e gestione dispositivi** → il tuo Apple ID →
+   **Autorizza**.
+5. **Impostazioni → Privacy e sicurezza → Modalità sviluppatore** → attiva, riavvia e conferma.
+6. Apri Hoppy e consenti l'accesso alla **rete locale** (senza, non trova nessun dispositivo).
+
+La firma gratuita **dura 7 giorni**: poi Hoppy non si apre più e basta ripetere il punto 3 (i
+file ricevuti restano). Hoppy riceve **solo mentre è aperto**: lascia attivo *Pronto a
+ricevere*, accetta con **Accetta** (Rifiuta è la scelta predefinita) e trovi i file in *File →
+Sul mio iPad → Hoppy*. Per inviare: *Invia file* nell'app, oppure *Condividi → Hoppy* da Foto o
+File. Dettagli, limiti e risoluzione dei problemi: [`docs/platforms/ios.md`](docs/platforms/ios.md).
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.
 

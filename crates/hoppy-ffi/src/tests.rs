@@ -1,0 +1,351 @@
+//! FFI tests through the C entry points (run on Linux; the Swift twin runs on the iOS
+//! simulator in CI: apps/ios/Tests/HoppyCoreTests.swift).
+
+use super::*;
+use std::fs;
+use std::sync::Mutex;
+
+/// Events of one node, collected by [`collect`] (the `ctx` pointer).
+#[derive(Default)]
+struct Events(Mutex<Vec<Value>>);
+
+extern "C" fn collect(ctx: *mut c_void, event: *const c_char) {
+    // SAFETY: ctx is a live `Events` for the node's lifetime; event is a C string.
+    let (events, text) = unsafe { (&*(ctx as *const Events), CStr::from_ptr(event)) };
+    let value: Value = serde_json::from_str(text.to_str().unwrap()).unwrap();
+    events.0.lock().unwrap().push(value);
+}
+
+impl Events {
+    fn wait(&self, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        self.wait_after(0, what, pred)
+    }
+
+    /// Like `wait`, ignoring the first `skip` events.
+    fn wait_after(&self, skip: usize, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(v) = self.0.lock().unwrap().iter().skip(skip).find(|v| pred(v)) {
+                return v.clone();
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
+fn start(config: Value, events: &Events) -> *mut Node {
+    let config = CString::new(config.to_string()).unwrap();
+    let mut err: *mut c_char = ptr::null_mut();
+    // SAFETY: valid strings; events outlives the node in every test.
+    let node = unsafe {
+        hoppy_node_start(
+            config.as_ptr(),
+            Some(collect),
+            events as *const Events as *mut c_void,
+            &mut err,
+        )
+    };
+    if node.is_null() {
+        // SAFETY: set by hoppy_node_start on failure.
+        let msg = unsafe { CStr::from_ptr(err) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { hoppy_string_free(err) };
+        panic!("start failed: {msg}");
+    }
+    node
+}
+
+fn take(s: *mut c_char) -> Value {
+    assert!(!s.is_null());
+    // SAFETY: returned by the library.
+    let v = serde_json::from_str(unsafe { CStr::from_ptr(s) }.to_str().unwrap()).unwrap();
+    unsafe { hoppy_string_free(s) };
+    v
+}
+
+fn send(node: *mut Node, peer: &str, paths: &[PathBuf]) -> u64 {
+    let peer = CString::new(peer).unwrap();
+    let paths = CString::new(serde_json::to_string(paths).unwrap()).unwrap();
+    // SAFETY: live node, valid strings.
+    unsafe { hoppy_node_send(node, peer.as_ptr(), paths.as_ptr()) }
+}
+
+/// Two in-process nodes on loopback: the "iPad" (send-only, finds the receiver with the
+/// unicast sweep) delivers a file, the receiver asks (event), accepts; then a decline.
+#[test]
+fn sweep_send_accept_and_decline() {
+    let rx_dir = tempfile::tempdir().unwrap();
+    let (rx_events, tx_events) = (Events::default(), Events::default());
+    let rx = start(
+        json!({"id": "rx-1", "name": "Receiver\u{202E}gpj", "platform": "linux",
+               "receive_dir": rx_dir.path(), "udp_port": 0, "tcp_port": 0, "receive": true,
+               "sweep": "off"}),
+        &rx_events,
+    );
+    // SAFETY: live node.
+    let info = take(unsafe { hoppy_node_info(rx) });
+    let rx_udp = info["udp_port"].as_u64().unwrap();
+    assert_ne!(info["tcp_port"].as_u64().unwrap(), 0, "receiving");
+    rx_events.wait("receiving", |v| v["type"] == "receiving" && v["on"] == true);
+
+    let tx = start(
+        json!({"id": "ipad-1", "name": "iPad", "udp_port": 0,
+               "sweep": [format!("127.0.0.1:{rx_udp}")]}),
+        &tx_events,
+    );
+    let peers = tx_events.wait("peer list", |v| {
+        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| !p.is_empty())
+    });
+    assert_eq!(peers["peers"][0]["id"], "rx-1");
+    assert_eq!(
+        peers["peers"][0]["name"], "Receivergpj",
+        "bidi override stripped"
+    );
+    // SAFETY: live node.
+    let listed = take(unsafe { hoppy_node_peers(tx) });
+    assert_eq!(listed[0]["addr"], "127.0.0.1");
+
+    let src = tempfile::tempdir().unwrap();
+    let file = src.path().join("foto mare.jpg");
+    fs::write(&file, b"hello hoppy").unwrap();
+
+    // 1. Accepted.
+    let id = send(tx, "rx-1", std::slice::from_ref(&file));
+    assert_ne!(id, 0);
+    let offer = rx_events.wait("offer", |v| v["type"] == "offer");
+    assert_eq!(offer["from"]["name"], "iPad");
+    assert_eq!(offer["from"]["platform"], "ios");
+    assert_eq!(offer["files"][0]["name"], "foto mare.jpg");
+    assert_eq!(offer["count"], 1);
+    assert_eq!(offer["total"], 11);
+    let offer_id = offer["offer"].as_u64().unwrap();
+    // SAFETY: live node.
+    assert!(unsafe { hoppy_node_decide(rx, offer_id, true) });
+    assert!(
+        !unsafe { hoppy_node_decide(rx, offer_id, true) },
+        "answered once"
+    );
+    let got = rx_events.wait("received", |v| v["type"] == "received");
+    assert_eq!(got["ok"], true, "{got}");
+    assert_eq!(got["from"], "iPad");
+    let saved = PathBuf::from(got["files"][0].as_str().unwrap());
+    assert_eq!(saved, rx_dir.path().join("foto mare.jpg"));
+    assert_eq!(fs::read(&saved).unwrap(), b"hello hoppy");
+    let done = tx_events.wait("send_done", |v| {
+        v["type"] == "send_done" && v["transfer"] == id
+    });
+    assert_eq!(done["outcome"], "delivered", "{done}");
+    tx_events.wait("send_progress", |v| {
+        v["type"] == "send_progress" && v["done"] == 11 && v["total"] == 11
+    });
+
+    // 2. Declined.
+    let id = send(tx, "rx-1", &[file]);
+    let offer = rx_events.wait("second offer", |v| {
+        v["type"] == "offer" && v["offer"].as_u64() != Some(offer_id)
+    });
+    // SAFETY: live node.
+    assert!(unsafe { hoppy_node_decide(rx, offer["offer"].as_u64().unwrap(), false) });
+    let done = tx_events.wait("declined", |v| {
+        v["type"] == "send_done" && v["transfer"] == id
+    });
+    assert_eq!(done["outcome"], "declined");
+    assert_eq!(
+        fs::read_dir(rx_dir.path()).unwrap().count(),
+        1,
+        "nothing new saved"
+    );
+
+    // 3. Unknown device.
+    let id = send(tx, "nobody", &[src.path().join("foto mare.jpg")]);
+    let done = tx_events.wait("unknown", |v| {
+        v["type"] == "send_done" && v["transfer"] == id
+    });
+    assert_eq!(done["outcome"], "unreachable");
+
+    // SAFETY: live nodes, not used afterwards.
+    unsafe {
+        hoppy_node_stop(tx);
+        hoppy_node_stop(rx);
+    }
+    let (a, b) = (rx_events.count(), tx_events.count());
+    thread::sleep(Duration::from_millis(700));
+    assert_eq!(
+        (rx_events.count(), tx_events.count()),
+        (a, b),
+        "no events after stop"
+    );
+}
+
+/// No answer within the timeout = declined (invariant 3), and the UI hears `offer_closed`.
+#[test]
+fn unanswered_offer_is_declined() {
+    let rx_dir = tempfile::tempdir().unwrap();
+    let (rx_events, tx_events) = (Events::default(), Events::default());
+    let rx = start(
+        json!({"id": "rx-2", "name": "R", "receive_dir": rx_dir.path(), "udp_port": 0,
+               "tcp_port": 0, "receive": true, "sweep": "off", "decision_timeout_secs": 1}),
+        &rx_events,
+    );
+    let src_dir = tempfile::tempdir().unwrap();
+    let rx_udp = take(unsafe { hoppy_node_info(rx) })["udp_port"]
+        .as_u64()
+        .unwrap();
+    let tx = start(
+        // Also a receiver, so the receiver learns it from its queries and can say bye.
+        json!({"id": "tx-2", "name": "T", "udp_port": 0, "tcp_port": 0, "sweep": "off",
+               "receive_dir": src_dir.path(), "receive": true,
+               "seeds": [format!("127.0.0.1:{rx_udp}")]}),
+        &tx_events,
+    );
+    tx_events.wait("peer", |v| {
+        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| !p.is_empty())
+    });
+    let src = tempfile::tempdir().unwrap();
+    let file = src.path().join("a.txt");
+    fs::write(&file, b"x").unwrap();
+    let id = send(tx, "rx-2", &[file]);
+    let offer = rx_events.wait("offer", |v| v["type"] == "offer");
+    rx_events.wait("closed", |v| {
+        v["type"] == "offer_closed" && v["offer"] == offer["offer"]
+    });
+    let done = tx_events.wait("declined", |v| {
+        v["type"] == "send_done" && v["transfer"] == id
+    });
+    assert_eq!(done["outcome"], "declined");
+    assert!(!unsafe { hoppy_node_decide(rx, offer["offer"].as_u64().unwrap(), true) });
+    assert_eq!(fs::read_dir(rx_dir.path()).unwrap().count(), 0);
+
+    // Receiving off: the peer drops us (bye) and the port is closed.
+    let mark = tx_events.count();
+    assert_eq!(unsafe { hoppy_node_set_receiving(rx, false) }, 0);
+    tx_events.wait_after(mark, "bye", |v| {
+        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| p.is_empty())
+    });
+    assert_eq!(take(unsafe { hoppy_node_info(rx) })["tcp_port"], 0);
+    unsafe {
+        hoppy_node_stop(tx);
+        hoppy_node_stop(rx);
+    }
+}
+
+#[test]
+fn bad_input_is_rejected_not_crashed() {
+    let events = Events::default();
+    for bad in [
+        "{",
+        r#"{"name":"x"}"#,
+        r#"{"id":"","name":"x"}"#,
+        r#"{"id":"a","name":"x","sweep":3}"#,
+    ] {
+        let config = CString::new(bad).unwrap();
+        let mut err: *mut c_char = ptr::null_mut();
+        let node = unsafe {
+            hoppy_node_start(
+                config.as_ptr(),
+                Some(collect),
+                &events as *const _ as *mut c_void,
+                &mut err,
+            )
+        };
+        assert!(node.is_null(), "{bad}");
+        assert!(!err.is_null());
+        unsafe { hoppy_string_free(err) };
+    }
+    let config = CString::new(r#"{"id":"a","name":"x"}"#).unwrap();
+    assert!(
+        unsafe { hoppy_node_start(config.as_ptr(), None, ptr::null_mut(), ptr::null_mut()) }
+            .is_null()
+    );
+
+    let node = start(
+        json!({"id": "n", "name": "N", "udp_port": 0, "sweep": "off"}),
+        &events,
+    );
+    assert_eq!(
+        unsafe { hoppy_node_set_receiving(node, true) },
+        -1,
+        "no receive_dir"
+    );
+    let peer = CString::new("p").unwrap();
+    for paths in ["[]", "nope", "{}"] {
+        let p = CString::new(paths).unwrap();
+        assert_eq!(
+            unsafe { hoppy_node_send(node, peer.as_ptr(), p.as_ptr()) },
+            0,
+            "{paths}"
+        );
+    }
+    assert_eq!(
+        unsafe { hoppy_node_send(node, ptr::null(), ptr::null()) },
+        0
+    );
+    unsafe {
+        hoppy_node_stop(node);
+        hoppy_node_stop(ptr::null_mut());
+        hoppy_string_free(ptr::null_mut());
+    }
+    let v = unsafe { CStr::from_ptr(hoppy_version()) }.to_str().unwrap();
+    assert_eq!(v, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn config_parsing() {
+    assert_eq!(parse_sweep(None).unwrap(), Sweep::LocalSubnets);
+    assert_eq!(parse_sweep(Some(&json!("off"))).unwrap(), Sweep::Off);
+    assert_eq!(
+        parse_sweep(Some(&json!(["10.0.0.2", "10.0.0.3:9"]))).unwrap(),
+        Sweep::Hosts(vec![
+            "10.0.0.2:47470".parse().unwrap(),
+            "10.0.0.3:9".parse().unwrap()
+        ])
+    );
+    assert!(parse_sweep(Some(&json!(["nope"]))).is_err());
+    assert_eq!(
+        parse_addr(" 192.168.1.4 ", 1),
+        Some("192.168.1.4:1".parse().unwrap())
+    );
+    assert_eq!(parse_addr("host", 1), None);
+}
+
+/// include/hoppy.h declares exactly the exported functions.
+#[test]
+fn header_matches_exports() {
+    let names = |text: &str, prefix: &str| -> Vec<String> {
+        let mut v: Vec<String> = text
+            .match_indices(prefix)
+            .filter_map(|(i, _)| {
+                let rest = &text[i + prefix.len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                rest[name.len()..]
+                    .starts_with('(')
+                    .then(|| format!("hoppy_{name}"))
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let header = include_str!("../include/hoppy.h");
+    let source = include_str!("lib.rs");
+    let exported = names(source, "extern \"C\" fn hoppy_");
+    assert_eq!(
+        names(header, " hoppy_")
+            .into_iter()
+            .chain(names(header, "*hoppy_"))
+            .collect::<std::collections::BTreeSet<_>>(),
+        exported
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+    assert_eq!(exported.len(), 10, "{exported:?}");
+}

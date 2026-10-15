@@ -83,6 +83,11 @@
       nearby: "Vicino a te", sendToPhone: "Invia a", ready: "Pronto a ricevere", readyHint: "I dispositivi vicini ti vedono e possono inviarti file.",
       phoneSending: "Invio a PC-Ufficio · 64%", readyAs: "Pronto a ricevere", savedIn: "Salvati in Download/Hoppy",
       flows: { send: "Invio", recv: "Ricezione" },
+      // iPhone/iPad app (apps/ios/Shared/it.lproj/Localizable.strings*)
+      iosReadyHint: "I dispositivi vicini ti vedono e possono inviarti file mentre Hoppy è aperto.",
+      iosIncomingTitle: "File in arrivo", iosIncoming: "PC-Ufficio (Windows) vuole inviarti 2 file (3,4 MB).",
+      iosReceived: "Ricevuti 2 file da PC-Ufficio", iosWhere: "Li trovi in File → Sul mio iPad/iPhone → Hoppy.",
+      iosOpen: "Apri", iosShare: "Condividi", iosFiles: "Mostra in File", iosVisible: "Visibile come «iPad di Marco»",
     },
     en: {
       notes: "notes.txt", pics: "Pictures", notesApp: "Notes", twoPhotos: "2 photos", size: "3.4 MB",
@@ -98,10 +103,15 @@
       nearby: "Nearby", sendToPhone: "Send to", ready: "Ready to receive", readyHint: "Nearby devices can see you and send you files.",
       phoneSending: "Sending to PC-Ufficio · 64%", readyAs: "Ready to receive", savedIn: "Saved in Downloads/Hoppy",
       flows: { send: "Sending", recv: "Receiving" },
+      // iPhone/iPad app (apps/ios/Shared/en.lproj/Localizable.strings*)
+      iosReadyHint: "Nearby devices can see you and send you files while Hoppy is open.",
+      iosIncomingTitle: "Incoming files", iosIncoming: "PC-Ufficio (Windows) wants to send you 2 files (3.4 MB).",
+      iosReceived: "Received 2 files from PC-Ufficio", iosWhere: "You can find them in Files → On My iPad/iPhone → Hoppy.",
+      iosOpen: "Open", iosShare: "Share", iosFiles: "Show in Files", iosVisible: "Visible as “iPad di Marco”",
     },
   };
 
-  // Shared screens of the Hoppy phone app (Android today, iPhone planned).
+  // Shared screens of the Hoppy phone app (Android, iPhone/iPad).
   const S = {
     pickDevice: (L, os) => phone(os, `<div class="pa">${appHead(L)}<p class="pa-h">${L.sendToPhone}</p>${devRow("PC-Ufficio", "Windows", true)}${devRow("Tablet di Anna", "Android")}</div>`),
     progress: (L, os) => phone(os, `<div class="pa">${appHead(L)}<p class="pa-h">${L.phoneSending}</p><div class="pa-bar"><i style="width:64%"></i></div><p class="pa-s">foto-mare.jpg</p></div>`),
@@ -109,6 +119,10 @@
     home: (L, os) => phone(os, `<div class="pa">${appHead(L)}<div class="pa-sw"><b>${L.ready}</b><span class="sw is-on"><i></i></span></div><p class="pa-s">${L.readyHint}</p><p class="pa-h sm">${L.nearby}</p>${devRow("PC-Ufficio", "Windows")}</div>`),
     ask: (L, os) => phone(os, `<div class="pw"><i></i><i></i></div>${notif(L, L.phoneIncoming, "foto-mare.jpg, foto-tramonto.jpg", [L.acceptBtn, L.declineBtn])}`, "is-lock"),
     got: (L, os, body) => phone(os, `<div class="pw"><i></i><i></i></div>${notif(L, L.receivedPc, body, null, true)}`, "is-lock"),
+    // iPhone/iPad: receiving happens inside the open app (no background listening on iOS).
+    iosHome: (L) => phone("ios", `<div class="pa">${appHead(L)}<div class="pa-sw"><b>${L.ready}</b><span class="sw is-on"><i></i></span></div><p class="pa-s">${L.iosReadyHint}</p><p class="pa-s pa-link">${L.iosVisible}</p><p class="pa-h sm">${L.nearby}</p>${devRow("PC-Ufficio", "Windows")}</div>`),
+    iosAsk: (L) => phone("ios", `<div class="pa">${appHead(L)}<div class="pa-sw"><b>${L.ready}</b><span class="sw is-on"><i></i></span></div></div><div class="ps-dim"></div><div class="pal"><b>${L.iosIncomingTitle}</b><span>${L.iosIncoming}</span><span>foto-mare.jpg<br>foto-tramonto.jpg</span><div class="pal-btns"><span class="is-default">${L.declineBtn}</span><span class="is-tap">${L.acceptBtn}</span></div></div>`),
+    iosGot: (L) => phone("ios", `<div class="pa">${appHead(L, true)}<div class="prc"><b>${L.iosReceived}</b><span>foto-mare.jpg, foto-tramonto.jpg</span><small>${L.iosWhere}</small><div class="prc-btns"><span>${L.iosOpen}</span><span>${L.iosShare}</span><span>${L.iosFiles}</span></div></div></div>`),
   };
 
   // ---------- flows: shot(L) + caption + description, per language
@@ -224,25 +238,28 @@
       kind: "phone",
       send: [
         step((L) => phone("ios", shareSheet(L, "ios")),
-          { it: "Da Foto o da File tocca Condividi → Hoppy.", en: "In Photos or Files tap Share → Hoppy." },
+          { it: "Da Foto o da File tocca Condividi → Hoppy. Oppure apri Hoppy e tocca «Invia file».", en: "In Photos or Files tap Share → Hoppy. Or open Hoppy and tap “Send files”." },
           { it: "Foto con due immagini selezionate e il foglio Condividi aperto: Hoppy è il primo della fila.", en: "Photos with two pictures selected and the Share sheet open: Hoppy comes first in the row." }),
         step((L) => S.pickDevice(L, "ios"),
-          { it: "Tocca il dispositivo vicino.", en: "Tap the nearby device." },
+          { it: "Hoppy cerca i dispositivi vicini sulla stessa Wi-Fi: tocca quello giusto.", en: "Hoppy looks for nearby devices on the same Wi-Fi: tap the right one." },
           { it: "Schermata di Hoppy con la mascotte e l'elenco «Invia a»: PC-Ufficio · Windows (toccato) e Tablet di Anna · Android.", en: "Hoppy screen with the mascot and the “Send to” list: PC-Ufficio · Windows (tapped) and Tablet di Anna · Android." }),
+        step((L) => S.progress(L, "ios"),
+          { it: "L'altro accetta e il file salta: vedi l'avanzamento.", en: "They accept and the file hops over: you see the progress." },
+          { it: "Hoppy mostra «Invio a PC-Ufficio · 64%» con una barra di avanzamento.", en: "Hoppy shows “Sending to PC-Ufficio · 64%” with a progress bar." }),
         step((L) => S.done(L, "ios"),
           { it: "«Consegnato!» e Hoppy fa festa.", en: "“Delivered!” and Hoppy celebrates." },
           { it: "La mascotte sorride: «Consegnato a PC-Ufficio ✓».", en: "The mascot smiles: “Delivered to PC-Ufficio ✓”." }),
       ],
       recv: [
-        step((L) => S.home(L, "ios"),
-          { it: "Apri Hoppy: mentre è aperto, i dispositivi vicini ti vedono.", en: "Open Hoppy: while it is open, nearby devices can see you." },
-          { it: "Schermata di Hoppy con l'interruttore «Pronto a ricevere» acceso.", en: "Hoppy screen with the “Ready to receive” switch on." }),
-        step((L) => S.ask(L, "ios"),
-          { it: "Una notifica chiede se accetti i file.", en: "A notification asks whether to accept the files." },
-          { it: "Notifica di Hoppy: «PC-Ufficio vuole inviarti 2 file (3,4 MB)», con Accetta e Rifiuta.", en: "Hoppy notification: “PC-Ufficio wants to send 2 files (3.4 MB)”, with Accept and Decline." }),
-        step((L) => S.got(L, "ios", L.lang === "it" ? "Li trovi in File → Hoppy." : "Find them in Files → Hoppy."),
-          { it: "I file finiscono in File → Hoppy.", en: "The files land in Files → Hoppy." },
-          { it: "Notifica di Hoppy: «Ricevuti 2 file da PC-Ufficio», li trovi in File → Hoppy.", en: "Hoppy notification: “Received 2 files from PC-Ufficio”, find them in Files → Hoppy." }),
+        step((L) => S.iosHome(L),
+          { it: "Apri Hoppy e lascia attivo «Pronto a ricevere»: finché Hoppy è aperto, i dispositivi vicini ti vedono.", en: "Open Hoppy and keep “Ready to receive” on: while Hoppy is open, nearby devices can see you." },
+          { it: "Schermata di Hoppy con l'interruttore «Pronto a ricevere» acceso, la scritta «I dispositivi vicini ti vedono e possono inviarti file mentre Hoppy è aperto» e «Visibile come iPad di Marco».", en: "Hoppy screen with the “Ready to receive” switch on, the text “Nearby devices can see you and send you files while Hoppy is open” and “Visible as iPad di Marco”." }),
+        step((L) => S.iosAsk(L),
+          { it: "Hoppy chiede prima: Rifiuta è la scelta predefinita, tocca Accetta.", en: "Hoppy asks first: Decline is the default, tap Accept." },
+          { it: "Avviso «File in arrivo» sopra Hoppy: «PC-Ufficio (Windows) vuole inviarti 2 file (3,4 MB)», foto-mare.jpg e foto-tramonto.jpg, con i pulsanti Rifiuta (in grassetto) e Accetta.", en: "“Incoming files” alert over Hoppy: “PC-Ufficio (Windows) wants to send you 2 files (3.4 MB)”, foto-mare.jpg and foto-tramonto.jpg, with Decline (bold) and Accept buttons." }),
+        step((L) => S.iosGot(L),
+          { it: "Fatto: aprili, condividili o trovali in File → Hoppy.", en: "Done: open them, share them or find them in Files → Hoppy." },
+          { it: "Hoppy sorride sopra il riquadro «Ricevuti 2 file da PC-Ufficio», foto-mare.jpg e foto-tramonto.jpg, con i pulsanti Apri, Condividi e Mostra in File.", en: "Hoppy smiles above the “Received 2 files from PC-Ufficio” card, foto-mare.jpg and foto-tramonto.jpg, with Open, Share and Show in Files buttons." }),
       ],
     },
   };

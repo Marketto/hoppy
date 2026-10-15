@@ -1,0 +1,22 @@
+[package]
+name = "hoppy-ffi"
+description = "C ABI over hoppy-core for the iPhone/iPad app (apps/ios)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+# staticlib: linked into Hoppy.app and the Share extension through HoppyFFI.xcframework
+# (apps/ios/build-xcframework.sh). rlib: the Rust tests below run on Linux in `dev.py check`.
+[lib]
+name = "hoppy_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+hoppy-core = { path = "../hoppy-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"

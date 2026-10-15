@@ -141,8 +141,8 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
 10. **Notifications off** in System Settings: no notification at all; turning them back on
     restores them.
 
-## iPhone / iPad (planned)
-- Target: devices from 2021 onwards (e.g. iPhone 13 family, iPad 9th gen, iPad mini 6).
-- Wi-Fi Aware (iOS 26) gives direct peer-to-peer without a shared network on iPhone 12 and later.
-- Distribution only through TestFlight / App Store (no side-loading from the portal).
-- Background receiving is limited: the app must be open, or woken by a push notification.
+## iPhone / iPad
+
+See [`ios.md`](ios.md) (ADR 0009): SwiftUI app + Share extension over the Rust core, unsigned
+`Hoppy-ios-unsigned.ipa` sideloaded with Sideloadly and a free Apple ID (7-day signature,
+Developer Mode), unicast discovery sweep instead of multicast, receiving only while open.

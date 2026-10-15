@@ -18,7 +18,8 @@ Read first: `docs/architecture.md` (§ transport selection) and `docs/roadmap.md
 3. **Encryption before internet.** No remote/relay transport ships before protocol v1
    (Noise/TLS with pinned device keys, ADR 0003 follow-up).
 4. **Platform limits are product facts**: iOS has no Wi-Fi Direct/BT classic for apps but
-   has Wi-Fi Aware (iOS 26, iPhone 12+); background receiving on iOS is limited. Record
+   has Wi-Fi Aware (iOS 26, iPhone 12+); background receiving on iOS is limited; without a
+   paid account there is no multicast (unicast sweep, ADR 0009). Record
    them in `docs/platforms/<platform>.md`.
 
 ## Process

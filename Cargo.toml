@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hoppy-core", "crates/hoppy-cli"]
+members = ["crates/hoppy-core", "crates/hoppy-cli", "crates/hoppy-ffi"]
 
 [workspace.package]
 version = "0.1.0"

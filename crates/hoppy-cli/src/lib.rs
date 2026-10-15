@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result};
 use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::transfer::serve;
-use hoppy_core::{DeviceInfo, Discovery, DiscoveryConfig, ReceiveHandler, accept_callbacks};
+use hoppy_core::{DeviceInfo, Discovery, DiscoveryConfig, ReceiveHandler, Sweep, accept_callbacks};
 
 /// `--seed` values: `IP` or `IP:PORT` (discovery port by default).
 pub fn parse_seeds(raw: &[String]) -> Result<Vec<SocketAddr>> {
@@ -81,7 +81,19 @@ pub fn start_discovery_on(
     let mut cfg = DiscoveryConfig::new(me.clone(), transfer_port);
     cfg.seeds = seeds.to_vec();
     cfg.bind_port = if transfer_port == 0 { 0 } else { udp_port };
+    cfg.sweep = sweep_for(transfer_port, seeds);
     Discovery::start(cfg).context("starting discovery (is the UDP port blocked?)")
+}
+
+/// A send-only node on an ephemeral port never hears the unicast announces of an iPhone/iPad
+/// (which cannot multicast, spec §2.1), so it sweeps the local subnet with unicast queries
+/// and the iPad answers. Explicit seeds (tests, interop, `--seed`) turn the sweep off.
+pub fn sweep_for(transfer_port: u16, seeds: &[SocketAddr]) -> Sweep {
+    if transfer_port == 0 && seeds.is_empty() {
+        Sweep::LocalSubnets
+    } else {
+        Sweep::Off
+    }
 }
 
 /// Receives forever: direct connections on `listener` and callbacks (spec §6) through
@@ -153,52 +165,7 @@ pub const SHOW_TEXT_MAX: usize = 200;
 /// Shown instead of a file name that the §4 sanitizer rejects.
 pub const INVALID_NAME: &str = "(?)";
 
-/// Characters that must never reach a dialog: controls (Cc), line/paragraph separators,
-/// and format characters (Cf) — bidi overrides/isolates/marks can make "gpj.exe" look
-/// like "exe.jpg". ZWJ/ZWNJ (U+200C/D) are kept: they only join glyphs (emoji, Indic,
-/// Persian) and cannot reorder text.
-fn is_hidden_char(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{00AD}'
-                | '\u{0600}'..='\u{0605}'
-                | '\u{061C}'
-                | '\u{06DD}'
-                | '\u{070F}'
-                | '\u{0890}'..='\u{0891}'
-                | '\u{08E2}'
-                | '\u{180E}'
-                | '\u{200B}'
-                | '\u{200E}'..='\u{200F}'
-                | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{FFF9}'..='\u{FFFB}'
-                | '\u{110BD}'
-                | '\u{110CD}'
-                | '\u{13430}'..='\u{1343F}'
-                | '\u{1BCA0}'..='\u{1BCA3}'
-                | '\u{1D173}'..='\u{1D17A}'
-                | '\u{E0001}'
-                | '\u{E0020}'..='\u{E007F}'
-        )
-}
-
-/// Network text made safe to show: hidden characters removed, trimmed, and cut to
-/// `max` characters (ending in "…" when cut). May be empty.
-pub fn display_text(raw: &str, max: usize) -> String {
-    let clean: String = raw.chars().filter(|&c| !is_hidden_char(c)).collect();
-    let clean = clean.trim();
-    if clean.chars().count() <= max {
-        return clean.to_owned();
-    }
-    let mut out: String = clean.chars().take(max.saturating_sub(1)).collect();
-    out.truncate(out.trim_end().len());
-    out.push('…');
-    out
-}
+pub use hoppy_core::sanitize::display_text;
 
 /// A peer's device name for dialogs, balloons and menus ("?" if nothing is left).
 pub fn display_name(raw: &str) -> String {
@@ -297,6 +264,14 @@ mod tests {
             Some("10.0.0.2:5000".parse().unwrap())
         );
         assert_eq!(parse_direct("Pixel"), None);
+    }
+
+    #[test]
+    fn only_seedless_senders_sweep() {
+        assert_eq!(sweep_for(0, &[]), Sweep::LocalSubnets);
+        assert_eq!(sweep_for(47471, &[]), Sweep::Off);
+        let seed = parse_seeds(&["10.0.0.3".into()]).unwrap();
+        assert_eq!(sweep_for(0, &seed), Sweep::Off);
     }
 
     #[test]

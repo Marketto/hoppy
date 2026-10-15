@@ -12,7 +12,7 @@ use hoppy_core::protocol::{
 };
 use hoppy_core::transfer::{receive_one, serve};
 use hoppy_core::{
-    DeviceInfo, Discovery, DiscoveryConfig, Error, Offer, Peer, ReceiveHandler, SendOutcome,
+    DeviceInfo, Discovery, DiscoveryConfig, Error, Offer, Peer, ReceiveHandler, SendOutcome, Sweep,
     accept_callbacks, send_files, send_to_peer,
 };
 
@@ -263,6 +263,44 @@ fn discovery_finds_peer_over_unicast_seed() {
     assert_eq!(seen_by_a[0].addr.port(), 2222);
 
     drop(b); // sends bye
+    thread::sleep(Duration::from_millis(300));
+    assert!(a.peers().is_empty());
+}
+
+/// Spec §2.1: a node that cannot use multicast (iOS without the entitlement) finds a
+/// receiver with unicast queries only, the receiver lists it, and switching it to send-only
+/// and back is seen at once (bye / announce to known peers).
+#[test]
+fn unicast_sweep_finds_and_is_found() {
+    let mut a_cfg = DiscoveryConfig::new(device("node-a", "Alpha"), 1111);
+    a_cfg.bind_port = 0;
+    a_cfg.use_multicast = false;
+    let a = Discovery::start(a_cfg).unwrap();
+
+    let mut b_cfg = DiscoveryConfig::new(device("ipad", "iPad"), 2222);
+    b_cfg.bind_port = 0;
+    b_cfg.use_multicast = false;
+    b_cfg.sweep = Sweep::Hosts(vec![SocketAddr::from(([127, 0, 0, 1], a.local_port()))]);
+    let b = Discovery::start(b_cfg).unwrap();
+
+    let seen_by_b = b.wait_for_peers(1, Duration::from_secs(3));
+    assert_eq!(seen_by_b[0].device.name, "Alpha");
+    let seen_by_a = a.wait_for_peers(1, Duration::from_secs(3));
+    assert_eq!(seen_by_a[0].device.name, "iPad");
+    assert_eq!(seen_by_a[0].addr.port(), 2222);
+
+    b.set_transfer_port(0);
+    assert_eq!(b.transfer_port(), 0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !a.peers().is_empty() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(a.peers().is_empty(), "bye reached the known peer");
+
+    b.set_transfer_port(3333);
+    let seen_by_a = a.wait_for_peers(1, Duration::from_secs(3));
+    assert_eq!(seen_by_a[0].addr.port(), 3333);
+    drop(b);
     thread::sleep(Duration::from_millis(300));
     assert!(a.peers().is_empty());
 }
