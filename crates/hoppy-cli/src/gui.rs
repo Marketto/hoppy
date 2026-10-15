@@ -9,6 +9,11 @@
 //! - Updates: the tray checks GitHub Releases 30 s after start and then daily (`update.rs`);
 //!   "Update to X…" downloads the installer, verifies SHA256SUMS.txt, runs it silently and
 //!   exits (the installer restarts the tray). Portable copies only link to the portal.
+//! - Firewall (`firewall.rs`): the tray checks at start whether other devices can reach it;
+//!   if not, a balloon (once per version) and a menu item offer to add the rules (UAC →
+//!   `hoppyw firewall --apply`) or to set a Public network to Private.
+//! - `hoppyw firewall --apply|--remove`: no UI, exit code only (started elevated by the tray
+//!   and the installer).
 //!
 //! Safe Rust only: every Win32 call goes through `platform::win` (a stub off Windows, so
 //! this module is compiled and linted everywhere). Worker threads never touch the UI; they
@@ -31,8 +36,9 @@ use hoppy_core::{
     DeviceInfo, Discovery, Error, Offer, Peer, Progress, ReceiveHandler, SendOutcome, send_files,
 };
 
+use crate::firewall::{self, Verdict};
 use crate::platform::win::{self, Tray, Waker};
-use crate::platform::{self, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
+use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, display_file_name,
     display_name, display_platform, display_text, human, start_discovery, update,
@@ -90,6 +96,15 @@ pub struct Strings {
     pub update_progress: &'static str,
     pub update_failed: &'static str,
     pub update_mismatch: &'static str,
+    pub fw_title: &'static str,
+    pub fw_text: &'static str,
+    pub public_title: &'static str,
+    pub public_text: &'static str,
+    pub menu_firewall: &'static str,
+    pub menu_network: &'static str,
+    pub fw_done: &'static str,
+    pub fw_failed: &'static str,
+    pub fw_policy: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -130,6 +145,15 @@ pub const IT: Strings = Strings {
     update_progress: "Scarico aggiornamento… {pct}%",
     update_failed: "Aggiornamento non riuscito",
     update_mismatch: "Il file scaricato non corrisponde al checksum ufficiale: non è stato installato.",
+    fw_title: "Gli altri dispositivi potrebbero non riuscire a inviarti file",
+    fw_text: "Clic per consentire Hoppy nel firewall di Windows (serve la conferma di un amministratore).",
+    public_title: "La rete è impostata come Pubblica",
+    public_text: "Gli altri dispositivi non possono inviarti file: clic per impostarla come Privata.",
+    menu_firewall: "Consenti nel firewall…",
+    menu_network: "Imposta la rete come Privata…",
+    fw_done: "Hoppy è consentito nel firewall ✓",
+    fw_failed: "Impossibile consentire Hoppy nel firewall",
+    fw_policy: "Le regole sono state aggiunte ma non hanno effetto: probabilmente un criterio aziendale le ignora. Chiedi all'IT di consentire Hoppy (TCP 47471, UDP 47470).",
 };
 
 pub const EN: Strings = Strings {
@@ -170,6 +194,15 @@ pub const EN: Strings = Strings {
     update_progress: "Downloading update… {pct}%",
     update_failed: "Update failed",
     update_mismatch: "The downloaded file does not match the official checksum: it was not installed.",
+    fw_title: "Other devices may not be able to send you files",
+    fw_text: "Click to allow Hoppy through Windows Firewall (needs administrator approval).",
+    public_title: "This network is set to Public",
+    public_text: "Other devices cannot send you files: click to set it to Private.",
+    menu_firewall: "Allow through firewall…",
+    menu_network: "Set the network to Private…",
+    fw_done: "Hoppy is allowed through the firewall ✓",
+    fw_failed: "Could not allow Hoppy through the firewall",
+    fw_policy: "The rules were added but have no effect: a company policy probably ignores them. Ask IT to allow Hoppy (TCP 47471, UDP 47470).",
 };
 
 pub fn strings() -> &'static Strings {
@@ -270,6 +303,7 @@ pub fn run(args: Vec<OsString>) -> i32 {
     let result = match args.first().map(|a| a.to_str()) {
         None => tray_mode(s),
         Some(Some("send")) => send_mode(s, args[1..].iter().map(PathBuf::from).collect()),
+        Some(Some("firewall")) => return firewall_mode(&args[1..]),
         Some(_) => Err(anyhow::anyhow!("{}", s.usage)),
     };
     match result {
@@ -279,6 +313,26 @@ pub fn run(args: Vec<OsString>) -> i32 {
             1
         }
     }
+}
+
+/// `hoppyw firewall --apply|--remove` (run elevated by the tray and the installer) and
+/// `--check` (installer, see `firewall::check_code`). No UI, since the installer may be
+/// silent: the exit code is the result.
+fn firewall_mode(args: &[OsString]) -> i32 {
+    let exe = std::env::current_exe().ok();
+    let Some(dir) = exe.as_deref().and_then(|e| e.parent()) else {
+        return 3;
+    };
+    let result = match args.first().and_then(|a| a.to_str()) {
+        Some("--apply") => firewall::apply(dir),
+        Some("--remove") => firewall::remove(dir),
+        Some("--check") => {
+            let status = firewall::check(&firewall::programs_in(dir));
+            return firewall::check_code(status.as_ref());
+        }
+        _ => return 3,
+    };
+    i32::from(result.is_err())
 }
 
 // ---------------------------------------------------------------- tray receiver
@@ -341,6 +395,7 @@ const ID_OPEN: u32 = 2;
 const ID_QUIT: u32 = 3;
 const ID_MUSIC: u32 = 4;
 const ID_UPDATE: u32 = 5;
+const ID_FIREWALL: u32 = 6;
 
 /// What clicking the last balloon does.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -349,6 +404,10 @@ enum BalloonAction {
     OpenDir,
     Update,
     Portal,
+    /// Add the firewall rules (UAC).
+    Firewall,
+    /// Open Windows network settings (Public → Private).
+    Network,
 }
 
 fn tray_mode(s: &'static Strings) -> Result<()> {
@@ -383,6 +442,8 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     if mode != UpdateMode::Off {
         spawn_update_checker(&updates, tray.waker());
     }
+    let fw = Arc::new(Mutex::new(FirewallState::default()));
+    spawn_firewall_check(&fw, tray.waker());
 
     let ready_tip = fill(s.tip_ready, &[("name", &me.name)]);
     let header = fill(s.menu_header, &[("name", &me.name)]);
@@ -393,6 +454,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                 // Re-read: `hoppy music on|off` may have changed it meanwhile.
                 let music = config::load_or_create().map_or(true, |i| i.music);
                 let update_item = update_menu_text(s, &lock(&updates), mode);
+                let fw_item = firewall_menu_text(s, &fw, &tray);
                 let mut items = Vec::new();
                 if let Some((clickable, text)) = &update_item {
                     items.push(if *clickable {
@@ -407,9 +469,11 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     MenuItem::Action(ID_SEND, s.menu_send),
                     MenuItem::Action(ID_OPEN, s.menu_open),
                     MenuItem::Check(ID_MUSIC, s.menu_music, music),
-                    MenuItem::Separator,
-                    MenuItem::Action(ID_QUIT, s.menu_quit),
                 ]);
+                if let Some(text) = fw_item {
+                    items.push(MenuItem::Action(ID_FIREWALL, text));
+                }
+                items.extend([MenuItem::Separator, MenuItem::Action(ID_QUIT, s.menu_quit)]);
                 match tray.popup_menu(&items, true) {
                     Some(ID_UPDATE) => start_update(s, &updates, mode, tray.waker()),
                     Some(ID_SEND) => match tray.pick_files(s.pick_title) {
@@ -422,6 +486,12 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                         Err(TooManyFiles) => win::message_box_error("Hoppy", s.too_many_files),
                     },
                     Some(ID_OPEN) => open_dir(&dir),
+                    Some(ID_FIREWALL) => match lock(&fw).verdict {
+                        Some(Verdict::PublicNetwork) => {
+                            win::open_url(NETWORK_SETTINGS);
+                        }
+                        _ => start_firewall_fix(&tray, s, &fw),
+                    },
                     Some(ID_MUSIC) => {
                         if let Err(e) = config::set_music(!music) {
                             tray.balloon("Hoppy", &format!("{e:#}"), true, true);
@@ -443,6 +513,9 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     } else {
                         BalloonAction::OpenDir
                     };
+                }
+                if let Some(action) = firewall_wake(&tray, s, &fw) {
+                    balloon_action = action;
                 }
                 let upd = update_wake(&tray, s, &updates, mode, &ready_tip);
                 if let Some(action) = upd.balloon {
@@ -468,6 +541,10 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                 BalloonAction::Portal => {
                     win::open_url(update::PORTAL_URL);
                 }
+                BalloonAction::Firewall => start_firewall_fix(&tray, s, &fw),
+                BalloonAction::Network => {
+                    win::open_url(NETWORK_SETTINGS);
+                }
                 BalloonAction::Nothing => {}
             },
             TrayEvent::Reopen => tray.balloon("Hoppy", s.already_running, false, true),
@@ -476,6 +553,156 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     }
     // Locals drop in reverse order: the tray icon goes first, then discovery says "bye".
     Ok(())
+}
+
+// ---------------------------------------------------------------- firewall
+
+/// Windows Settings page with the Public/Private switch of the current network.
+const NETWORK_SETTINGS: &str = "ms-settings:network-status";
+/// Re-check (in the background) when the menu opens at most this often, so the menu item
+/// goes away after the user fixed things elsewhere.
+const FIREWALL_RECHECK: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct FirewallState {
+    /// Latest result; `None` until the first check ends, or when it failed (no hint then).
+    verdict: Option<Verdict>,
+    /// A check ended and the UI thread has not looked at it yet.
+    fresh: bool,
+    checking: bool,
+    checked_at: Option<Instant>,
+    /// The elevated `hoppyw firewall --apply` is running.
+    fixing: bool,
+    /// Its result (exit code 0), for the UI thread to report.
+    fixed: Option<bool>,
+}
+
+fn check_now() -> Option<Verdict> {
+    let exe = std::env::current_exe().ok()?;
+    firewall::check(&[exe]).map(|s| s.verdict(0))
+}
+
+fn spawn_firewall_check(fw: &Arc<Mutex<FirewallState>>, waker: Waker) {
+    {
+        let mut f = lock(fw);
+        if f.checking || f.fixing {
+            return;
+        }
+        f.checking = true;
+    }
+    let fw = Arc::clone(fw);
+    thread::spawn(move || {
+        let verdict = check_now();
+        let mut f = lock(&fw);
+        f.verdict = verdict;
+        f.fresh = true;
+        f.checking = false;
+        f.checked_at = Some(Instant::now());
+        drop(f);
+        waker.wake();
+    });
+}
+
+/// Menu item text while there is something to fix; starts a background re-check when the
+/// last one is old.
+fn firewall_menu_text(
+    s: &'static Strings,
+    fw: &Arc<Mutex<FirewallState>>,
+    tray: &Tray,
+) -> Option<&'static str> {
+    let (verdict, stale) = {
+        let f = lock(fw);
+        let stale = f
+            .checked_at
+            .is_some_and(|t| t.elapsed() >= FIREWALL_RECHECK);
+        (if f.fixing { None } else { f.verdict }, stale)
+    };
+    if stale {
+        spawn_firewall_check(fw, tray.waker());
+    }
+    match verdict? {
+        Verdict::NeedsRules => Some(s.menu_firewall),
+        Verdict::PublicNetwork => Some(s.menu_network),
+        Verdict::Ok => None,
+    }
+}
+
+/// UAC prompt for `hoppyw firewall --apply`; the result is reported by `firewall_wake`.
+/// Declining the prompt is silent.
+fn start_firewall_fix(tray: &Tray, s: &Strings, fw: &Arc<Mutex<FirewallState>>) {
+    if lock(fw).fixing {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let child = match win::run_elevated(Some(tray), &exe, "firewall --apply") {
+        Ok(child) => child,
+        Err(e) if e.is::<ElevationDeclined>() => return,
+        Err(e) => {
+            let text = display_text(&format!("{e:#}"), SHOW_TEXT_MAX);
+            tray.balloon(s.fw_failed, &text, true, true);
+            return;
+        }
+    };
+    lock(fw).fixing = true;
+    let (fw, waker) = (Arc::clone(fw), tray.waker());
+    thread::spawn(move || {
+        let ok = child.wait(120_000) == Some(0);
+        let verdict = check_now();
+        let mut f = lock(&fw);
+        f.fixing = false;
+        f.fixed = Some(ok);
+        f.verdict = verdict;
+        f.checked_at = Some(Instant::now());
+        drop(f);
+        waker.wake();
+    });
+}
+
+/// UI-thread side of `Wake` for the firewall: the hint (once per version) or the result of
+/// a fix. Returns the new balloon action when a balloon was shown.
+fn firewall_wake(tray: &Tray, s: &Strings, fw: &Mutex<FirewallState>) -> Option<BalloonAction> {
+    let (fresh, fixed, verdict) = {
+        let mut f = lock(fw);
+        (std::mem::take(&mut f.fresh), f.fixed.take(), f.verdict)
+    };
+    if let Some(ok) = fixed {
+        let action = match (ok, verdict) {
+            (false, _) => {
+                tray.balloon(s.fw_failed, "", true, true);
+                BalloonAction::Nothing
+            }
+            (true, Some(Verdict::NeedsRules)) => {
+                tray.balloon(s.fw_failed, s.fw_policy, true, true);
+                BalloonAction::Nothing
+            }
+            (true, Some(Verdict::PublicNetwork)) => {
+                tray.balloon(s.public_title, s.public_text, false, true);
+                BalloonAction::Network
+            }
+            (true, _) => {
+                tray.balloon(s.fw_done, "", false, true);
+                BalloonAction::Nothing
+            }
+        };
+        return Some(action);
+    }
+    if !fresh {
+        return None;
+    }
+    let (title, text, action) = match verdict? {
+        Verdict::NeedsRules => (s.fw_title, s.fw_text, BalloonAction::Firewall),
+        Verdict::PublicNetwork => (s.public_title, s.public_text, BalloonAction::Network),
+        Verdict::Ok => return None,
+    };
+    let shown = config::load_or_create().is_ok_and(|i| i.firewall_hint == update::CURRENT_VERSION);
+    if shown {
+        return None;
+    }
+    let _ = config::set_firewall_hint(update::CURRENT_VERSION);
+    tray.balloon(title, text, false, true);
+    Some(action)
 }
 
 // ---------------------------------------------------------------- updates

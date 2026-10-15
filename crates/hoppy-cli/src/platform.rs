@@ -65,6 +65,31 @@ pub fn uninstall() -> Result<()> {
     }
 }
 
+/// Hides the console window a child process would otherwise open (`hoppyw` is a GUI
+/// app, so `netsh`/`powershell` would flash a black window).
+pub fn no_window(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+/// `run_elevated`: the user answered No to the UAC prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ElevationDeclined;
+
+impl std::fmt::Display for ElevationDeclined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("administrator permission was not granted")
+    }
+}
+
+impl std::error::Error for ElevationDeclined {}
+
 /// Something the tray window reported to the `hoppyw` event loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
@@ -177,8 +202,8 @@ pub mod win {
 
     use anyhow::{Context, Result, bail};
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
-        POINT, WPARAM,
+        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, GetLastError, HANDLE, HINSTANCE, HWND,
+        LPARAM, LRESULT, POINT, WAIT_OBJECT_0, WPARAM,
     };
     use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
     use windows_sys::Win32::Media::Audio::{
@@ -192,7 +217,9 @@ pub mod win {
     };
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::System::Threading::{
+        CreateMutexW, GetExitCodeProcess, WaitForSingleObject,
+    };
     use windows_sys::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, FNERR_BUFFERTOOSMALL, GetOpenFileNameW, OFN_ALLOWMULTISELECT,
         OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -200,7 +227,9 @@ pub mod win {
     use windows_sys::Win32::UI::Shell::{
         NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND,
         NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT,
-        NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW, ShellExecuteW,
+        NOTIFYICON_VERSION_4, NOTIFYICONDATAW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC,
+        SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, Shell_NotifyIconW, ShellExecuteExW,
+        ShellExecuteW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
@@ -209,15 +238,15 @@ pub mod win {
         LoadImageW, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
         MB_SYSTEMMODAL, MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_DISABLED, MF_SEPARATOR, MF_STRING,
         MSG, MessageBoxW, PostMessageW, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON,
-        SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetProcessDPIAware,
-        SetTimer, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-        TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-        WS_OVERLAPPED,
+        SM_CYSMICON, SW_HIDE, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem,
+        SetProcessDPIAware, SetTimer, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
+        TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_NULL,
+        WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
     };
 
     use super::{
-        HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune, copy_wide, parse_multiselect,
-        split_https_url,
+        ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune, copy_wide,
+        parse_multiselect, split_https_url,
     };
 
     // 'static, so the buffers outlive any asynchronous SND_MEMORY playback.
@@ -330,6 +359,65 @@ pub mod win {
             )
         };
         r as isize > 32
+    }
+
+    /// A process started through UAC; its handle is closed on drop.
+    pub struct Elevated(usize);
+
+    impl Elevated {
+        /// Exit code, or `None` on timeout/error.
+        pub fn wait(self, timeout_ms: u32) -> Option<u32> {
+            let handle = self.0 as HANDLE;
+            if handle.is_null() {
+                return None;
+            }
+            let mut code = 0u32;
+            // SAFETY: live process handle owned by `self`; valid out-pointer.
+            unsafe {
+                (WaitForSingleObject(handle, timeout_ms) == WAIT_OBJECT_0
+                    && GetExitCodeProcess(handle, &mut code) != 0)
+                    .then_some(code)
+            }
+        }
+    }
+
+    impl Drop for Elevated {
+        fn drop(&mut self) {
+            if self.0 != 0 {
+                // SAFETY: handle returned by ShellExecuteExW, closed exactly once.
+                unsafe { CloseHandle(self.0 as HANDLE) };
+            }
+        }
+    }
+
+    /// Runs `exe params` hidden as administrator (UAC prompt, owned by the tray window when
+    /// given). Returns once the user has answered; `ElevationDeclined` if they said No.
+    /// `params` must be a constant: it is a command line, not a script.
+    pub fn run_elevated(owner: Option<&Tray>, exe: &Path, params: &str) -> Result<Elevated> {
+        let (verb, file, params) = (wide("runas"), wide_path(exe), wide(params));
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+            hwnd: owner.map_or(null_mut(), |t| t.hwnd),
+            lpVerb: verb.as_ptr(),
+            lpFile: file.as_ptr(),
+            lpParameters: params.as_ptr(),
+            nShow: SW_HIDE,
+            ..Default::default()
+        };
+        // SAFETY: `info` is initialised with the right cbSize; strings outlive the call.
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            // SAFETY: reads the error of ShellExecuteExW just above.
+            let err = unsafe { GetLastError() };
+            if err == ERROR_CANCELLED {
+                return Err(ElevationDeclined.into());
+            }
+            bail!(
+                "could not start {} as administrator (error {err})",
+                exe.display()
+            );
+        }
+        Ok(Elevated(info.hProcess as usize))
     }
 
     /// A WinHTTP handle, closed on drop.
@@ -840,7 +928,8 @@ pub mod win {
             println!("Start it now with: hoppy receive");
         }
         println!(
-            "Windows may ask once to allow Hoppy through the firewall: choose Private networks."
+            "Windows may ask once to allow Hoppy through the firewall: choose Private networks \
+             (or run `hoppy firewall --fix`)."
         );
         Ok(())
     }
@@ -865,6 +954,18 @@ pub mod win {
     use anyhow::{Result, bail};
 
     use super::{HttpSink, MenuItem, TooManyFiles, TrayEvent, Tune};
+
+    pub struct Elevated(Infallible);
+
+    impl Elevated {
+        pub fn wait(self, _timeout_ms: u32) -> Option<u32> {
+            match self.0 {}
+        }
+    }
+
+    pub fn run_elevated(_owner: Option<&Tray>, _exe: &Path, _params: &str) -> Result<Elevated> {
+        bail!("elevation is Windows-only")
+    }
 
     /// No music off Windows (the assets are not even embedded).
     pub fn play_tune(_tune: Tune) {}

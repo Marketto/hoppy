@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.appcompat.content.res.AppCompatResources
-import androidx.core.content.ContextCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -83,18 +82,18 @@ object ShareShortcuts {
         Prefs.recentTargets(ctx).firstOrNull { it.peerId == peerId }?.name
 
     /**
-     * Adaptive bitmap like the launcher icon: the mascot inside the 66/108 safe zone on
-     * the launcher background colour (the OS applies its own mask).
+     * Adaptive bitmap identical to the launcher icon: its generated background and
+     * foreground layers (108dp each, tools/gen_mascots.py) stacked; the OS applies its mask.
      */
     private fun icon(ctx: Context): IconCompat {
         val px = (108 * ctx.resources.displayMetrics.density).toInt().coerceIn(108, 432)
         val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        canvas.drawColor(ContextCompat.getColor(ctx, R.color.launcher_background))
-        AppCompatResources.getDrawable(ctx, R.drawable.mascot_kawaii)?.let { mascot ->
-            val inset = px * 24 / 108
-            mascot.setBounds(inset, inset, px - inset, px - inset)
-            mascot.draw(canvas)
+        for (layer in intArrayOf(R.drawable.ic_launcher_background, R.drawable.ic_launcher_foreground)) {
+            AppCompatResources.getDrawable(ctx, layer)?.run {
+                setBounds(0, 0, px, px)
+                draw(canvas)
+            }
         }
         return IconCompat.createWithAdaptiveBitmap(bitmap)
     }

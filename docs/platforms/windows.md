@@ -1,7 +1,8 @@
 # Windows
 
 ## PoC experience
-- Install: `Hoppy-Setup-x64.exe` (per user, no admin), or `apps/windows/install.ps1` next to
+- Install: `Hoppy-Setup-x64.exe` (per user, no admin; only the optional firewall rules ask
+  for administrator approval), or `apps/windows/install.ps1` next to
   `hoppy.exe` + `hoppyw.exe` from the portable zip, or `hoppy install`. It adds
   **Send to → Hoppy** and starts the Hoppy icon in the notification area at login.
 - Two binaries: `hoppyw.exe` (GUI, never opens a console) is what users see; `hoppy.exe` is
@@ -42,10 +43,46 @@
   and `hoppy receive` never play music. The installer wizard plays music too (checkbox
   *♪ Music* bottom-left; silent installs stay silent).
 - Strings follow the Windows display language: Italian, otherwise English.
-- Firewall: the first receive triggers the Windows prompt; allow **Private networks**. The
-  rule is per executable, so upgrading from 0.1.0 (`hoppy.exe receive`) asks again for
-  `hoppyw.exe`. If missed (admin):
-  `netsh advfirewall firewall add rule name="Hoppy" dir=in action=allow program="<path>\hoppyw.exe" profile=private`.
+- Firewall: see [Firewall](#firewall) below.
+
+## Firewall
+
+Symptom when it goes wrong: the phone *finds* the PC (discovery replies are outbound) but
+the transfer fails with a connect timeout to port 47471.
+
+- **Rules** (`crates/hoppy-cli/src/firewall.rs`): inbound *allow*, tied to the program path,
+  profiles **Private + Domain**, never Public (v0 is unencrypted, ADR 0003; Domain is
+  included because PCs on a company network usually sit on the Domain profile):
+  `Hoppy (hoppyw)` for `hoppyw.exe` and `Hoppy (hoppy)` for `hoppy.exe`, each TCP 47471
+  (transfer) + UDP 47470 (discovery). `hoppy receive --port N` with another port is not
+  covered. Adding them first deletes every inbound rule for the same program paths: our old
+  ones, and the *block* rules Windows creates when its "allow access?" prompt is
+  dismissed (a block rule beats an allow rule). Deletion always filters by program path, so
+  another Windows user's install on the same PC (same rule names, other path) is untouched.
+- **Installer**: task *Allow Hoppy through Windows Firewall* (checked by default). After the
+  files are copied, `hoppyw firewall --check` (no admin) decides; if Hoppy is not already
+  allowed, `hoppyw firewall --apply` runs hidden through UAC. Declining UAC just skips it.
+  Tray updates (`/UPDATE=1`) skip the task (paths never change). Silent IT deployments can
+  skip it with `/MERGETASKS="!firewall"`. Uninstall removes the rules (UAC) only if rules
+  for the install folder exist.
+- **Tray**: at start it checks in the background (PowerShell `Get-NetFirewallRule` on the
+  effective store + `Get-NetConnectionProfile`, no admin, silent on errors). If no
+  connected network lets `hoppyw.exe` in: on a Private/Domain network a balloon "Other
+  devices may not be able to send you files" (click → UAC → rules) and the menu item
+  *Allow through firewall…*; on a Public-only network "This network is set to Public" (click
+  → Settings → Network status, set it to Private) and *Set the network to Private…*. The
+  balloon appears once per Hoppy version (`firewall_hint` in `device.json`); the menu item
+  stays while the problem does (re-checked when the menu opens, at most once a minute).
+- **CLI**: `hoppy firewall` prints the connected network categories and, for each exe, the
+  profiles where it is allowed/blocked; `hoppy firewall --fix` adds the rules (UAC);
+  `hoppy firewall --remove` (administrator terminal) deletes them.
+- **Company PCs**: a Group Policy can set "Apply local firewall rules: No"; local rules
+  (ours and the prompt's) are then ignored. The tray reports "the rules were added but have
+  no effect"; IT must allow `hoppyw.exe` (TCP 47471, UDP 47470) by policy. Third-party
+  security suites with their own firewall are not detected.
+- By hand (admin terminal):
+  `netsh advfirewall firewall add rule name="Hoppy (hoppyw)" dir=in action=allow program="<path>\hoppyw.exe" profile=private,domain protocol=TCP localport=47471`
+  (and the same with `protocol=UDP localport=47470`).
 
 ## Known limits
 - Windows 11 hides "Send to" under "Show more options". A top-level entry needs an
@@ -53,4 +90,5 @@
 - The Windows 11 **Share** sheet ("Condividi") only lists packaged apps with a share
   target, so Hoppy needs an MSIX package to appear there (roadmap).
 - Accept dialog is a plain `MessageBoxW`; a themed picker/accept window is planned.
-- Network profile "Public" blocks discovery on many PCs: set the Wi-Fi to Private.
+- Network profile "Public" blocks Hoppy (our rules exclude it on purpose): set the Wi-Fi to
+  Private; the tray says so.

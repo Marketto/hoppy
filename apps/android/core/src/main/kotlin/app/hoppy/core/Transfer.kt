@@ -30,6 +30,12 @@ sealed interface SendOutcome {
     data class Declined(val reason: String?) : SendOutcome
 }
 
+/**
+ * The TCP connection to the receiver could not be opened (timeout, refused, no route):
+ * typically a firewall, a different network or client isolation. Nothing was sent.
+ */
+class PeerUnreachableException(cause: IOException) : IOException(cause.message, cause)
+
 fun interface ProgressListener {
     fun onProgress(done: Long, total: Long)
 }
@@ -39,7 +45,10 @@ object TransferClient {
     private const val DECISION_TIMEOUT_MS = 120_000 // a human may be deciding
     private const val IO_TIMEOUT_MS = 30_000
 
-    /** Throws [IOException] on network/remote errors. Spec §3. */
+    /**
+     * Throws [IOException] on network/remote errors; [PeerUnreachableException] if the
+     * connection cannot even be opened. Spec §3.
+     */
     fun send(
         host: InetAddress,
         port: Int,
@@ -52,7 +61,11 @@ object TransferClient {
         val total = offer.totalSize
         Socket().use { socket ->
             socket.tcpNoDelay = true
-            socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            try {
+                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            } catch (e: IOException) {
+                throw PeerUnreachableException(e)
+            }
             val input = BufferedInputStream(socket.getInputStream())
             val out = BufferedOutputStream(socket.getOutputStream(), Protocol.CHUNK)
 

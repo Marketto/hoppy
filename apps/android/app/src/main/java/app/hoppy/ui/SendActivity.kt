@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
 import androidx.core.content.IntentCompat
 import androidx.core.view.isVisible
@@ -13,12 +14,15 @@ import app.hoppy.Prefs
 import app.hoppy.R
 import app.hoppy.audio.Music
 import app.hoppy.core.Peer
+import app.hoppy.core.PeerUnreachableException
 import app.hoppy.core.SendOutcome
 import app.hoppy.core.TransferClient
 import app.hoppy.databinding.ActivitySendBinding
 import app.hoppy.ui.theme.ButtonFx
 import app.hoppy.ui.theme.Motion
 import app.hoppy.ui.theme.ThemeFonts
+import java.net.ConnectException
+import java.net.NoRouteToHostException
 import java.util.UUID
 import kotlin.concurrent.thread
 
@@ -218,13 +222,22 @@ class SendActivity : ThemedActivity() {
         adapter.enabled = true
         adapter.highlightId = null
         b.progress.isVisible = false
-        b.status.text = when (outcome) {
-            is SendOutcome.Declined -> getString(R.string.declined, SafeText.label(peer.device.name))
-            else -> getString(R.string.send_failed, result.exceptionOrNull()?.message ?: "?")
+        val error = result.exceptionOrNull()
+        if (error != null) Log.w(TAG, "send to ${peer.address.hostAddress}:${peer.port} failed", error)
+        b.status.text = when {
+            outcome is SendOutcome.Declined -> getString(R.string.declined, SafeText.label(peer.device.name))
+            // Usually the PC firewall or another network: say what to do, keep details in logcat.
+            isUnreachable(error) -> getString(R.string.send_unreachable, SafeText.label(peer.device.name))
+            else -> getString(R.string.send_failed, error?.message ?: "?")
         }
     }
 
+    /** Connection never opened: connect timeout / refused / no route (not a mid-transfer timeout). */
+    private fun isUnreachable(error: Throwable?): Boolean =
+        error is PeerUnreachableException || error is ConnectException || error is NoRouteToHostException
+
     companion object {
+        private const val TAG = "HoppySend"
         private const val EXTRA_PEER = "app.hoppy.PEER_ID"
         private const val EXTRA_TOKEN = "app.hoppy.TOKEN"
         private const val PRESELECT_TIMEOUT_MS = 6_000L

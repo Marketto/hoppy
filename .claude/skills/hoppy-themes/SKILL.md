@@ -16,6 +16,7 @@ Spec and palettes: `docs/design/themes.md`. Decision: `docs/decisions/0005-five-
 | First-run picker | `ui/ThemePickerActivity.kt`, `res/layout/activity_theme_picker.xml`, `item_theme_card.xml` |
 | Animated views | `ui/theme/ThemeBackgroundView.kt`, `MascotStageView.kt`, `MascotView.kt`, `HoppyButton.kt`, `ShineDrawable.kt`, `ButtonFx.kt`, `HomeDecor.kt`, `Motion.kt` |
 | Mascots + animations (generated) | `tools/gen_mascots.py` → `res/drawable/mascot_*.xml`, `res/animator/mascot_*.xml`, `assets/brand/` |
+| App icon (generated) | `tools/gen_mascots.py` (`ICON_*`) → `res/drawable/ic_launcher_{background,foreground,monochrome}.xml`, `assets/brand/hoppy-icon.svg`; then `tools/gen_icons.py` → `assets/brand/hoppy.ico`, `hoppy-512.png`. Spec: `docs/design/themes.md` "App icon" |
 | Japanese decor copy | `res/values/decor.xml` |
 | Music (generated) | `tools/gen_music.py` → `res/raw/music_<theme>_<idle\|transfer\|done>.ogg`, `assets/music/desktop_*.wav`, `assets/music/manifest.json` |
 | Fonts (generated, OFL) | `tools/fonts.py` → `res/font/*.ttf`, licences in `apps/android/app/src/main/assets/licenses/fonts/` |
