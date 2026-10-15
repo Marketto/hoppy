@@ -12,3 +12,10 @@ authors = ["Marco Ricupero"]
 lto = true
 codegen-units = 1
 strip = true
+
+# Static library for iOS (apps/ios/build-xcframework.sh, `--profile ffi`): like release, but
+# never strip (a stripped archive loses its exported C symbols) and thin LTO.
+[profile.ffi]
+inherits = "release"
+strip = false
+lto = "thin"

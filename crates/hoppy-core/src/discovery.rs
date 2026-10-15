@@ -37,7 +37,7 @@ const SWEEP_PACING: Duration = Duration::from_millis(2);
 /// `refresh()` sweeps at most this often.
 const SWEEP_MIN_GAP: Duration = Duration::from_secs(3);
 /// Upper bound of sweep targets over all interfaces.
-pub const MAX_SWEEP_HOSTS: usize = 1024;
+pub const MAX_SWEEP_HOSTS: usize = 256;
 
 /// Unicast discovery for nodes that cannot send or hear multicast/broadcast (spec §2.1).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -164,7 +164,10 @@ impl Inner {
     fn known_udp(&self) -> Vec<SocketAddr> {
         let mut map = self.peers.lock().expect("peer map poisoned");
         map.retain(|_, s| s.last.elapsed() < PEER_TTL);
-        map.values().map(|s| s.udp).collect()
+        map.values()
+            .map(|s| s.udp)
+            .filter(|udp| is_local_address(udp.ip()))
+            .collect()
     }
 
     /// A node whose datagrams do not reach everyone by multicast (sweeping, or multicast
@@ -772,6 +775,9 @@ fn tx_loop(inner: &Inner, stop: &AtomicBool) {
         if now >= next_periodic {
             if inner.port() == 0 {
                 inner.send_everywhere(MessageKind::Query);
+            } else if !inner.sweeping() {
+                // Without multicast the known peers get the announce by unicast too.
+                inner.send_everywhere(MessageKind::Announce);
             } else {
                 send_all(
                     &inner.socket,
@@ -779,14 +785,12 @@ fn tx_loop(inner: &Inner, stop: &AtomicBool) {
                     MessageKind::Announce,
                     inner.port(),
                 );
-                if inner.sweeping() {
-                    // Known peers answer a query with an announce: both sides stay fresh.
-                    let q =
-                        DiscoveryMessage::new(MessageKind::Query, &inner.config.me, inner.port());
-                    let payload = q.encode();
-                    for udp in inner.known_udp() {
-                        let _ = inner.socket.send_to(&payload, udp);
-                    }
+                // Sweeping: known peers get a query instead, which they answer with an
+                // announce (both sides stay fresh; the query also registers us).
+                let q = DiscoveryMessage::new(MessageKind::Query, &inner.config.me, inner.port());
+                let payload = q.encode();
+                for udp in inner.known_udp() {
+                    let _ = inner.socket.send_to(&payload, udp);
                 }
             }
             next_periodic = now + ANNOUNCE_INTERVAL;
@@ -818,18 +822,113 @@ fn sweep_due(last: Option<Instant>, now: Instant, requested: bool) -> bool {
     }
 }
 
-/// Up, broadcast-capable (not point-to-point: no cellular, no VPN tunnels), non-loopback
-/// IPv4 interfaces as (address, netmask).
+/// An IPv4 interface as the sweep sees it (pure input of [`select_sweep_interfaces`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweepInterface {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub netmask: Ipv4Addr,
+    pub up: bool,
+    pub point_to_point: bool,
+    pub broadcast: bool,
+}
+
+/// Name prefixes/fragments of interfaces never swept: containers, VMs, VPNs, cellular, Apple
+/// peer-to-peer links. (if-addrs does not expose the Windows IfType, so WWAN adapters are
+/// caught by name, by having no broadcast address, or by not carrying the default route.)
+const VIRTUAL_INTERFACE_HINTS: [&str; 22] = [
+    "docker",
+    "virbr",
+    "vboxnet",
+    "vmnet",
+    "veth",
+    "br-",
+    "cni",
+    "flannel",
+    "tailscale",
+    "zt",
+    "wg",
+    "tun",
+    "tap",
+    "utun",
+    "awdl",
+    "llw",
+    "pdp_ip",
+    "rmnet",
+    "wwan",
+    "vethernet",
+    "virtualbox",
+    "vmware",
+];
+const CELLULAR_HINTS: [&str; 3] = ["cellular", "mobile broadband", "cellulare"];
+
+fn looks_virtual(name: &str) -> bool {
+    let n = name.to_lowercase();
+    VIRTUAL_INTERFACE_HINTS
+        .iter()
+        .any(|h| n.starts_with(h) || (h.len() > 4 && n.contains(h)))
+        || CELLULAR_HINTS.iter().any(|h| n.contains(h))
+}
+
+/// Which interfaces to sweep: up, broadcast-capable, not point-to-point, not loopback,
+/// private address, not an obvious virtual/VPN/cellular adapter; and if one of them carries
+/// the default route (`default_ip`), only that one.
+pub fn select_sweep_interfaces(
+    all: &[SweepInterface],
+    default_ip: Option<Ipv4Addr>,
+) -> Vec<(Ipv4Addr, Ipv4Addr)> {
+    let usable: Vec<&SweepInterface> = all
+        .iter()
+        .filter(|i| {
+            i.up && i.broadcast
+                && !i.point_to_point
+                && !i.ip.is_loopback()
+                && i.ip.is_private()
+                && !looks_virtual(&i.name)
+        })
+        .collect();
+    let preferred: Vec<&SweepInterface> = usable
+        .iter()
+        .copied()
+        .filter(|i| Some(i.ip) == default_ip)
+        .collect();
+    let chosen = if preferred.is_empty() {
+        usable
+    } else {
+        preferred
+    };
+    chosen.iter().map(|i| (i.ip, i.netmask)).collect()
+}
+
+/// The local address the OS would use for the default route (no packet is sent: a UDP
+/// "connect" only picks a route). `None` without a default route.
+fn default_route_ip() -> Option<Ipv4Addr> {
+    let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    probe.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?; // TEST-NET-1
+    match probe.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
+/// The interfaces this machine sweeps now (see [`select_sweep_interfaces`]).
 pub fn sweep_interfaces() -> Vec<(Ipv4Addr, Ipv4Addr)> {
-    if_addrs::get_if_addrs()
+    let all: Vec<SweepInterface> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| !i.is_loopback() && !i.is_p2p())
-        .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(v4) if v4.broadcast.is_some() => Some((v4.ip, v4.netmask)),
+        .filter_map(|i| match &i.addr {
+            if_addrs::IfAddr::V4(v4) => Some(SweepInterface {
+                name: i.name.clone(),
+                ip: v4.ip,
+                netmask: v4.netmask,
+                up: i.is_oper_up(),
+                point_to_point: i.is_p2p(),
+                broadcast: v4.broadcast.is_some(),
+            }),
             _ => None,
         })
-        .collect()
+        .collect();
+    select_sweep_interfaces(&all, default_route_ip())
 }
 
 /// Hosts a sweep queries (spec §2.1): for each interface with a private RFC 1918 address,
@@ -1042,6 +1141,58 @@ mod tests {
             .map(|i| (Ipv4Addr::new(10, 0, i, 1), v4("255.255.255.0")))
             .collect();
         assert_eq!(sweep_targets(&many).len(), MAX_SWEEP_HOSTS);
+        assert_eq!(MAX_SWEEP_HOSTS, 256, "one /24 at most");
+    }
+
+    fn iface(name: &str, ip: &str) -> SweepInterface {
+        SweepInterface {
+            name: name.into(),
+            ip: v4(ip),
+            netmask: v4("255.255.255.0"),
+            up: true,
+            point_to_point: false,
+            broadcast: true,
+        }
+    }
+
+    #[test]
+    fn sweep_interface_selection() {
+        let wifi = iface("en0", "192.168.1.20");
+        let mut down = iface("eth1", "192.168.5.2");
+        down.up = false;
+        let mut p2p = iface("ppp0", "10.64.0.2");
+        p2p.point_to_point = true;
+        let mut nobcast = iface("Ethernet 3", "10.9.0.2");
+        nobcast.broadcast = false;
+        let all = vec![
+            wifi.clone(),
+            down,
+            p2p,
+            nobcast,
+            iface("docker0", "172.17.0.1"),
+            iface("virbr0", "192.168.122.1"),
+            iface("vboxnet0", "192.168.56.1"),
+            iface("vEthernet (Default Switch)", "172.25.16.1"),
+            iface("VirtualBox Host-Only Network", "192.168.57.1"),
+            iface("Cellular", "10.20.30.40"),
+            iface("pdp_ip0", "10.1.1.1"),
+            iface("lo", "127.0.0.1"),
+            iface("Wi-Fi 2", "8.8.4.4"),
+        ];
+        let only = vec![(wifi.ip, wifi.netmask)];
+        assert_eq!(select_sweep_interfaces(&all, None), only);
+        assert_eq!(select_sweep_interfaces(&all, Some(wifi.ip)), only);
+        // Two real LANs: the one with the default route wins; without one, both.
+        let eth = iface("Ethernet", "10.0.0.5");
+        let both = vec![wifi.clone(), eth.clone()];
+        assert_eq!(
+            select_sweep_interfaces(&both, Some(eth.ip)),
+            vec![(eth.ip, eth.netmask)]
+        );
+        assert_eq!(
+            select_sweep_interfaces(&both, Some(v4("100.70.1.1"))).len(),
+            2
+        );
     }
 
     #[test]

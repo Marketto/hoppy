@@ -76,9 +76,10 @@ Apple's multicast entitlement, ADR 0009) MAY discover by unicast:
 1. **Sweep**: send `query` (its current `port`) to `47470` of every host of each local IPv4
    subnet with a private RFC 1918 address (10/8, 172.16/12, 192.168/16), limited to the /24
    around its own address (a wider subnet is narrowed to that /24; /31 and /32 are skipped),
-   skipping its own address and the network/broadcast addresses, only on broadcast-capable
-   interfaces (no cellular, no point-to-point VPN). At most 1024 targets, paced (≈ 2 ms
-   apart). At start, then every 10 s (shorter than the 15 s peer expiry, so nodes that
+   skipping its own address and the network/broadcast addresses, only on interfaces that
+   are up and broadcast-capable (no cellular, no point-to-point VPN, no obvious virtual
+   adapters such as docker0, virbr0, vboxnet, Hyper-V vEthernet), preferring the one that
+   carries the default route. At most 256 targets (one /24), paced (≈ 2 ms apart). At start, then every 10 s (shorter than the 15 s peer expiry, so nodes that
    only hear it through the sweep keep listing it), and on user refresh (at most every 3 s).
    Seeds (rule 2) still get every message.
 2. Receivers answer each `query` with a unicast `announce` and record the sweeping node as a
@@ -87,7 +88,9 @@ Apple's multicast entitlement, ADR 0009) MAY discover by unicast:
    node that does not multicast sends `bye`/`announce` for state changes to its known peers
    by unicast too (e.g. `bye` when it stops receiving or quits).
 4. A send-only node on an ephemeral port (rule 6) never hears these nodes' unicast
-   `announce`, so desktop send-only processes without explicit seeds sweep as well.
+   `announce`, so desktop send-only processes without explicit seeds sweep as well
+   (opt out: `hoppy --no-sweep`, or `HOPPY_NO_SWEEP=1` for `hoppyw` too).
+5. Unicast to known peers goes only to local addresses (spec §6 ranges).
 
 Implementation: `Sweep` in `crates/hoppy-core/src/discovery.rs` (`sweep_targets`, tested);
 Kotlin and Python do not sweep (Android's node is bound to 47470 and hears sweep queries).

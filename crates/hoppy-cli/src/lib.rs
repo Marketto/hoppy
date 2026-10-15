@@ -85,11 +85,29 @@ pub fn start_discovery_on(
     Discovery::start(cfg).context("starting discovery (is the UDP port blocked?)")
 }
 
+/// `hoppy --no-sweep` (see [`sweep_for`]).
+static NO_SWEEP: AtomicBool = AtomicBool::new(false);
+
+/// Turns the unicast sweep off for this process (`--no-sweep`).
+pub fn disable_sweep() {
+    NO_SWEEP.store(true, Ordering::Relaxed);
+}
+
 /// A send-only node on an ephemeral port never hears the unicast announces of an iPhone/iPad
-/// (which cannot multicast, spec §2.1), so it sweeps the local subnet with unicast queries
-/// and the iPad answers. Explicit seeds (tests, interop, `--seed`) turn the sweep off.
+/// (which cannot multicast, spec §2.1), so it sweeps the local /24 with unicast queries and
+/// the iPad answers. Off with explicit seeds (tests, interop, `--seed`), `--no-sweep`, or the
+/// environment variable `HOPPY_NO_SWEEP` (any non-empty value but `0`).
 pub fn sweep_for(transfer_port: u16, seeds: &[SocketAddr]) -> Sweep {
-    if transfer_port == 0 && seeds.is_empty() {
+    let env_off = std::env::var("HOPPY_NO_SWEEP").is_ok_and(|v| !v.is_empty() && v != "0");
+    sweep_choice(
+        transfer_port,
+        seeds,
+        NO_SWEEP.load(Ordering::Relaxed) || env_off,
+    )
+}
+
+fn sweep_choice(transfer_port: u16, seeds: &[SocketAddr], disabled: bool) -> Sweep {
+    if transfer_port == 0 && seeds.is_empty() && !disabled {
         Sweep::LocalSubnets
     } else {
         Sweep::Off
@@ -268,10 +286,15 @@ mod tests {
 
     #[test]
     fn only_seedless_senders_sweep() {
-        assert_eq!(sweep_for(0, &[]), Sweep::LocalSubnets);
-        assert_eq!(sweep_for(47471, &[]), Sweep::Off);
+        assert_eq!(sweep_choice(0, &[], false), Sweep::LocalSubnets);
+        assert_eq!(
+            sweep_choice(0, &[], true),
+            Sweep::Off,
+            "--no-sweep / HOPPY_NO_SWEEP"
+        );
+        assert_eq!(sweep_choice(47471, &[], false), Sweep::Off);
         let seed = parse_seeds(&["10.0.0.3".into()]).unwrap();
-        assert_eq!(sweep_for(0, &seed), Sweep::Off);
+        assert_eq!(sweep_choice(0, &seed, false), Sweep::Off);
     }
 
     #[test]

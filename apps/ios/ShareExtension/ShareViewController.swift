@@ -55,6 +55,7 @@ final class ShareModel: ObservableObject {
     }
 
     func load(_ providers: [NSItemProvider]) {
+        Outbox.clear() // leftovers of an extension killed mid-send
         startNode()
         Outbox.stage(providers) { [weak self] urls in
             self?.files = urls

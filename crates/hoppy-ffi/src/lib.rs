@@ -15,7 +15,7 @@
 //! - `peers`: `{"peers":[{"id","name","platform","addr"}]}` whenever the list changes.
 //! - `receiving`: `{"on":bool,"port":u16}` after `hoppy_node_set_receiving`.
 //! - `offer`: `{"offer":u64,"from":{"name","platform"},"files":[{"name","size"}],"count","total"}`
-//!   — answer with `hoppy_node_decide` within `decision_timeout_secs` (default 110 s) or it
+//!   — answer with `hoppy_node_decide` within `decision_timeout_secs` (default 110 s, 1–115) or it
 //!   is declined (invariant 3: never auto-accept). Names are already display-safe.
 //! - `offer_closed`: `{"offer":u64}` — timed out or the node stopped.
 //! - `receive_progress`: `{"done","total"}` (throttled).
@@ -53,6 +53,11 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(150);
 const OFFER_FILES_SHOWN: usize = 50;
 const NAME_MAX: usize = 64;
 const FILE_NAME_MAX: usize = 120;
+/// Own identity limits (bytes): ids are UUIDs, platforms short words.
+const ID_MAX_BYTES: usize = 64;
+const PLATFORM_MAX_BYTES: usize = 16;
+/// The sender waits 120 s for the decision (core): answer (or decline) before that.
+const DECISION_TIMEOUT_MAX: u64 = 115;
 
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -336,8 +341,13 @@ fn peer_json(p: &Peer) -> Value {
 impl Node {
     fn start(config: &str, callback: EventCallback, ctx: usize) -> Result<Node, String> {
         let cfg: Config = serde_json::from_str(config).map_err(|e| format!("config: {e}"))?;
-        if cfg.id.trim().is_empty() {
-            return Err("config: empty id".into());
+        if cfg.id.trim().is_empty() || cfg.id.len() > ID_MAX_BYTES {
+            return Err(format!("config: id must be 1..={ID_MAX_BYTES} bytes"));
+        }
+        if cfg.platform.is_empty() || cfg.platform.len() > PLATFORM_MAX_BYTES {
+            return Err(format!(
+                "config: platform must be 1..={PLATFORM_MAX_BYTES} bytes"
+            ));
         }
         let me = DeviceInfo {
             id: cfg.id.clone(),
@@ -368,7 +378,9 @@ impl Node {
             asking: Mutex::new(Asking::default()),
             answered: Condvar::new(),
             next_offer: AtomicU64::new(1),
-            decision_timeout: Duration::from_secs(cfg.decision_timeout_secs.max(1)),
+            decision_timeout: Duration::from_secs(
+                cfg.decision_timeout_secs.clamp(1, DECISION_TIMEOUT_MAX),
+            ),
             senders: Mutex::new(HashMap::new()),
             last_progress: Mutex::new(HashMap::new()),
         });
@@ -605,6 +617,11 @@ unsafe fn read_str(s: *const c_char) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Runs an FFI body; a panic becomes `fallback` instead of unwinding into C/Swift.
+fn guard<T>(fallback: T, body: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(fallback)
+}
+
 fn to_c(s: String) -> *mut c_char {
     CString::new(s).map_or(ptr::null_mut(), CString::into_raw)
 }
@@ -636,10 +653,11 @@ pub unsafe extern "C" fn hoppy_node_start(
     let Some(callback) = callback else {
         return fail("no callback".into());
     };
-    match std::panic::catch_unwind(|| Node::start(&config, callback, ctx as usize)) {
-        Ok(Ok(node)) => Box::into_raw(Box::new(node)),
-        Ok(Err(e)) => fail(e),
-        Err(_) => fail("internal error".into()),
+    match guard(Err("internal error".into()), || {
+        Node::start(&config, callback, ctx as usize)
+    }) {
+        Ok(node) => Box::into_raw(Box::new(node)),
+        Err(e) => fail(e),
     }
 }
 
@@ -656,7 +674,7 @@ pub unsafe extern "C" fn hoppy_node_stop(node: *mut Node) {
     }
     // SAFETY: caller contract (ownership returns to Rust).
     let node = unsafe { Box::from_raw(node) };
-    node.shutdown();
+    guard((), move || node.shutdown());
 }
 
 /// `{"id","name","platform","udp_port","tcp_port"}` (tcp_port 0 = not receiving).
@@ -666,10 +684,10 @@ pub unsafe extern "C" fn hoppy_node_stop(node: *mut Node) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hoppy_node_info(node: *const Node) -> *mut c_char {
     // SAFETY: caller contract.
-    match unsafe { node.as_ref() } {
-        Some(n) => to_c(n.info().to_string()),
-        None => ptr::null_mut(),
-    }
+    let node = unsafe { node.as_ref() };
+    guard(ptr::null_mut(), || {
+        node.map_or(ptr::null_mut(), |n| to_c(n.info().to_string()))
+    })
 }
 
 /// Current peers as a JSON array (same items as the `peers` event).
@@ -679,10 +697,10 @@ pub unsafe extern "C" fn hoppy_node_info(node: *const Node) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hoppy_node_peers(node: *const Node) -> *mut c_char {
     // SAFETY: caller contract.
-    match unsafe { node.as_ref() } {
-        Some(n) => to_c(n.peers().to_string()),
-        None => ptr::null_mut(),
-    }
+    let node = unsafe { node.as_ref() };
+    guard(ptr::null_mut(), || {
+        node.map_or(ptr::null_mut(), |n| to_c(n.peers().to_string()))
+    })
 }
 
 /// Queries everyone again and re-sweeps the subnet (rate-limited).
@@ -693,7 +711,7 @@ pub unsafe extern "C" fn hoppy_node_peers(node: *const Node) -> *mut c_char {
 pub unsafe extern "C" fn hoppy_node_refresh(node: *const Node) {
     // SAFETY: caller contract.
     if let Some(n) = unsafe { node.as_ref() } {
-        n.discovery.refresh();
+        guard((), || n.discovery.refresh());
     }
 }
 
@@ -704,10 +722,11 @@ pub unsafe extern "C" fn hoppy_node_refresh(node: *const Node) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hoppy_node_set_receiving(node: *const Node, on: bool) -> i32 {
     // SAFETY: caller contract.
-    match unsafe { node.as_ref() }.map(|n| n.set_receiving(on)) {
+    let node = unsafe { node.as_ref() };
+    guard(-1, || match node.map(|n| n.set_receiving(on)) {
         Some(Ok(port)) => i32::from(port),
         _ => -1,
-    }
+    })
 }
 
 /// Sends files (JSON array of absolute paths) to the peer with `peer_id`. Returns the
@@ -729,13 +748,15 @@ pub unsafe extern "C" fn hoppy_node_send(
     ) else {
         return 0;
     };
-    let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(&paths) else {
-        return 0;
-    };
-    if paths.is_empty() {
-        return 0;
-    }
-    n.send(peer, paths)
+    guard(0, || {
+        let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(&paths) else {
+            return 0;
+        };
+        if paths.is_empty() {
+            return 0;
+        }
+        n.send(peer, paths)
+    })
 }
 
 /// Answers the `offer` event `offer`. Returns false if it is no longer pending.
@@ -745,7 +766,10 @@ pub unsafe extern "C" fn hoppy_node_send(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hoppy_node_decide(node: *const Node, offer: u64, accept: bool) -> bool {
     // SAFETY: caller contract.
-    unsafe { node.as_ref() }.is_some_and(|n| n.shared.answer(offer, accept))
+    let node = unsafe { node.as_ref() };
+    guard(false, || {
+        node.is_some_and(|n| n.shared.answer(offer, accept))
+    })
 }
 
 /// Frees a string returned by this library.

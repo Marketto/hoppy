@@ -12,12 +12,12 @@ root=$(cd "$here/../.." && pwd)
 profile=${1:-release}
 out="$here/build"
 export IPHONEOS_DEPLOYMENT_TARGET=15.0
-# The workspace release profile strips symbols; a static library must keep its exports.
-export CARGO_PROFILE_RELEASE_STRIP=false
 
+# `release` uses the workspace's `ffi` profile (release without strip: a stripped static
+# library has no exported C symbols left).
 flag=()
 dir=debug
-if [[ $profile == release ]]; then flag=(--release); dir=release; fi
+if [[ $profile == release ]]; then flag=(--profile ffi); dir=ffi; fi
 
 cd "$root"
 for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
@@ -54,8 +54,18 @@ for f in "target/aarch64-apple-ios/$dir/$lib" "$out/sim/$lib"; do
     exit 1
   fi
 done
-# The C entry points must be exported (a stripped archive links with "undefined symbol").
-syms=$(nm -gU "target/aarch64-apple-ios/$dir/$lib" 2>/dev/null || true)
-grep -q '_hoppy_node_start$' <<<"$syms" ||
-  { echo "error: _hoppy_node_start is not exported by $lib" >&2; exit 1; }
+# The C entry points must be exported (global, defined) in every slice, or Xcode links with
+# "undefined symbol". Output saved first: `nm | grep -q` would trip pipefail.
+for f in "target/aarch64-apple-ios/$dir/$lib" "$out/sim/$lib"; do
+  syms=$(nm -g "$f" 2>/dev/null || true)
+  if ! grep -Eq '[[:space:]][TS][[:space:]]+_hoppy_node_start$' <<<"$syms"; then
+    echo "error: _hoppy_node_start is not exported by $f" >&2
+    echo "nm -g lines mentioning hoppy_:" >&2
+    grep 'hoppy_' <<<"$syms" | head -n 20 >&2 || true
+    all=$(nm -a "$f" 2>/dev/null || true)
+    echo "nm -a lines mentioning hoppy_node_start (lowercase t = local):" >&2
+    grep 'hoppy_node_start' <<<"$all" | head -n 5 >&2 || true
+    exit 1
+  fi
+done
 echo "wrote $out/HoppyFFI.xcframework"

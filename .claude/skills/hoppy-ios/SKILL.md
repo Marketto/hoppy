@@ -42,6 +42,10 @@ UX, install (Sideloadly), limits, manual test plan: `docs/platforms/ios.md`. Dec
   (`NavigationStack`, `.autocorrectionDisabled`, alert text fields…) without `#available`.
 - Every user string in `Shared/{en,it}.lproj/Localizable.strings(dict)` (same keys and
   format specifiers; checked). Keep `site/howto.js` (iOS flow) identical to the real UI text.
+- The release xcframework is built with the workspace's `[profile.ffi]` (release without
+  `strip`: a stripped static library loses its C exports; `build-xcframework.sh` checks
+  `_hoppy_node_start` with `nm -g` in every slice). Every `extern "C"` body runs in `guard`
+  (no panic crosses the boundary); callbacks never call back into the node synchronously.
 - Generated files (`AppIcon-1024.png`, `Mascots.xcassets`, `desktop_done.wav`): never hand-edit.
 - Asset name is a contract (`docs/release.md`): `Hoppy-ios-unsigned.ipa`. Bundle ids
   `app.hoppy.ios`, `app.hoppy.ios.share`.

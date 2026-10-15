@@ -51,7 +51,9 @@ week). From a Mac, Sideloadly works the same way.
   `announce` and lists the sender (spec §2 rule 3): the iPad sees them, they see the iPad.
   While receiving, it queries its known peers every 5 s and says `bye` to them when it stops.
   Desktop "Send with Hoppy" processes also sweep (they listen on an ephemeral port), so the
-  iPad appears in their device menu; Android hears the iPad's sweeps on its shared node.
+  iPad appears in their device menu (opt out: `HOPPY_NO_SWEEP=1` / `hoppy --no-sweep`);
+  Android hears the iPad's sweeps on its shared node. Only the interface carrying the
+  default route is swept when there is one (never cellular, VPN or virtual adapters).
 - **Receiving.** Only while Hoppy is open (iOS has no background listening for this kind of
   app). The node starts when the app becomes active and stops (`bye`) when it goes to the
   background; a running transfer gets iOS's ~30 s to finish, and the screen does not lock
@@ -59,7 +61,8 @@ week). From a Mac, Sideloadly works the same way.
   sender, count, size and up to 5 names: **Rifiuta/Decline** is the bold cancel action,
   **Accetta/Accept** the other; no answer in 110 s = declined; a second offer meanwhile is
   declined. Files are written as `.hoppy-part` and published after the SHA-256 matches
-  (core), into the app's **Documents**: Files → On My iPad → Hoppy. The card "Ricevuti N file
+  (core; leftover `.hoppy-part` files of a transfer iOS cut off are deleted at the next
+  start), into the app's **Documents**: Files → On My iPad → Hoppy. The card "Ricevuti N file
   da …" offers **Apri** (Quick Look), **Condividi**, **Mostra in File**.
 - **Sending.** *Invia file* → *Scegli file* (Files picker, copies) or *Foto e video* (Photos
   picker, originals: HEIC/HEVC), then the **Invia a** sheet; or tap a device first, then pick.

@@ -101,6 +101,7 @@ final class AppModel: ObservableObject {
 
     func startNode() {
         guard node == nil, !isTesting else { return }
+        removeStaleParts()
         var config = HoppyConfig(id: Identity.deviceId, name: deviceName)
         config.receive_dir = receiveDir.path
         config.receive = receiving
@@ -112,6 +113,16 @@ final class AppModel: ObservableObject {
             startError = nil
         } catch {
             startError = error.localizedDescription
+        }
+    }
+
+    /// A transfer cut off by iOS (app killed while suspended) can leave `*.hoppy-part` files
+    /// in Documents (visible in Files). No transfer runs while the node is down: delete them.
+    private func removeStaleParts() {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: receiveDir, includingPropertiesForKeys: nil) else { return }
+        for item in items where item.lastPathComponent.hasSuffix(".hoppy-part") {
+            try? fm.removeItem(at: item)
         }
     }
 

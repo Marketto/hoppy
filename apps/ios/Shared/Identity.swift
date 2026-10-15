@@ -47,18 +47,26 @@ enum Identity {
     }
 
     static func remember(_ peers: [HoppyPeer]) {
-        var list = recentIPs
-        for p in peers where isIPv4(p.addr) {
+        var list = recentIPs.filter(isPrivateIPv4)
+        for p in peers where isPrivateIPv4(p.addr) {
             list.removeAll { $0 == p.addr }
             list.insert(p.addr, at: 0)
         }
         if list != recentIPs { recentIPs = list }
     }
 
+    /// Manual entries as typed, recent peers only from private LAN ranges.
     static var seeds: [String] {
         var out: [String] = []
-        for ip in manualIPs + recentIPs where !out.contains(ip) { out.append(ip) }
+        for ip in manualIPs + recentIPs.filter(isPrivateIPv4) where !out.contains(ip) { out.append(ip) }
         return out
+    }
+
+    /// 10/8, 172.16/12, 192.168/16 (where Hoppy's LAN peers live).
+    static func isPrivateIPv4(_ s: String) -> Bool {
+        guard isIPv4(s) else { return false }
+        let o = s.split(separator: ".").compactMap { Int($0) }
+        return o[0] == 10 || (o[0] == 172 && (16...31).contains(o[1])) || (o[0] == 192 && o[1] == 168)
     }
 
     static func isIPv4(_ s: String) -> Bool {

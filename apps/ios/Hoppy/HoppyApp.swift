@@ -2,6 +2,14 @@ import SwiftUI
 
 @main
 struct HoppyApp: App {
+    static func isInOwnInbox(_ url: URL) -> Bool {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let inbox = docs.appendingPathComponent("Inbox", isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        let opened = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return opened.hasPrefix(inbox + "/")
+    }
+
     @StateObject private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -15,8 +23,9 @@ struct HoppyApp: App {
                     if let staged = try? Outbox.stage(url) {
                         model.offerToSend([staged])
                     }
-                    // Files iOS copied into Documents/Inbox are ours to delete.
-                    if url.path.contains("/Documents/Inbox/") { try? FileManager.default.removeItem(at: url) }
+                    // A copy iOS put into our own Documents/Inbox is ours to delete; a file
+                    // opened in place (LSSupportsOpeningDocumentsInPlace) never is.
+                    if Self.isInOwnInbox(url) { try? FileManager.default.removeItem(at: url) }
                 }
         }
         .onChange(of: scenePhase) { phase in

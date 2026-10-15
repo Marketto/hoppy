@@ -31,6 +31,10 @@ struct Cli {
     /// Extra peer/discovery address (IP or IP:PORT) for networks without multicast.
     #[arg(long, global = true)]
     seed: Vec<String>,
+    /// Never sweep the local subnet with unicast queries (also: HOPPY_NO_SWEEP=1). Without
+    /// the sweep an iPhone/iPad is not found by `send`/`peers` (docs/protocol.md §2.1).
+    #[arg(long, global = true)]
+    no_sweep: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -152,6 +156,9 @@ fn run(cli: Cli) -> Result<()> {
     let identity = config::load_or_create()?;
     let me = config::device_info(&identity);
     let seeds = parse_seeds(&cli.seed)?;
+    if cli.no_sweep {
+        hoppy::disable_sweep();
+    }
     match cli.command {
         Command::Send {
             files,

@@ -4,8 +4,12 @@
  * exported functions. JSON formats and the event list: crates/hoppy-ffi/src/lib.rs.
  *
  * Threading: every function may be called from any thread, but hoppy_node_stop must not
- * race other calls on the same node. Events arrive on background threads; the callback
- * must return quickly and must not call hoppy_node_stop itself.
+ * race other calls on the same node. Events arrive on background threads, one at a time
+ * under an internal lock: the callback must return quickly and must NEVER call back into
+ * the node synchronously (no hoppy_* call from inside the callback: hoppy_node_stop would
+ * deadlock); hop to another queue first (the Swift wrapper uses the main queue).
+ * A Rust panic never unwinds into the caller: the function returns its error value
+ * (NULL, -1, 0 or false).
  */
 #ifndef HOPPY_H
 #define HOPPY_H
@@ -22,7 +26,8 @@ typedef struct HoppyNode HoppyNode;
 /* event_json is valid only during the call. */
 typedef void (*hoppy_event_cb)(void *ctx, const char *event_json);
 
-/* Starts a node from a JSON config: {"id","name","platform"?,"receive_dir"?,"udp_port"?,
+/* Starts a node from a JSON config (id ≤ 64 bytes, platform ≤ 16, decision_timeout_secs
+ * 1..=115, default 110): {"id","name","platform"?,"receive_dir"?,"udp_port"?,
  * "tcp_port"?,"receive"?,"multicast"?,"sweep"?,"seeds"?,"decision_timeout_secs"?}.
  * NULL on failure; *error_out (if not NULL) then gets a message to free. */
 HoppyNode *hoppy_node_start(const char *config_json, hoppy_event_cb callback, void *ctx,

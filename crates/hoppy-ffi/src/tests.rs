@@ -237,11 +237,15 @@ fn unanswered_offer_is_declined() {
 #[test]
 fn bad_input_is_rejected_not_crashed() {
     let events = Events::default();
+    let long_id = format!(r#"{{"id":"{}","name":"x"}}"#, "a".repeat(65));
     for bad in [
         "{",
         r#"{"name":"x"}"#,
         r#"{"id":"","name":"x"}"#,
         r#"{"id":"a","name":"x","sweep":3}"#,
+        long_id.as_str(),
+        r#"{"id":"a","name":"x","platform":"a-very-long-platform"}"#,
+        r#"{"id":"a","name":"x","platform":""}"#,
     ] {
         let config = CString::new(bad).unwrap();
         let mut err: *mut c_char = ptr::null_mut();
