@@ -8,7 +8,9 @@ Original 16-bit-style chiptunes, one set per theme, synthesised from note data b
 
 Needs `pip install numpy soundfile`. Android files live in
 `apps/android/app/src/main/res/raw/` (Vorbis, 22050 Hz mono); the desktop set here is the
-Purikura music as 8-bit 16 kHz WAV for `PlaySoundW`. `manifest.json` lists exact lengths.
+Purikura music as 8-bit 16 kHz WAV for `PlaySoundW`. The download portal's quieter `portal`
+loop is in `site/music/` (Vorbis + MP3, 32 kHz mono, with `portal.json` for the player).
+`manifest.json` lists exact lengths.
 Loops are sample-exact and seamless; `done` jingles are one-shots. Playback rules are in
 `docs/design/themes.md` ("Music").
 
@@ -32,5 +34,7 @@ Loops are sample-exact and seamless; `done` jingles are one-shots. Playback rule
 | `desktop_idle` | purikura | idle | D major | 124 | 8 | 15484 | 16000 |
 | `desktop_transfer` | purikura | transfer | D major | 172 | 8 | 11163 | 16000 |
 | `desktop_done` | purikura | done | D major | 160 | – | 2000 | 16000 |
+| `portal.ogg` | portal | loop | Eb major (maj7/add9) | 96 | 16 | 40000 | 32000 |
+| `portal.mp3` | portal | loop | Eb major (maj7/add9) | 96 | 16 | 40000 | 32000 |
 
 Licence: original compositions by the Hoppy contributors, MIT like the rest of the repo.

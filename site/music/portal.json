@@ -1,0 +1,12 @@
+{
+  "sample_rate": 32000,
+  "samples": 1280000,
+  "ms": 40000.0,
+  "bpm": 96,
+  "bars": 16,
+  "bar_ms": 2500.0,
+  "files": {
+    "ogg": "music/portal.ogg",
+    "mp3": "music/portal.mp3"
+  }
+}

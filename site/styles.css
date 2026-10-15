@@ -24,6 +24,11 @@
   --btn-text: #FFFFFF;
   --soon: #EEDDE3;
   --soon-text: #7E4F5E;
+  --music-bg: #FFFFFF;
+  --music-ink: #A82B52;      /* 6.9:1 on white */
+  --music-ring: #A82B52;
+  --music-on-bg: #B8325A;    /* white icon: 5.8:1 */
+  --music-on-ink: #FFFFFF;
   color-scheme: light;
 }
 
@@ -47,6 +52,11 @@
     --btn-text: #062421;
     --soon: #262833;
     --soon-text: #A5A5B3;
+    --music-bg: #1E2027;
+    --music-ink: #4FD1C5;
+    --music-ring: #4FD1C5;
+    --music-on-bg: #4FD1C5;
+    --music-on-ink: #062421;
     color-scheme: dark;
   }
 }
@@ -225,6 +235,31 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
 .foot { max-width: 1120px; margin: 0 auto; padding: 8px 16px 32px; font-size: 14px; color: var(--muted); }
 .foot p { margin: 0; background: var(--card); display: inline-block; padding: 6px 14px; border-radius: 14px; }
 
+/* Floating music toggle (off by default). Bottom-right, clear of the safe area. */
+.music {
+  position: fixed; z-index: 10;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: 52px; height: 52px; padding: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--music-bg); color: var(--music-ink);
+  border: 3px solid var(--music-ring); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  cursor: pointer; transition: transform .15s;
+}
+.music:hover { transform: scale(1.06); }
+.music:active { transform: scale(.94); }
+.music:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+.music[aria-pressed="true"] { background: var(--music-on-bg); color: var(--music-on-ink); }
+.music-note { width: 24px; height: 24px; }
+.eq { display: none; align-items: flex-end; gap: 3px; height: 20px; }
+.eq i { display: block; width: 4px; height: 100%; border-radius: 2px; background: currentColor; transform-origin: 50% 100%; animation: eq 0.9s ease-in-out infinite; }
+.eq i:nth-child(2) { animation-delay: -.3s; }
+.eq i:nth-child(3) { animation-delay: -.6s; }
+@keyframes eq { 0%, 100% { transform: scaleY(.35); } 50% { transform: scaleY(1); } }
+.music.is-playing .music-note { display: none; }
+.music.is-playing .eq { display: inline-flex; }
+.foot { padding-bottom: 88px; }   /* room for the floating button */
+
 @media (max-width: 900px) {
   .hero { grid-template-columns: minmax(0, 1fr); text-align: center; padding-top: 24px; }
   .cta { align-items: center; }
@@ -240,4 +275,7 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+  .eq i:nth-child(1) { transform: scaleY(.55); }
+  .eq i:nth-child(2) { transform: scaleY(1); }
+  .eq i:nth-child(3) { transform: scaleY(.75); }
 }

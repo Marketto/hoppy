@@ -50,6 +50,8 @@
       },
       apkHint: "Apri il file scaricato e consenti l'installazione da questa fonte se il telefono lo chiede.",
       exeHint: "Se Windows mostra un avviso: «Ulteriori informazioni» → «Esegui comunque».",
+      musicOn: "Attiva musica",
+      musicOff: "Disattiva musica",
     },
     en: {
       title: "Send files with a hop.",
@@ -85,6 +87,8 @@
       },
       apkHint: "Open the downloaded file and allow installs from this source if your phone asks.",
       exeHint: "If Windows shows a warning: “More info” → “Run anyway”.",
+      musicOn: "Play music",
+      musicOff: "Pause music",
     },
   };
 
@@ -145,6 +149,109 @@
   }
   const downloadUrl = (asset) => `https://github.com/${cfg.repo}/releases/latest/download/${asset}`;
 
+  // ---------- background music: the `portal` loop from tools/gen_music.py.
+  // Off by default and never autoplayed (WCAG 1.4.2): it starts only from a click on the
+  // button, or, if the visitor turned it on before, at their first interaction here.
+  const music = (() => {
+    const KEY = "hoppy-music";
+    const btn = document.getElementById("music");
+    const AC = window.AudioContext || window.webkitAudioContext;
+    let on = false, ctx = null, gain = null, src = null, loading = null, timer = 0;
+    const api = {
+      label() {
+        const t = T[state.lang];
+        const name = on ? t.musicOff : t.musicOn;
+        btn.setAttribute("aria-label", name);
+        btn.title = name;
+        btn.setAttribute("aria-pressed", String(on));
+      },
+    };
+    if (!AC || !btn) { if (btn) btn.hidden = true; return api; }
+
+    const save = () => { try { localStorage.setItem(KEY, on ? "on" : "off"); } catch (e) { /* ignore */ } };
+    const ramp = (to, secs) => {
+      const now = ctx.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(to, now + secs);
+    };
+    function load() {
+      // Vorbis where supported (gapless everywhere), MP3 otherwise; loop end from portal.json.
+      loading = loading || (async () => {
+        const meta = await (await fetch("music/portal.json")).json();
+        const ogg = new Audio().canPlayType('audio/ogg; codecs="vorbis"') !== "";
+        const data = await (await fetch(ogg ? meta.files.ogg : meta.files.mp3)).arrayBuffer();
+        const buf = await new Promise((ok, ko) => ctx.decodeAudioData(data, ok, ko));
+        return { buf, end: Math.min(meta.samples / meta.sample_rate, buf.duration) };
+      })();
+      loading.catch(() => { loading = null; });
+      return loading;
+    }
+    async function play() {
+      if (!ctx) {
+        ctx = new AC();
+        gain = ctx.createGain();
+        gain.gain.value = 0;
+        gain.connect(ctx.destination);
+      }
+      clearTimeout(timer);
+      const resumed = ctx.resume();            // must be called inside the user gesture
+      btn.classList.add("is-playing");
+      try {
+        await resumed;
+        const { buf, end } = await load();
+        if (!on || document.hidden) return;
+        if (!src) {
+          src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.loop = true;
+          src.loopStart = 0;
+          src.loopEnd = end;
+          src.connect(gain);
+          src.start();
+        }
+        ramp(0.85, 1.5);
+      } catch (e) {
+        btn.classList.remove("is-playing");  // offline or undecodable: stay silent
+      }
+    }
+    function pause(secs) {
+      btn.classList.remove("is-playing");
+      if (!ctx) return;
+      ramp(0, secs);
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (!on || document.hidden) ctx.suspend(); }, secs * 1000 + 60);
+    }
+
+    btn.addEventListener("click", () => {
+      on = !on;
+      save();
+      api.label();
+      if (on) play(); else pause(0.4);
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) pause(0.2);
+      else if (on && ctx) play();
+    });
+
+    let remembered = false;
+    try { remembered = localStorage.getItem(KEY) === "on"; } catch (e) { /* ignore */ }
+    if (remembered) {
+      on = true;
+      const events = ["pointerdown", "pointerup", "touchend", "keydown"];
+      const first = (ev) => {
+        if (btn.contains(ev.target)) return;   // the button's own click decides
+        if (!on) return done();
+        play();
+        if (ctx && ctx.state !== "suspended") done();
+        else if (ctx) ctx.resume().then(() => { if (ctx.state === "running") done(); });
+      };
+      const done = () => events.forEach((e) => document.removeEventListener(e, first, true));
+      events.forEach((e) => document.addEventListener(e, first, true));
+    }
+    return api;
+  })();
+
   // ---------- render
   const state = { lang: pickLang(), env: detect(), release: undefined };
 
@@ -165,6 +272,7 @@
       if (typeof v === "string") el.textContent = v;
     });
     document.getElementById("lang").textContent = state.lang === "it" ? "EN" : "IT";
+    music.label();
 
     // Hero call to action
     const os = state.env.os === "chromeos" ? "android" : state.env.os;
