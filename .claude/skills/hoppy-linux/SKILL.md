@@ -18,6 +18,7 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 | zenity/kdialog argv builders (incl. the verification dialog with Pango markup) | `crates/hoppy-cli/src/linux/dialog.rs` |
 | Verification dialog model (shared) | `crates/hoppy-cli/src/verify.rs` |
 | Self-update (.deb via pkexec, Mac app swap, relaunch helper) | `crates/hoppy-cli/src/unix/selfupdate.rs` |
+| Update check cadence (shared, all desktops) | `crates/hoppy-cli/src/update.rs` (`Cadence`, `check_due`: 30 s, every 3 h, after wake-up, on menu open with a 10-min throttle) + `gui.rs` (`request_update_check`; *About…* dialog `about_dialog` with *Check for updates*) |
 | Per-user right-click entries, launcher, autostart | `crates/hoppy-cli/src/linux/integration.rs` |
 | Jingle players / curl+wget | `crates/hoppy-cli/src/linux/sound.rs`, `crates/hoppy-cli/src/unix/http.rs` (shared with macOS) |
 | Package launcher (kept equal to `integration::launcher_entry` by a test) | `apps/linux/hoppy.desktop` |

@@ -18,7 +18,9 @@
 //!   "Sound when delivered"). The receiver never plays it (its balloon has the system sound). Explorer's "Send with Hoppy" verb starts one instance
 //!   per selected file: the first collects the others' files (`platform::gather_send_files`).
 //!   Without files (desktop shortcut double-clicked) it opens the file picker first.
-//! - Updates: the tray checks GitHub Releases 30 s after start and then daily (`update.rs`);
+//! - Updates: the tray checks GitHub Releases 30 s after start, every 3 h, after a wake-up
+//!   from sleep and when its menu opens (those two at most every 10 min; `update.rs`), and
+//!   at once from "Check for updates" (always answered with a balloon);
 //!   "Update to X…" downloads this platform's package, verifies SHA256SUMS.txt and installs
 //!   it (`platform::fetch_update`): Windows runs the installer silently and exits (the
 //!   installer restarts the tray); macOS replaces /Applications/Hoppy.app and Linux installs
@@ -193,6 +195,15 @@ pub struct Strings {
     pub update_installing: &'static str,
     pub update_cancelled: &'static str,
     pub update_opened: &'static str,
+    pub menu_check_updates: &'static str,
+    pub about_version: &'static str,
+    pub about_dev: &'static str,
+    pub about_author: &'static str,
+    pub about_github: &'static str,
+    pub about_diagnostics: &'static str,
+    pub update_current: &'static str,
+    pub update_found: &'static str,
+    pub update_check_failed: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -249,7 +260,7 @@ pub const IT: Strings = Strings {
     menu_classic: "«Invia con Hoppy» direttamente nel tasto destro (menu classico)",
     menu_login: "Apri all'accesso",
     login_failed: "Impossibile cambiare «Apri all'accesso»",
-    menu_about: "Informazioni e diagnostica…",
+    menu_about: "Informazioni…",
     restart_explorer: "Il nuovo menu del tasto destro compare dopo il riavvio di Esplora risorse (o al prossimo accesso).\n\nRiavviare Esplora risorse ora? Le finestre di Esplora file aperte verranno chiuse.",
     classic_failed: "Impossibile cambiare il menu del tasto destro",
     about_failed: "Impossibile aprire il registro di diagnostica",
@@ -296,6 +307,15 @@ pub const IT: Strings = Strings {
     update_installing: "Installo Hoppy {version}…",
     update_cancelled: "Aggiornamento annullato",
     update_opened: "Completa l'installazione nel programma di installazione del sistema",
+    menu_check_updates: "Controlla aggiornamenti",
+    about_version: "Versione {version}",
+    about_dev: " · sviluppo",
+    about_author: "di {author}",
+    about_github: "Pagina GitHub",
+    about_diagnostics: "Diagnostica",
+    update_current: "Hoppy è aggiornato ({version})",
+    update_found: "Hoppy {version} è disponibile — clic su «{item}»",
+    update_check_failed: "Non riesco a controllare gli aggiornamenti",
 };
 
 pub const EN: Strings = Strings {
@@ -352,7 +372,7 @@ pub const EN: Strings = Strings {
     menu_classic: "\"Send with Hoppy\" directly on right-click (classic menu)",
     menu_login: "Open at login",
     login_failed: "Could not change \"Open at login\"",
-    menu_about: "About & diagnostics…",
+    menu_about: "About…",
     restart_explorer: "The new right-click menu appears after File Explorer restarts (or at the next sign-in).\n\nRestart File Explorer now? Open File Explorer windows will close.",
     classic_failed: "Could not change the right-click menu",
     about_failed: "Could not open the diagnostic log",
@@ -399,6 +419,15 @@ pub const EN: Strings = Strings {
     update_installing: "Installing Hoppy {version}…",
     update_cancelled: "Update cancelled",
     update_opened: "Finish the installation in the system's software installer",
+    menu_check_updates: "Check for updates",
+    about_version: "Version {version}",
+    about_dev: " · development",
+    about_author: "by {author}",
+    about_github: "GitHub page",
+    about_diagnostics: "Diagnostics",
+    update_current: "Hoppy is up to date ({version})",
+    update_found: "Hoppy {version} is available — click “{item}”",
+    update_check_failed: "Can't check for updates",
 };
 
 pub fn strings() -> &'static Strings {
@@ -522,6 +551,41 @@ pub const BTN_ACCEPT: u32 = 2;
 pub const BTN_MATCH: u32 = 3;
 pub const BTN_CLOSE: u32 = 4;
 pub const BTN_FORGET: u32 = 5;
+/// Buttons of the About dialog.
+pub const BTN_CHECK_UPDATES: u32 = 6;
+pub const BTN_GITHUB: u32 = 7;
+pub const BTN_DIAGNOSTICS: u32 = 8;
+
+/// The project page, shown and opened by the About dialog.
+pub const REPO_URL: &str = "https://github.com/Marketto/hoppy";
+/// Credited in the About dialog (AGENTS.md invariant 9).
+pub const AUTHOR: &str = "Marco Ricupero";
+
+/// The About dialog: name, version (`dev` = a development build, which never checks for
+/// updates and so has no such button), author and project link; "Close" is the default.
+pub fn about_dialog(s: &Strings, version: &str, dev: bool) -> DialogView {
+    let mut version = fill(s.about_version, &[("version", version)]);
+    if dev {
+        version.push_str(s.about_dev);
+    }
+    let mut buttons = vec![(BTN_CLOSE, s.close.to_owned())];
+    if !dev {
+        buttons.push((BTN_CHECK_UPDATES, s.menu_check_updates.to_owned()));
+    }
+    buttons.extend([
+        (BTN_GITHUB, s.about_github.to_owned()),
+        (BTN_DIAGNOSTICS, s.about_diagnostics.to_owned()),
+    ]);
+    DialogView {
+        title: "Hoppy".to_owned(),
+        text: format!(
+            "{version}\n{}\n\n{REPO_URL}",
+            fill(s.about_author, &[("author", AUTHOR)])
+        ),
+        buttons,
+        ..Default::default()
+    }
+}
 
 /// How long the accept question waits (the sender gives up 130 s after its hello).
 pub const ASK_TIMEOUT: Duration = Duration::from_secs(110);
@@ -789,6 +853,8 @@ struct GuiReceiver {
 /// One key-change warning dialog at a time (the core already limits them to one a minute
 /// per device).
 static WARNING_OPEN: AtomicBool = AtomicBool::new(false);
+/// One About dialog at a time.
+static ABOUT_OPEN: AtomicBool = AtomicBool::new(false);
 
 impl GuiReceiver {
     fn notice(&self, title: String, text: String, error: bool) {
@@ -1185,9 +1251,33 @@ impl Ctx {
         });
     }
 
+    /// "About…": the About dialog on a worker (one at a time); its buttons check for
+    /// updates (answered by a balloon), open the project page or open the log.
+    fn show_about(&self, mode: UpdateMode, updates: &Arc<Mutex<Updates>>) {
+        let (ctx, updates) = (self.clone(), Arc::clone(updates));
+        thread::spawn(move || {
+            let Some(_open) = DialogGuard::try_take(&ABOUT_OPEN) else {
+                return;
+            };
+            let view = about_dialog(ctx.s, update::CURRENT_VERSION, mode == UpdateMode::Off);
+            match ui::show_dialog(&view, &DialogLive::new()) {
+                Some(BTN_CHECK_UPDATES) if mode != UpdateMode::Off => {
+                    request_update_check(&updates, &ctx.waker, update::Trigger::Manual);
+                }
+                Some(BTN_GITHUB) => {
+                    if !ui::open_url(REPO_URL) {
+                        diag::log("about: opening the project page failed");
+                    }
+                }
+                Some(BTN_DIAGNOSTICS) => ctx.open_log(mode),
+                _ => {}
+            }
+        });
+    }
+
     /// Writes a summary line, then opens the log in Notepad (TextEdit on macOS, the default
     /// editor on Linux).
-    fn open_about(&self, mode: UpdateMode) {
+    fn open_log(&self, mode: UpdateMode) {
         let (music, classic) = {
             let p = lock(&self.prefs);
             (p.identity.music, p.classic)
@@ -1428,7 +1518,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             ID_CLASSIC => ctx.set_classic(!shown.classic.unwrap_or(false)),
             ID_LOGIN => ctx.set_login(!shown.login.unwrap_or(false)),
             ID_TRUSTED => ctx.load_trusted(),
-            ID_ABOUT => ctx.open_about(mode),
+            ID_ABOUT => ctx.show_about(mode, &updates),
             ID_QUIT => return false,
             _ => {}
         }
@@ -1446,8 +1536,12 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
         match event {
             TrayEvent::Click(anchor) => {
                 let current = menu();
-                // For the next menu: `hoppy music on|off` may have changed it meanwhile.
+                // For the next menu: `hoppy music on|off` may have changed it meanwhile,
+                // and a new release may be out (throttled; shown at the next click).
                 ctx.refresh_prefs();
+                if mode != UpdateMode::Off {
+                    request_update_check(&updates, &tray.waker(), update::Trigger::MenuOpened);
+                }
                 let items = current.items(s, &header);
                 let picked = h.modal(|| tray.popup_menu(&items, true, anchor));
                 if let Some(id) = picked
@@ -1461,7 +1555,13 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
                     break;
                 }
             }
-            TrayEvent::MenuOpening => ctx.refresh_prefs(),
+            TrayEvent::MenuOpening => {
+                ctx.refresh_prefs();
+                // Linux: a release found now is published by the `Wake` that follows.
+                if mode != UpdateMode::Off {
+                    request_update_check(&updates, &tray.waker(), update::Trigger::MenuOpened);
+                }
+            }
             TrayEvent::Wake => {
                 loop {
                     // Pop first so the lock is not held during the UI call.
@@ -1760,6 +1860,71 @@ struct Updates {
     installing: Option<bool>,
     /// The worker's result, or a message to show.
     finished: Option<Result<update::UpdateReady, String>>,
+    /// A check is running.
+    checking: bool,
+    /// When the last check started (wall clock; failed checks count too).
+    last_check: Option<SystemTime>,
+    /// "Check for updates" was picked: the running/next check answers with a balloon.
+    manual: bool,
+    /// That answer, waiting for the UI thread.
+    answer: Option<CheckAnswer>,
+}
+
+/// The answer to "Check for updates".
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CheckAnswer {
+    UpToDate,
+    /// This version can be installed with the menu entry.
+    Available(String),
+    /// The error, cleaned for display.
+    Failed(String),
+}
+
+impl Updates {
+    /// Takes the right to check now for `trigger`: false when one is running or it is too
+    /// soon (`update::check_due`). A manual request waiting on a running check is answered
+    /// by that check.
+    fn claim_check(&mut self, trigger: update::Trigger, now: SystemTime) -> bool {
+        if trigger == update::Trigger::Manual {
+            self.manual = true;
+        }
+        if self.checking || !update::check_due(trigger, self.last_check, now) {
+            return false;
+        }
+        self.checking = true;
+        self.last_check = Some(now);
+        true
+    }
+
+    /// Records the result of a check; true when the UI thread has something to show.
+    fn finish_check(&mut self, result: Result<Option<update::Release>, String>) -> bool {
+        self.checking = false;
+        let mut news = false;
+        if let Ok(Some(release)) = &result
+            && self.available.as_ref() != Some(release)
+            && self.downloading.is_none()
+            && self.installing.is_none()
+        {
+            self.available = Some(release.clone());
+            self.fresh = true;
+            news = true;
+        }
+        if std::mem::take(&mut self.manual) {
+            self.answer = Some(match result {
+                Err(e) => CheckAnswer::Failed(e),
+                Ok(_) => match &self.available {
+                    // The answer says it; no second "is available" balloon.
+                    Some(release) => {
+                        self.fresh = false;
+                        CheckAnswer::Available(release.version.to_string())
+                    }
+                    None => CheckAnswer::UpToDate,
+                },
+            });
+            news = true;
+        }
+        news
+    }
 }
 
 /// WinHTTP on Windows, curl/wget on Linux.
@@ -1771,38 +1936,91 @@ impl update::Http for NativeHttp {
     }
 }
 
-/// Checks after `FIRST_CHECK`, then once per `CHECK_EVERY` of wall-clock time (hourly
-/// ticks, so a PC that sleeps a lot still checks daily). Network errors are ignored.
+/// Checks after `FIRST_CHECK`, then every `CHECK_EVERY` of wall-clock time and once after
+/// a wake-up from sleep (`update::Cadence`: one-minute ticks, so a laptop that sleeps a
+/// lot still checks on time). Menu opens and "Check for updates" add their own checks
+/// (`request_update_check`). Network errors are only logged.
 fn spawn_update_checker(updates: &Arc<Mutex<Updates>>, waker: Waker) {
     let updates = Arc::clone(updates);
     thread::spawn(move || {
         thread::sleep(update::FIRST_CHECK);
+        let mut cadence = update::Cadence::default();
         loop {
-            match update::check(&NativeHttp, update::CURRENT_VERSION) {
-                Ok(Some(release)) => {
-                    diag::log(format!("update: {} is available", release.version));
-                    let mut u = lock(&updates);
-                    if u.available.as_ref() != Some(&release) && u.downloading.is_none() {
-                        u.available = Some(release);
-                        u.fresh = true;
-                        drop(u);
-                        waker.wake();
-                    }
-                }
-                Ok(None) => diag::log("update: up to date"),
-                // Silent for the user (offline, proxy…), but kept for diagnosis.
-                Err(e) => diag::log(format!("update: check failed: {e:#}")),
+            let last = lock(&updates).last_check;
+            if let Some(trigger) = cadence.tick(SystemTime::now(), last) {
+                run_update_check(&updates, &waker, trigger);
             }
-            let checked = SystemTime::now();
-            loop {
-                thread::sleep(Duration::from_secs(3600));
-                let elapsed = checked.elapsed().unwrap_or(update::CHECK_EVERY);
-                if elapsed >= update::CHECK_EVERY {
-                    break;
-                }
-            }
+            thread::sleep(update::CHECK_TICK);
         }
     });
+}
+
+/// A check for `trigger` on a worker, if it is due (UI thread: never blocks).
+fn request_update_check(updates: &Arc<Mutex<Updates>>, waker: &Waker, trigger: update::Trigger) {
+    if !lock(updates).claim_check(trigger, SystemTime::now()) {
+        return;
+    }
+    let (updates, waker) = (Arc::clone(updates), waker.clone());
+    thread::spawn(move || check_claimed(&updates, &waker, trigger));
+}
+
+/// Claims and runs a check on this (worker) thread.
+fn run_update_check(updates: &Mutex<Updates>, waker: &Waker, trigger: update::Trigger) {
+    if lock(updates).claim_check(trigger, SystemTime::now()) {
+        check_claimed(updates, waker, trigger);
+    }
+}
+
+fn check_claimed(updates: &Mutex<Updates>, waker: &Waker, trigger: update::Trigger) {
+    let result = update::check(&NativeHttp, update::CURRENT_VERSION);
+    match &result {
+        Ok(Some(release)) => diag::log(format!(
+            "update: {} is available ({trigger:?})",
+            release.version
+        )),
+        Ok(None) => diag::log(format!("update: up to date ({trigger:?})")),
+        // Offline, proxy…: silent unless the user asked, but kept for diagnosis.
+        Err(e) => diag::log(format!("update: check failed ({trigger:?}): {e:#}")),
+    }
+    let result = result.map_err(|e| display_text(&format!("{e:#}"), SHOW_TEXT_MAX));
+    if lock(updates).finish_check(result) {
+        waker.wake();
+    }
+}
+
+/// The balloon answering "Check for updates": (title, text, error, click action).
+fn check_answer_balloon(
+    s: &Strings,
+    answer: &CheckAnswer,
+    mode: UpdateMode,
+) -> (String, String, bool, BalloonAction) {
+    match answer {
+        CheckAnswer::UpToDate => (
+            fill(s.update_current, &[("version", update::CURRENT_VERSION)]),
+            String::new(),
+            false,
+            BalloonAction::Nothing,
+        ),
+        CheckAnswer::Available(version) => {
+            let (item, action) = match mode {
+                UpdateMode::Setup => (s.menu_update, BalloonAction::Update),
+                _ => (s.menu_download, BalloonAction::Portal),
+            };
+            let item = fill(item, &[("version", version)]);
+            (
+                fill(s.update_found, &[("version", version), ("item", &item)]),
+                String::new(),
+                false,
+                action,
+            )
+        }
+        CheckAnswer::Failed(error) => (
+            s.update_check_failed.to_owned(),
+            error.clone(),
+            true,
+            BalloonAction::Nothing,
+        ),
+    }
 }
 
 /// Top menu entry: (clickable, text). Bold "Update to X…", or the progress while
@@ -1901,8 +2119,9 @@ fn update_wake(
     mode: UpdateMode,
     ready_tip: &str,
 ) -> UpdateWake {
-    let (announce, pct, installing, finished) = {
+    let (announce, pct, installing, finished, answer) = {
         let mut u = lock(updates);
+        let answer = u.answer.take();
         let version = u.available.as_ref().map(|r| r.version.to_string());
         let announce = std::mem::take(&mut u.fresh)
             .then(|| version.clone())
@@ -1917,9 +2136,14 @@ fn update_wake(
             u.downloading = None;
             u.installing = None;
         }
-        (announce, u.downloading, installing, finished)
+        (announce, u.downloading, installing, finished, answer)
     };
     let mut out = UpdateWake::default();
+    if let Some(answer) = answer {
+        let (title, text, error, action) = check_answer_balloon(s, &answer, mode);
+        tray.balloon(&title, &text, error, true);
+        out.balloon = Some(action);
+    }
     if let Some(version) = announce {
         let (template, action) = match mode {
             UpdateMode::Setup => (s.update_ready, BalloonAction::Update),
@@ -2490,11 +2714,156 @@ mod tests {
                 s.dev_encrypted,
                 s.dev_plain,
                 s.update_installing,
+                s.update_current,
+                s.update_found,
+                s.about_version,
+                s.about_author,
             ]
         };
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
             assert_eq!(placeholders(it), placeholders(en), "{it} / {en}");
         }
+    }
+
+    fn release(tag: &str) -> update::Release {
+        let json = serde_json::json!({
+            "tag_name": tag,
+            "assets": [{ "name": update::PLATFORM_ASSET }, { "name": update::SUMS_ASSET }],
+        });
+        update::parse_latest_for(json.to_string().as_bytes(), update::PLATFORM_ASSET).unwrap()
+    }
+
+    #[test]
+    fn update_checks_are_throttled_and_answered() {
+        use update::Trigger::{Manual, MenuOpened, Resumed, Scheduled};
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let min = |m: u64| t0 + Duration::from_secs(m * 60);
+        let mut u = Updates::default();
+        assert!(u.claim_check(Scheduled, t0));
+        // One at a time.
+        assert!(!u.claim_check(MenuOpened, t0));
+        assert!(!u.manual);
+        assert!(!u.finish_check(Ok(None))); // up to date, nobody asked: nothing to show
+        assert_eq!(u.last_check, Some(t0));
+        // Menu opens and wake-ups: at most every 10 minutes.
+        assert!(!u.claim_check(MenuOpened, min(5)));
+        assert!(!u.claim_check(Resumed, min(9)));
+        assert!(u.claim_check(MenuOpened, min(10)));
+        // A new release: announced once (fresh), not again by the next check.
+        assert!(u.finish_check(Ok(Some(release("v9.0.0")))));
+        assert!(u.fresh && u.answer.is_none());
+        u.fresh = false;
+        assert!(u.claim_check(MenuOpened, min(20)));
+        assert!(!u.finish_check(Ok(Some(release("v9.0.0")))));
+        assert!(!u.fresh);
+
+        // "Check for updates" always checks and always answers.
+        let mut u = Updates::default();
+        assert!(u.claim_check(Manual, t0));
+        assert!(u.finish_check(Ok(None)));
+        assert_eq!(u.answer.take(), Some(CheckAnswer::UpToDate));
+        assert!(u.claim_check(Manual, t0));
+        assert!(u.finish_check(Err("offline".into())));
+        assert_eq!(u.answer.take(), Some(CheckAnswer::Failed("offline".into())));
+        // Found by a manual check: one balloon (the answer), not the "available" one too.
+        assert!(u.claim_check(Manual, t0));
+        assert!(u.finish_check(Ok(Some(release("v9.1.0")))));
+        assert!(!u.fresh);
+        assert_eq!(
+            u.answer.take(),
+            Some(CheckAnswer::Available("9.1.0".into()))
+        );
+        // Asked while an automatic check runs: that check answers.
+        assert!(u.claim_check(Scheduled, min(500)));
+        assert!(!u.claim_check(Manual, min(500)));
+        assert!(u.finish_check(Ok(None)));
+        // Still offering the release found before.
+        assert_eq!(
+            u.answer.take(),
+            Some(CheckAnswer::Available("9.1.0".into()))
+        );
+        assert!(!u.manual);
+    }
+
+    #[test]
+    fn check_answer_balloons() {
+        let (title, text, error, action) =
+            check_answer_balloon(&IT, &CheckAnswer::UpToDate, UpdateMode::Setup);
+        assert_eq!(
+            title,
+            format!("Hoppy è aggiornato ({})", update::CURRENT_VERSION)
+        );
+        assert!(text.is_empty() && !error && action == BalloonAction::Nothing);
+        let found = CheckAnswer::Available("0.8.0".into());
+        let (title, _, error, action) = check_answer_balloon(&IT, &found, UpdateMode::Setup);
+        assert_eq!(
+            title,
+            "Hoppy 0.8.0 è disponibile — clic su «Aggiorna a 0.8.0…»"
+        );
+        assert!(!error && action == BalloonAction::Update);
+        let (title, _, _, action) = check_answer_balloon(&EN, &found, UpdateMode::Portal);
+        assert_eq!(
+            title,
+            "Hoppy 0.8.0 is available — click “Download Hoppy 0.8.0…”"
+        );
+        assert!(action == BalloonAction::Portal);
+        let failed = CheckAnswer::Failed("timeout".into());
+        let (title, text, error, _) = check_answer_balloon(&IT, &failed, UpdateMode::Setup);
+        assert_eq!(
+            (title.as_str(), text.as_str(), error),
+            (
+                "Non riesco a controllare gli aggiornamenti",
+                "timeout",
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn about_dialog_and_menu() {
+        let view = about_dialog(&IT, "0.8.0", false);
+        assert_eq!(view.title, "Hoppy");
+        assert_eq!(
+            view.text,
+            "Versione 0.8.0\ndi Marco Ricupero\n\nhttps://github.com/Marketto/hoppy"
+        );
+        assert_eq!(view.default_id(), BTN_CLOSE);
+        let labels: Vec<&str> = view.buttons.iter().map(|b| b.1.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Chiudi",
+                "Controlla aggiornamenti",
+                "Pagina GitHub",
+                "Diagnostica"
+            ]
+        );
+        // Dev builds never check: no such button, and the version says so.
+        let dev = about_dialog(&EN, "0.0.0-dev", true);
+        assert!(
+            dev.text
+                .starts_with("Version 0.0.0-dev · development\nby Marco Ricupero")
+        );
+        let ids: Vec<u32> = dev.buttons.iter().map(|b| b.0).collect();
+        assert_eq!(ids, [BTN_CLOSE, BTN_GITHUB, BTN_DIAGNOSTICS]);
+        assert_eq!(dev.default_id(), BTN_CLOSE);
+
+        // The menu has "About…" (no separate update entry) right before Quit.
+        let menu = TrayMenu {
+            update: None,
+            firewall: None,
+            music: true,
+            classic: None,
+            login: None,
+        };
+        let items = menu.items(&EN, "Hoppy");
+        let tail: Vec<String> = items
+            .iter()
+            .rev()
+            .take(2)
+            .map(|i| format!("{i:?}"))
+            .collect();
+        assert_eq!(tail, ["Action(3, \"Quit\")", "Action(8, \"About…\")"]);
     }
 
     #[test]

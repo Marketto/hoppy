@@ -50,11 +50,12 @@ class UpdateLogicTest {
     fun devBuildsAndInterval() {
         assertTrue(UpdateLogic.isDevBuild("0.1.0-dev"))
         assertFalse(UpdateLogic.isDevBuild("0.2.0"))
-        val day = UpdateLogic.CHECK_INTERVAL_MS
+        val step = UpdateLogic.CHECK_INTERVAL_MS
+        assertEquals(3L * 60 * 60 * 1000, step)
         assertTrue(UpdateLogic.shouldCheck(1_000, 0))
-        assertFalse(UpdateLogic.shouldCheck(10 * day, 10 * day - 1))
-        assertTrue(UpdateLogic.shouldCheck(10 * day, 9 * day))
-        assertTrue(UpdateLogic.shouldCheck(5 * day, 9 * day)) // clock went backwards
+        assertFalse(UpdateLogic.shouldCheck(10 * step, 10 * step - 1))
+        assertTrue(UpdateLogic.shouldCheck(10 * step, 9 * step))
+        assertTrue(UpdateLogic.shouldCheck(5 * step, 9 * step)) // clock went backwards
     }
 
     @Test

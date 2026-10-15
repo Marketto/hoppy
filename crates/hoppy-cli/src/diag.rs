@@ -1,7 +1,7 @@
 //! Lightweight diagnostic log for `hoppyw` (Windows: `%LOCALAPPDATA%\Hoppy\hoppy.log`,
 //! macOS: `~/Library/Logs/Hoppy/hoppy.log`, elsewhere `<data dir>/hoppy/hoppy.log`). Tray events, menus, slow UI handlers and worker
 //! errors go here, so "nothing happens when I click" can be diagnosed on a user's PC
-//! (`hoppy log`, tray menu "About & diagnostics…").
+//! (`hoppy log`, tray menu "About…" → "Diagnostics").
 //!
 //! - `log` never blocks: lines go through a channel to one writer thread (the UI thread must
 //!   not do file I/O). Before `init`, and in the `hoppy` CLI, it does nothing.

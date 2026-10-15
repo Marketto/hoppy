@@ -60,7 +60,13 @@
 - Theme music (`audio/Music.kt`, rules in `docs/design/themes.md` "Music"): idle loop while
   the app is visible, faster loop on the sender during a send, jingle on delivery, silence
   on the receiver while receiving and whenever another app plays audio.
-- Overflow menu: theme, device name, music (on by default), accept automatically (with warning).
+- Overflow menu: theme, device name, music (on by default), accept automatically (with warning),
+  *About* / *Informazioni*: dialog (`MainActivity.showAbout`, `layout/dialog_about.xml`) with
+  the theme mascot, "Hoppy", "Version X.Y.Z (build N)" (`versionName` / `versionCode`), "by
+  Marco Ricupero", the link https://github.com/Marketto/hoppy (`ACTION_VIEW`), *Check for
+  updates* (see "Updates") and *Open-source licences* (the bundled fonts' OFL texts from
+  `apps/android/app/src/main/assets/licenses/fonts/`, read off the main thread). All text is `colorOnSurface` on the
+  dialog surface, the contrast-checked pair every dialog already uses.
 
 ## Encryption and device verification (protocol v1, ADR 0010)
 - `:core` speaks v1 (spec §7) itself, pure JVM: `Crypto.kt` (X25519 + ChaCha20-Poly1305 from
@@ -105,14 +111,21 @@ The APK is distributed from GitHub Releases, not the Play Store; every release i
 with the same key (docs/release.md), so a new APK installs over the old one in place.
 Code: `update/Updater.kt` (Android side), `update/UpdateLogic.kt` (pure: semver, release
 JSON, `SHA256SUMS.txt` parsing; unit-tested), `update/InstallReceiver.kt`.
-- **Check**: when the home screen starts, at most once per 24 h (`Prefs.updateCheckedAt`),
-  a background thread GETs `https://api.github.com/repos/Marketto/hoppy/releases/latest`
+- **Check**: when the home screen starts or comes back to the foreground (`onStart`), at
+  most once every 3 h (`UpdateLogic.CHECK_INTERVAL_MS`, `Prefs.updateCheckedAt`), a
+  background thread GETs `https://api.github.com/repos/Marketto/hoppy/releases/latest`
   (`HttpURLConnection`, `User-Agent: Hoppy/<versionName>`, 15 s/30 s timeouts). Silent on any
   error; the timestamp is stored only after a complete response, so a failed check
   retries on the next start. Builds whose `versionName` contains `-dev` (local/CI builds)
   never check. A release counts only if its `tag_name` is exactly `[vV]?X.Y.Z` (it is
   used in the download URL) and it carries both `Hoppy-android.apk` and `SHA256SUMS.txt`;
   version and tag are stored together. Pre-releases are never offered (as on Windows).
+- **Check now**: *About* dialog → *Check for updates* / *Controlla aggiornamenti*
+  (`Updater.checkNow`) ignores the 3 h interval and always answers: «Hoppy è aggiornato
+  (x.y.z)» / "Hoppy is up to date (x.y.z)" or the error, in the dialog (live region); when a
+  newer release exists the dialog closes and the update banner shows (plus the
+  notification, once per version). On `-dev` builds it says that updates are not checked.
+  It never downloads by itself.
 - **Newer version**: one notification per version on the *Updates* channel (`updates`,
   default importance): "Hoppy <ver> is available — tap to update"; plus a small banner on
   the home screen (peer-row card + `colorOnSurface`, so it inherits the contrast-checked

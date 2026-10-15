@@ -22,15 +22,20 @@
 - Tray menu (left or right click; it opens at the point Windows reports for the click):
   *Send files…*, *Open received folder*, *♪ Sound when delivered* (check mark = on), on
   Windows 11 *"Send with Hoppy" directly on right-click (classic menu)* (check mark = on),
-  *Trusted devices…*, *About & diagnostics…*, *Quit*. When an update is available, a bold
+  *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Diagnostics* = the log), *Quit*. When an update
+  is available, a bold
   *Update to X.Y.Z…* comes first.
 - The tray's UI thread never does file, registry or network I/O: `device.json` (roaming
   AppData, often redirected to a network share on company PCs) is cached and re-read by a
   worker whenever the menu opens; opening folders, starting processes, UAC prompts and
   settings writes run on worker threads. See [Diagnostics](#diagnostics).
-- Updates (tray only, `crates/hoppy-cli/src/update.rs`): 30 s after the tray starts and then
-  once a day it asks `api.github.com/repos/Marketto/hoppy/releases/latest` (WinHTTP, system
-  proxy, User-Agent `Hoppy/<version>`); network errors are silent. If the release is newer
+- Updates (tray only, `crates/hoppy-cli/src/update.rs`): it asks
+  `api.github.com/repos/Marketto/hoppy/releases/latest` (WinHTTP, system proxy, User-Agent
+  `Hoppy/<version>`) 30 s after the tray starts, then every 3 hours of wall-clock time (sleep included), a minute after waking from sleep (seen as a jump of the wall clock between the checker's one-minute ticks) and whenever the tray menu opens; wake-ups and menu opens check at most once every 10 minutes (any check counts, failed ones too: GitHub allows 60 unauthenticated calls per hour per IP). A release found while the menu is open shows at the
+  next click. Network errors are silent, except for *Check for updates* (button of the
+  *About…* dialog; not in dev builds), which checks at once and always answers with a
+  notification: "Hoppy is up to date (X.Y.Z)", "Hoppy X.Y.Z is available — click “Update
+  to X.Y.Z…”" or "Can't check for updates" + the error. If the release is newer
   (semver; pre-releases are never offered) a notification says "Hoppy X.Y.Z is available —
   click to update". Clicking it (or the menu item) downloads `Hoppy-Setup-x64.exe` into a
   fresh private folder `%TEMP%\Hoppy-update-<random>\Hoppy-Setup-X.Y.Z.exe` (progress in the
@@ -110,7 +115,7 @@ counts and sizes, tray callbacks (event,
 ≥ 200 ms after they arrived, menus shown (position, anchor or cursor, foreground) and their
 result, UI handlers taking ≥ 200 ms, a watchdog line when one runs > 2 s, and worker errors
 (update check/download, firewall check/fix, receive, send, settings, classic menu). Open it
-from the tray (*About & diagnostics…* → Notepad) or print it with `hoppy log [--lines N]`.
+from the tray (*About…* → *Diagnostics* → Notepad) or print it with `hoppy log [--lines N]`.
 
 Tray clicks answered minutes late (up to 0.2.1): Explorer delivers tray callbacks with
 `SendNotifyMessage`. `GetMessageW` runs the window procedure for such *sent* messages

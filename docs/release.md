@@ -46,7 +46,7 @@ the installed one if `codesign --verify` passes and its `CFBundleIdentifier` is
 `build-app.sh` writing the version and the bundle id, and the app at the image's root.
 Elsewhere: notification + *Download Hoppy X…* → portal. **Never rename it.**
 The **iPhone/iPad app** (`apps/ios/Hoppy/UpdateCheck.swift`) reads the same `releases/latest`
-at most once a day and announces a version only when `Hoppy-ios-unsigned.ipa` is attached; it
+at most every 3 h (or at once from its menu) and announces a version only when `Hoppy-ios-unsigned.ipa` is attached; it
 never downloads (a sideloaded app is replaced by SideStore or by sideloading the new .ipa; the
 portal's iOS button points at `releases/latest/download/Hoppy-ios-unsigned.ipa`). The portal
 also publishes **`sidestore.json`**, an AltStore/SideStore source written by `tools/site.py`

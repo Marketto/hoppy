@@ -43,7 +43,7 @@ dal menu dell'icona); altrimenti è sotto *Mostra altre opzioni* (o Maiusc+tasto
 In alternativa trascina i file sull'icona **Hoppy** del desktop (doppio clic: scegli i file),
 oppure usa *Invia a → Hoppy*. Nessun permesso di amministratore, niente Microsoft Store.
 
-Se qualcosa non va, *Informazioni e diagnostica…* nel menu dell'icona apre il registro
+Se qualcosa non va, *Informazioni… → Diagnostica* nel menu dell'icona apre il registro
 (`%LOCALAPPDATA%\Hoppy\hoppy.log`, su Linux `~/.local/share/hoppy/hoppy.log`, su Mac
 `~/Library/Logs/Hoppy/hoppy.log`; da terminale: `hoppy log`).
 

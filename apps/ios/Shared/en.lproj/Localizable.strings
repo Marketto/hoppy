@@ -82,3 +82,10 @@
 /* Updates (sideloaded: SideStore or Sideloadly) */
 "update_banner" = "Hoppy %@ is available — update it from SideStore or reinstall it with Sideloadly.";
 "update_open" = "Open the download page";
+"check_updates" = "Check for updates";
+"update_checking" = "Checking for updates…";
+"update_up_to_date" = "Hoppy is up to date (%@)";
+"update_check_failed" = "Could not check for updates: %@";
+"about" = "About";
+"about_version" = "Version %@ (build %@)";
+"about_author" = "by Marco Ricupero";

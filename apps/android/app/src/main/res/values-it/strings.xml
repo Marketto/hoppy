@@ -73,6 +73,16 @@
     <string name="update_failed">Aggiornamento non riuscito: %1$s</string>
     <string name="update_bad_checksum">il file scaricato è danneggiato (checksum diverso)</string>
     <string name="update_install_failed">installazione non riuscita</string>
+    <string name="check_updates">Controlla aggiornamenti</string>
+    <string name="update_checking">Controllo aggiornamenti…</string>
+    <string name="update_up_to_date">Hoppy è aggiornato (%1$s)</string>
+    <string name="update_dev_build">Versione di sviluppo: gli aggiornamenti non vengono controllati</string>
+    <string name="update_check_failed">Impossibile controllare gli aggiornamenti: %1$s</string>
+    <!-- Finestra Informazioni (MainActivity.showAbout). %1$s = versione, %2$d = build. -->
+    <string name="about">Informazioni</string>
+    <string name="about_version">Versione %1$s (build %2$d)</string>
+    <string name="about_author">di Marco Ricupero</string>
+    <string name="about_licenses">Licenze open source</string>
     <!-- Protocollo v1 (docs/protocol.md §7): badge di cifratura, codice di verifica (4 emoji), avvisi. -->
     <string name="peer_secure">%1$s · 🔒</string>
     <string name="peer_secure_verified">%1$s · 🔒 ✓</string>

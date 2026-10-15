@@ -34,7 +34,7 @@ UX (`docs/platforms/macos-ios.md`, ADR 0008).
 | **Send (Dolphin, Nemo)** | right-click → **Send with Hoppy** (top level). |
 | **Send (launcher)** | *Open with → Hoppy*, drop files on the Hoppy icon in the dock, the launcher's *Send files…* action, or tray menu → *Send files…* (file picker). |
 | **Then** | "Looking for devices…" notification (with **Cancel**) → a list dialog with nearby devices (✓ verified, 🔒 encrypted, "⚠ not encrypted" for old apps; + *Search again*) → for a device not verified yet, a code window (same 4 emoji as on the other screen, **Later** / **They match**) while it decides → progress in a notification updated in place (at most every 2 s) with a **Cancel sending** button → "Delivered to X ✓" + jingle (unless muted) → the process exits 7 s later. |
-| **Tray menu** | header "Hoppy · receiving as NAME", *Send files…*, *Open received folder*, *♪ Sound when delivered* (check), *Trusted devices…*, *About & diagnostics…* (log in the text editor), *Quit*; a bold *Update to X…* (installed from the .deb) or *Download Hoppy X…* (other copies) entry on top when an update exists. Left click opens it too. |
+| **Tray menu** | header "Hoppy · receiving as NAME", *Send files…*, *Open received folder*, *♪ Sound when delivered* (check), *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Diagnostics* = the log in the text editor), *Quit*; a bold *Update to X…* (installed from the .deb) or *Download Hoppy X…* (other copies) entry on top when an update exists. Left click opens it too. |
 
 Strings: Italian when the message locale is Italian (`LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`),
 else English (`gui.rs` string table, shared with Windows).
@@ -53,7 +53,7 @@ two places where the UIs differ). Everything is pure Rust; no C libraries beyond
 | Dialogs | `crates/hoppy-cli/src/linux/dialog.rs` | `zenity` (default) or `kdialog` (KDE). argv only, values in `--opt=value` form, list entries never start with `-`, `--no-markup` for zenity text, `<`/`>` swapped for look-alikes for kdialog (rich-text guess). The verification dialog is the one zenity text with Pango markup (every value escaped by `markup_escape`). |
 | Single instance | `crates/hoppy-cli/src/linux/ui.rs` | session-bus name `app.hoppy.Tray`; a second `hoppyw` calls its `Reopen` method → "already running" notification. |
 | Jingle | `crates/hoppy-cli/src/linux/sound.rs` | `assets/music/desktop_done.wav` embedded, written to `$XDG_RUNTIME_DIR/hoppy-done-<pid>.wav`, played by `pw-play` → `paplay` → `aplay`. |
-| Updates | `crates/hoppy-cli/src/unix/http.rs` (shared with macOS), `crates/hoppy-cli/src/update.rs`, `crates/hoppy-cli/src/unix/selfupdate.rs` | `curl` (redirects to https only) / `wget` (no redirects); 30 s after start, then daily. A release counts only once `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached. See [Updates](#updates). |
+| Updates | `crates/hoppy-cli/src/unix/http.rs` (shared with macOS), `crates/hoppy-cli/src/update.rs`, `crates/hoppy-cli/src/unix/selfupdate.rs` | `curl` (redirects to https only) / `wget` (no redirects); 30 s after start, every 3 h, after a wake-up from sleep and when the menu opens (wake-up/menu: at most every 10 min); *About… → Check for updates* answers with a notification. A release counts only once `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached. See [Updates](#updates). |
 | Right-click, launcher, autostart | `crates/hoppy-cli/src/linux/integration.rs` | see below |
 | Log | `crates/hoppy-cli/src/diag.rs` | `~/.local/share/hoppy/hoppy.log` (`hoppy log`). Same privacy rules as Windows. |
 
@@ -87,6 +87,10 @@ Protocol v1 (docs/protocol.md §7, ADR 0010); the dialogs are described by
 Only a copy installed from the .deb (`/usr/bin/hoppyw`, `hoppy` package registered with
 dpkg) updates itself; others (built from source) get *Download Hoppy X…*, which opens the
 portal.
+
+The tray checks 30 s after the tray starts, then every 3 hours of wall-clock time (sleep included), a minute after waking from sleep (seen as a jump of the wall clock between the checker's one-minute ticks) and whenever the tray menu opens; wake-ups and menu opens check at most once every 10 minutes (any check counts, failed ones too: GitHub allows 60 unauthenticated calls per hour per IP). Opening the menu re-publishes it when a release turns up
+(`Tray::set_menu`). *About… → Check for updates* checks at once and answers with a notification
+("up to date", "X is available — click …", or the error).
 
 1. *Update to X…* (menu or notification) downloads `Hoppy-linux-amd64.deb` of **that**
    release (`releases/download/vX.Y.Z/`, not `latest`) into a fresh private folder
@@ -162,7 +166,9 @@ tray host): see `docs/decisions/0007-linux-desktop.md`. On a real Ubuntu 22.04 a
    notification (does GNOME re-show the banner on each update?) → *Annulla invio* →
    delivered + jingle once; mute via the menu check.
 4. Dolphin/Nemo top-level entry; *Open with → Hoppy*; drop on the dock icon; launcher action.
-5. *About & diagnostics…* opens the log; *Quit*; second launch → "already running".
+5. *About…*: version, author, link; *Check for updates* → notification; *GitHub page* opens
+   the browser; *Diagnostics* opens the log (kdialog shows only *Close* and *Check for
+   updates*: it has no extra buttons); *Quit*; second launch → "already running".
 6. Update (.deb installed, older version): bold *Update to X…* + notification → download
    % in the tooltip → "Installing…" → polkit password prompt → tray gone and back on the new
    version (`hoppy --version`, About); cancel the prompt → "Update cancelled"; a copy run
