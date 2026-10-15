@@ -16,7 +16,7 @@
   `Downloads\Hoppy`; a notification says what arrived and opens the folder when clicked.
   `hoppy receive --yes` (CLI) skips the question (trusted networks only).
 - Tray menu (left or right click; it opens at the point Windows reports for the click):
-  *Send files…*, *Open received folder*, *♪ Music while sending* (check mark = on), on
+  *Send files…*, *Open received folder*, *♪ Sound when delivered* (check mark = on), on
   Windows 11 *"Send with Hoppy" directly on right-click (classic menu)* (check mark = on),
   *About & diagnostics…*, *Quit*. When an update is available, a bold *Update to X.Y.Z…*
   comes first.
@@ -44,11 +44,12 @@
   them on the desktop icon) → a menu at the mouse lists nearby devices → click one.
   Progress is in the tray icon tooltip; a notification confirms delivery (or the refusal).
   Folders are refused with a message (not supported yet).
-- Music (only on the sender): the *Send to* flow plays a short 16-bit loop while you pick
-  a device, a faster one once the other side accepts, and a jingle when delivered. Turn it
-  off from the tray menu (*♪ Music while sending*) or with `hoppy music off`
-  (stored as `"music"` in `%APPDATA%\hoppy\device.json`). The tray receiver, `hoppy send`
-  and `hoppy receive` never play music. The installer wizard plays music too (checkbox
+- Sound (only on the sender): the *Send to* flow is silent while it searches, shows the
+  device menu and sends; it plays one short jingle when the files are delivered (instead
+  of the system notification sound). Turn it off from the tray menu (*♪ Sound when
+  delivered*) or with `hoppy music off` (stored as `"music"` in
+  `%APPDATA%\hoppy\device.json`, name kept for compatibility). The tray receiver keeps only
+  the system notification sound of its balloon; `hoppy send` and `hoppy receive` are silent. The installer wizard plays music too (checkbox
   *♪ Music* bottom-left; silent installs stay silent).
 - Strings follow the Windows display language: Italian, otherwise English.
 - Firewall: see [Firewall](#firewall) below.

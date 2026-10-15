@@ -28,7 +28,10 @@ import app.hoppy.ui.theme.HoppyTheme
  * or on memory trim. Reduced motion does not mute.
  */
 object Music {
-    private const val VOLUME = 0.6f
+    /** Player volume of the loops (the files are already mastered quiet, about -24 dB RMS). */
+    private const val VOLUME = 0.4f
+    /** The delivery jingle sits a little above the loops. */
+    private const val JINGLE_VOLUME = 0.55f
     private const val FADE_IN_MS = 200L
     private const val FADE_OUT_MS = 200L
     private const val CROSSFADE_MS = 300L
@@ -282,7 +285,7 @@ object Music {
 
     // ---- players --------------------------------------------------------------------
 
-    /** Fades [t] to [target] (× [VOLUME]) over [ms]; replaces any fade running on it. */
+    /** Fades [t] to [target] (× [VOLUME] or [JINGLE_VOLUME]) over [ms]; replaces any fade running on it. */
     private fun fade(t: Track, target: Float, ms: Long, then: (() -> Unit)? = null) {
         t.cancelFade()
         val from = t.gain
@@ -340,7 +343,8 @@ object Music {
 
         fun setGain(g: Float) {
             gain = g
-            if (!released) player.setVolume(g * VOLUME, g * VOLUME)
+            val v = g * if (kind == MusicTiming.DONE) JINGLE_VOLUME else VOLUME
+            if (!released) player.setVolume(v, v)
         }
 
         fun whenPrepared(block: () -> Unit) {

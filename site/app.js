@@ -210,7 +210,7 @@
           src.connect(gain);
           src.start();
         }
-        ramp(0.85, 1.5);
+        ramp(0.45, 1.5);
       } catch (e) {
         btn.classList.remove("is-playing");  // offline or undecodable: stay silent
       }

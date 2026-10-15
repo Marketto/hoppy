@@ -79,8 +79,8 @@ enum Command {
     },
     /// Show or change this device's name.
     Name { new_name: Option<String> },
-    /// Show or change whether the Windows "Send to → Hoppy" window plays music.
-    /// (`hoppy send` is always silent.)
+    /// Show or change whether Windows "Send to → Hoppy" plays a short sound when the files
+    /// are delivered (`hoppy send` is always silent).
     Music { state: Option<OnOff> },
     /// Windows: add "Send to → Hoppy", the "Send with Hoppy" right-click entry and start
     /// the receiver at login.

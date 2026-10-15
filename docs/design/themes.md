@@ -73,27 +73,25 @@ edit the outputs; run `python3 tools/dev.py music`. Lengths and tempi for code:
 
 | Theme | Key | Idle → transfer BPM | Mood / transfer twist | Done jingle |
 | --- | --- | --- | --- | --- |
-| **Purikura** | D major | 124 → 172 | bouncy pulse-wave hook, octave-hopping bass; transfer adds 16th hats, four-on-the-floor kick, 16th arpeggio, harmony on the repeat | rising D-major arpeggio to a high A, crash |
-| **Showa** | G major, yonanuki pentatonic (G A B D E) | 112 → 156 | kayōkyoku shuffle with wide-vibrato lead, FM "koto" stabs, woodblock; transfer straightens into a 60s "eleki" surf drive with tom fills | pentatonic climb, woodblock roll |
-| **Manga** | C major + comic chromatic notes | 128 → 180 | staccato oom-pah, sparkle doubling an octave up; transfer: octave bass, claps, snare fills | "ta-da" with a slide-up |
-| **Yume** | F lydian (maj7, G/F) | 92 → 128 | soft FM flute + bell, 16th arpeggios drenched in echo, triangle pad; transfer: light breakbeat, shaker, arpeggiated bass | sparkling Fmaj9 arpeggio |
-| **Night** | D minor (m9 chords, bII maj7) | 90 → 124 | lo-fi swung 16ths, FM e-piano, FM bass; transfer becomes a city-pop disco groove (open hats, octave bass) | Dm9 → Dmaj9 resolution |
+| **Purikura** | D major | 108 → 135 | gentle pulse-wave hook, sparse offbeat chords, kick + brush; transfer adds four-on-the-floor kick, 8th hats, octave-arpeggio bass, 16th arpeggio, harmony on the repeat | rising D-major arpeggio to a high A, crash |
+| **Showa** | G major, yonanuki pentatonic (G A B D E) | 98 → 122 | relaxed kayōkyoku shuffle with vibrato lead, FM "koto" stabs, brush and a lone woodblock; transfer straightens into a light 60s "eleki" drive with tom fills | pentatonic climb, woodblock roll |
+| **Manga** | C major + comic chromatic notes | 112 → 140 | comic hook played softer and more legato, sparkle doubling an octave up, brush backbeat; transfer: punchier lead, octave bass, claps, snare fills | "ta-da" with a slide-up |
+| **Yume** | F lydian (maj7, G/F) | 80 → 100 | soft FM flute + bell, 8th arpeggios drenched in echo, triangle pad, almost no drums; transfer: light breakbeat with brush and shaker, 16th arpeggio, arpeggiated bass | sparkling Fmaj9 arpeggio |
+| **Night** | D minor (m9 chords, bII maj7) | 78 → 98 | slow lo-fi with brush and swung shaker, FM e-piano, FM bass; transfer becomes a soft city-pop disco groove (open hats, octave bass) | Dm9 → Dmaj9 resolution |
+
+Idle loops are deliberately calm: soft-attack legato leads, lighter kick, brushed snare,
+no busy hats, a little more echo and low-pass (6.5–6.8 kHz). Transfer loops are about
+1.25× the idle tempo, still clearly faster and busier, but not driving.
 
 - **idle** (8 bars) and **transfer** (16 bars: hook, then hook with a harmony line) are
   seamless loops of an exact number of bars; **done** (≈2 s) is a one-shot.
-- Desktop (`hoppyw` tray / installer) ships only the Purikura set as 8-bit 16 kHz WAV in
-  `assets/music/` (`PlaySoundW`); its transfer loop is the first 8 bars.
-- **Desktop specifics (Windows)**: `hoppyw send` ("Send to → Hoppy") embeds the WAVs
-  (`include_bytes!`, Windows builds only) and plays idle while searching / showing the device
-  menu / waiting for the answer, transfer from the moment the receiver accepts (first
-  `Progress::FileStarted`), done once on delivery (its balloon then skips the system sound);
-  decline, error, cancel or exit stop it. `PlaySoundW` cannot crossfade: switches are a
-  hard cut. Mute: `"music": false` in `device.json`, set with `hoppy music on|off` or the
-  tray menu item "♪ Music while sending" (default on). The tray receiver and the CLI
-  (`hoppy send`/`receive`) are always silent; the receiver's "files arrived" balloon
-  (success and failure) keeps the system notification sound. The installer plays idle in
-  the wizard and done on the finished page, with a "♪ Music" checkbox bottom-left; never
-  in `/SILENT` or `/VERYSILENT` installs.
+- Desktop (Windows) uses only the Purikura music, as 8-bit WAV in `assets/music/`
+  (`PlaySoundW`): **`hoppyw send` plays only the done jingle** on delivery (no loops while
+  sending); the **installer** plays `desktop_idle.wav` (extra quiet, −26 dB RMS) in the
+  wizard and `desktop_done.wav` on the finished page, with a "♪ Music" checkbox, never in
+  `/SILENT` or `/VERYSILENT` installs. The tray receiver and the CLI are always silent.
+  Only `desktop_done.wav` (16 kHz) is embedded in `hoppyw.exe`; `desktop_idle.wav` is
+  12 kHz to stay under ~250 KB. There is no desktop transfer loop.
 - **When it plays**: only while the app (or desktop installer) is visible, never when
   muted, and during a transfer only on the **sender**. Idle plays while the app is open
   and choosing a device; switch to transfer when the send starts (crossfade ~300 ms on
@@ -103,7 +101,7 @@ edit the outputs; run `python3 tools/dev.py music`. Lengths and tempi for code:
   a meeting); it gets a system notification at the end instead. Stop in `onStop`.
 - **Android** (`app/src/main/java/app/hoppy/audio/`): `Music` counts started activities
   (250 ms grace for screen switches/rotation) and fades out (200 ms) when none is visible.
-  `MediaPlayer` loops, `USAGE_GAME`/`CONTENT_TYPE_MUSIC`, volume 0.6. It never starts if
+  `MediaPlayer` loops, `USAGE_GAME`/`CONTENT_TYPE_MUSIC`, volume 0.4 (done jingle 0.55). It never starts if
   another app is playing (`isMusicActive`), takes `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` with
   `setWillPauseWhenDucked(true)` and pauses on any focus loss (permanent loss: silent until
   the next visit). Silent while `ReceiveService.receiving` (offer accepted → connection
@@ -113,14 +111,15 @@ edit the outputs; run `python3 tools/dev.py music`. Lengths and tempi for code:
   `MusicTiming` (pure, tested against `assets/music/manifest.json` by `MusicTimingTest`):
   update it when `tools/gen_music.py` changes tempo or bars. Players are released after
   30 s of silence or on `onTrimMemory`.
-- Loudness is matched across themes (RMS ≈ −19 dBFS, peaks ≤ −3 dBFS), so switching theme
-  never jumps in volume.
+- Loudness is matched across themes and mastered quiet at the source: loops RMS ≈ −24 dBFS,
+  done jingles −21 dBFS, installer idle and portal −26 dBFS, peaks ≤ −3 dBFS. Switching
+  theme never jumps in volume.
 - Original compositions only: no quotes or imitations of game, anime or pop tunes.
 
-**Download portal** (`site/`): its own track `portal` — Eb major, 96 BPM, 16 bars (40 s),
-a relaxing, cozy, gently bouncy "home" tune (soft pulse lead with vibrato, round FM bass,
-brushed drums, maj7/add9 chords, flute + bell join on the second half). Quieter than the
-app (RMS ≈ −22 dBFS) and warmer (5.2 kHz low-pass). Generated to `site/music/portal.ogg`
+**Download portal** (`site/`): its own track `portal` — Eb major, 84 BPM, 16 bars (45.7 s),
+a relaxing, cozy, gently swaying "home" tune (soft legato pulse lead with vibrato, round FM
+bass, brushed drums, maj7/add9 chords, flute + bell join on the second half). Quieter than
+the app (RMS ≈ −26 dBFS, page gain 0.45 with a 1.5 s fade-in) and warm (4.8 kHz low-pass). Generated to `site/music/portal.ogg`
 (Vorbis, preferred) and `portal.mp3` (fallback), 32 kHz mono, plus `portal.json` (exact
 loop length) for the player. The page's floating ♪ button is **off by default** (no
 autoplay, WCAG 1.4.2); a remembered "on" starts only at the visitor's first interaction;

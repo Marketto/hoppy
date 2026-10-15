@@ -13,7 +13,8 @@ pitch-dropping sines and filtered noise, plus a tempo-synced echo. Per theme it 
 Outputs (generated, committed, never edit by hand):
 
   apps/android/app/src/main/res/raw/music_<theme>_<idle|transfer|done>.ogg   Vorbis 22050 Hz mono
-  assets/music/desktop_<idle|transfer|done>.wav   Purikura only, PCM u8 mono 16 kHz (PlaySoundW)
+  assets/music/desktop_idle.wav   installer loop, Purikura idle, PCM u8 mono 12 kHz (PlaySoundW)
+  assets/music/desktop_done.wav   delivery jingle (hoppyw + installer), PCM u8 mono 16 kHz
   assets/music/manifest.json                      lengths, tempo, bars (for integrators)
   assets/music/README.md                          what/how/licence
   site/music/portal.{ogg,mp3,json}                download-portal loop (quieter, 32 kHz) + player data
@@ -58,13 +59,15 @@ RAW = "apps/android/app/src/main/res/raw"
 DESK = "assets/music"
 ANDROID_SR = 22050
 DESKTOP_SR = 16000
+DESKTOP_IDLE_SR = 12000                # installer loop: content is low-passed to ~5 kHz anyway; keeps it < 250 KB
 OVERSAMPLE = 2                         # synthesise at 2x, band-limit + decimate in one FFT
 PEAK = 10 ** (-3 / 20)                 # -3 dBFS ceiling
-# Loudness: app tracks are matched at -19 dB RMS (Part.rms_db); the portal loop is quieter.
+# Loudness (simple RMS, Part.rms_db): loops -24 dB, done jingles -21 dB, portal -26 dB,
+# installer music (desktop_idle.wav) -26 dB (RMS_OVERRIDE). Peaks always <= -3 dBFS.
 MP3_QUALITY = 0.55                     # libsndfile compression_level for LAME VBR (0 best .. 1 smallest)
 WEB_SR = 32000
 VORBIS_QUALITY = 0.30                  # libsndfile compression_level = 1 - quality
-DESKTOP_TRANSFER_BARS = 8              # desktop transfer loop is shortened to fit ~250 KB
+RMS_OVERRIDE = {"assets/music/desktop_idle.wav": -26.0}   # installer music: extra quiet
 THEMES = ("purikura", "showa", "manga", "yume", "night")
 
 # ------------------------------------------------------------------------- pitch & chords
@@ -325,7 +328,7 @@ class Part:
     beats_per_bar: int = 4
     seconds: float = 0.0              # >0: one-shot jingle of this length
     lowpass: float = 0.0              # master low-pass Hz (0 = default for the sample rate)
-    rms_db: float = -19.0             # loudness target (simple RMS, dBFS)
+    rms_db: float = -24.0             # loudness target (simple RMS, dBFS)
 
 
 @dataclass(frozen=True)
@@ -462,7 +465,9 @@ def render(theme, which: str, sr: int, bars: int | None = None) -> np.ndarray:
         h += part.echo[1] ** (k - 1) * (damp ** k) * np.exp(-2j * np.pi * fr * k * delay / isr)
     spec = np.fft.rfft(dry) + np.fft.rfft(wet) * h * part.echo[2]
     # Master: DC/rumble high-pass, gentle low-pass, band-limit and decimate to `sr`.
-    lp = part.lowpass or (8500 if sr >= 22050 else 6200)
+    lp = part.lowpass or 8500                  # given for 22.05 kHz and up
+    if sr < 22050:
+        lp *= 6200 / 8500                      # proportionally darker for the 12/16 kHz desktop set
     spec *= 1 / np.sqrt(1 + (fr / lp) ** 4) / np.sqrt(1 + (28 / np.maximum(fr, 1e-3)) ** 4)
     spec[0] = 0
     m = n_fft // OVERSAMPLE
@@ -521,6 +526,14 @@ D_MIN = [2, 4, 5, 7, 9, 10, 0]
 FOUR = "x...x...x...x..."
 BACK = "....x.......x..."
 HATS16 = "gxXxgxXxgxXxgxXx"
+HATS8 = "x.g.x.g.x.g.x.g."
+NONE = "." * 16
+
+
+def calm(i: Inst) -> Inst:
+    """Idle-loop lead: softer attack, legato, longer release, lighter vibrato."""
+    return replace(i, a=max(i.a, 0.025), gate=max(i.gate, 0.97), s=max(i.s, 0.6),
+                   r=max(i.r * 1.8, 0.14), vib=(i.vib[0] * 0.8, i.vib[1] * 0.9, i.vib[2]))
 CRASH8 = ["x" + "." * 15] + ["." * 16] * 7      # crash on the first bar of every 8
 
 
@@ -537,27 +550,27 @@ def purikura() -> Theme:
         D6  -  -   .  .  .  F#5 G5
     """
     idle = Part(
-        bpm=124, chords=chords,
-        tracks=(Track("notes", PULSE25, hook, send=0.6),
-                Track("bass", TRI_BASS, "R . 8 . R . 8 .", low=38),
-                Track("arp", replace(PULSE12, gate=0.4), ". c . c . c . c", gain=0.55, low=62)),
-        drums={"kick": ["x.......x......."], "snare": [BACK], "hat": ["..x...x...x...x."]},
-        drum_gain={"kick": 0.55, "snare": 0.22, "hat": 0.25},
+        bpm=108, chords=chords, lowpass=6800, echo=(0.75, 0.38, 0.4),
+        tracks=(Track("notes", calm(PULSE25), hook, gain=0.85, send=0.7),
+                Track("bass", TRI_BASS, "R - - . 8 - . .", low=38),
+                Track("arp", replace(PULSE12, gate=0.5), ". . . c . . . c", gain=0.5, low=62)),
+        drums={"kick": ["x.......x......."], "brush": [BACK]},
+        drum_gain={"kick": 0.4, "brush": 0.22},
     )
     transfer = Part(
-        bpm=172, chords=join(chords, chords), bars=16,
-        tracks=(Track("notes", PULSE25, join(hook, hook), send=0.5),
+        bpm=135, chords=join(chords, chords), bars=16, lowpass=7500,
+        tracks=(Track("notes", replace(PULSE25, a=0.012, r=0.08), join(hook, hook), send=0.55),
                 Track("notes", replace(PULSE12, s=0.5, detune=8), join(rests(8), harmonize(hook, D_MAJ, -2)),
                       gain=0.9, send=0.4),
                 Track("bass", TRI_BASS, "R 8 5 8 R 8 5 8", low=38),
-                Track("arp", replace(PULSE12, gate=0.6), "1 2 3 4 3 2 1 2 3 4 3 2 1 2 3 4", gain=0.45,
+                Track("arp", replace(PULSE12, gate=0.6), "1 2 3 4 3 2 1 2 3 4 3 2 1 2 3 4", gain=0.35,
                       send=0.5, low=66)),
-        drums={"kick": [FOUR], "snare": [BACK], "hat": [HATS16], "crash": CRASH8},
-        drum_gain={"kick": 0.7, "snare": 0.45, "hat": 0.28, "crash": 0.3},
-        fills={"snare": (4, "....x.......xxXX")},
+        drums={"kick": [FOUR], "snare": [BACK], "hat": [HATS8], "crash": CRASH8},
+        drum_gain={"kick": 0.55, "snare": 0.3, "hat": 0.2, "crash": 0.2},
+        fills={"snare": (8, "....x.......x.gx")},
     )
     done = Part(
-        bpm=160, chords="D", seconds=2.0, bars=1,
+        bpm=160, chords="D", seconds=2.0, bars=1, rms_db=-21.0,
         tracks=(Track("notes", PULSE25, "D5 F#5 A5 D6 . F#6 . A6 - - - - - - . ."),
                 Track("notes", PULSE12, ". . . . . . . D6 - - - - - - . .", gain=0.8),
                 Track("arp", replace(PULSE12, s=0.6), ". . . . . . . . c - - - - - - .", gain=0.6, low=62),
@@ -582,29 +595,28 @@ def showa() -> Theme:
     """
     lead = replace(PULSE50, vib=(26, 6.0, 0.15), detune=8)
     idle = Part(
-        bpm=112, chords=chords, swing=0.64,
-        tracks=(Track("notes", lead, hook, send=0.45),
-                Track("bass", TRI_BASS, "R . 5 . 8 . 5 .", low=40),
-                Track("arp", FM_KOTO, ". c . c . c . c", gain=0.7, low=59)),
-        drums={"kick": ["x.......x......."], "snare": [BACK], "hat": ["x.x.x.x.x.x.x.x."],
-               "wood": ["......x.......x."]},
-        drum_gain={"kick": 0.55, "snare": 0.3, "hat": 0.22, "wood": 0.18},
+        bpm=98, chords=chords, swing=0.64, lowpass=6800, echo=(0.75, 0.36, 0.38),
+        tracks=(Track("notes", calm(lead), hook, gain=0.85, send=0.55),
+                Track("bass", TRI_BASS, "R - - . 5 - - .", low=40),
+                Track("arp", FM_KOTO, ". . . c . . . c", gain=0.7, low=59)),
+        drums={"kick": ["x.......x......."], "brush": [BACK], "wood": ["..............x."]},
+        drum_gain={"kick": 0.4, "brush": 0.22, "wood": 0.12},
     )
     # Transfer: the shuffle straightens into a 60s "eleki" surf drive.
     transfer = Part(
-        bpm=156, chords=join(chords, chords), bars=16, swing=0.54,
+        bpm=122, chords=join(chords, chords), bars=16, swing=0.56, lowpass=7500,
         tracks=(Track("notes", lead, join(hook, hook), send=0.4),
                 Track("notes", replace(PULSE25, detune=0), join(rests(8), harmonize(hook, G_MAJ, -2)),
                       gain=0.8, send=0.3),
                 Track("bass", TRI_BASS, "R R 5 R 8 R 5 R", low=40),
                 Track("arp", FM_KOTO, "1 3 2 4 3 5 4 3", gain=0.6, low=67, send=0.3)),
-        drums={"kick": ["x.....x.x...x..."], "snare": [BACK], "hat": [HATS16], "wood": ["..x...x...x...x."],
-               "tom": ["." * 16], "crash": CRASH8},
-        drum_gain={"kick": 0.7, "snare": 0.45, "hat": 0.25, "wood": 0.12, "tom": 0.5, "crash": 0.25},
+        drums={"kick": ["x.....x.x...x..."], "snare": [BACK], "hat": [HATS8], "wood": ["..x...x...x...x."],
+               "tom": [NONE], "crash": CRASH8},
+        drum_gain={"kick": 0.55, "snare": 0.3, "hat": 0.18, "wood": 0.1, "tom": 0.35, "crash": 0.18},
         fills={"tom": (8, "........x.x.xxxx"), "snare": (8, "....x...........")},
     )
     done = Part(
-        bpm=140, chords="G", seconds=2.1, bars=1,
+        bpm=140, chords="G", seconds=2.1, bars=1, rms_db=-21.0,
         tracks=(Track("notes", lead, "D5 E5 G5 . B5 . D6 . G6 - - - - - . ."),
                 Track("arp", FM_KOTO, ". . . . . . . . c . c . c - - -", gain=0.8, low=59),
                 Track("bass", TRI_BASS, "R . . . 5 . . . R - - - - - . .", low=40)),
@@ -630,30 +642,30 @@ def manga() -> Theme:
     lead = replace(PULSE50, s=0.3, d=0.08, gate=0.55, vib=(0, 5, 0), detune=5)
     sparkle = replace(PULSE12, gate=0.35)
     idle = Part(
-        bpm=128, chords=chords,
-        tracks=(Track("notes", lead, hook, send=0.25),
-                Track("notes", sparkle, hook, transpose=12, gain=0.45),
-                Track("bass", replace(TRI_BASS, gate=0.5), "R . 5 . R . 5 .", low=36),
-                Track("arp", replace(PULSE25, gate=0.3, vib=(0, 5, 0), detune=0), ". c . c . c . c",
-                      gain=0.35, low=60)),
-        drums={"kick": ["x.......x......."], "snare": [BACK], "hat": ["..x...x...x...x."]},
-        drum_gain={"kick": 0.6, "snare": 0.35, "hat": 0.25},
-        fills={"snare": (4, "....x.......x.gx")},
+        bpm=112, chords=chords, lowpass=6800, echo=(0.75, 0.32, 0.3),
+        tracks=(Track("notes", calm(lead), hook, gain=0.85, send=0.4),
+                Track("notes", sparkle, hook, transpose=12, gain=0.3),
+                Track("bass", replace(TRI_BASS, gate=0.6), "R . . . 5 . . .", low=36),
+                Track("arp", replace(PULSE25, gate=0.3, vib=(0, 5, 0), detune=0), ". . . c . . . c",
+                      gain=0.3, low=60)),
+        drums={"kick": ["x.......x......."], "brush": [BACK]},
+        drum_gain={"kick": 0.45, "brush": 0.25},
+        fills={"brush": (4, "....x.......x.g.")},
     )
     transfer = Part(
-        bpm=180, chords=join(chords, chords), bars=16,
-        tracks=(Track("notes", lead, join(hook, hook), send=0.2),
+        bpm=140, chords=join(chords, chords), bars=16, lowpass=7500,
+        tracks=(Track("notes", replace(lead, gate=0.7), join(hook, hook), send=0.25),
                 Track("notes", sparkle, join(hook, rests(8)), transpose=12, gain=0.4),
                 Track("notes", replace(lead, gain=0.2), join(rests(8), harmonize(hook, C_MAJ, -5)), send=0.2),
                 Track("bass", replace(TRI_BASS, gate=0.6), "R 8 R 8 R 8 R 8", low=36),
                 Track("arp", replace(PULSE25, gate=0.3, vib=(0, 5, 0), detune=0), ". c . c . c . c",
                       gain=0.3, low=60)),
-        drums={"kick": [FOUR], "snare": [BACK], "clap": [BACK], "hat": [HATS16], "crash": CRASH8},
-        drum_gain={"kick": 0.75, "snare": 0.4, "clap": 0.3, "hat": 0.3, "crash": 0.3},
-        fills={"snare": (4, "....x.......xgxX")},
+        drums={"kick": [FOUR], "snare": [BACK], "clap": [BACK], "hat": [HATS8], "crash": CRASH8},
+        drum_gain={"kick": 0.6, "snare": 0.3, "clap": 0.18, "hat": 0.2, "crash": 0.2},
+        fills={"snare": (4, "....x.......x.gx")},
     )
     done = Part(
-        bpm=150, chords="C", seconds=1.9, bars=1,
+        bpm=150, chords="C", seconds=1.9, bars=1, rms_db=-21.0,
         tracks=(Track("notes", replace(lead, gate=0.6), "G4 C5 E5 G5 . . . . . . . . . . . ."),
                 Track("notes", replace(PULSE50, slide=(-5, 0.06), s=0.7, detune=6), ". . . . . . C6 - - - - - . . . ."),
                 Track("notes", sparkle, ". . . . . . . . . . . . . G6 . .", gain=0.9),
@@ -682,29 +694,28 @@ def yume() -> Theme:
     pad = Inst(wave="tri", a=0.35, d=1.0, s=0.8, r=0.4, gate=1.0, detune=11, gain=0.14)
     arp = replace(PULSE12, a=0.004, gate=0.5, s=0.3, gain=0.13)
     idle = Part(
-        bpm=92, chords=chords, echo=(0.75, 0.42, 0.45),
-        tracks=(Track("notes", FM_FLUTE, hook, send=0.8),
-                Track("notes", FM_BELL, hook, transpose=12, gain=0.35, send=0.8),
-                Track("arp", arp, "1 2 3 4 5 4 3 2 1 2 3 4 5 4 3 2", send=1.0, low=60),
+        bpm=80, chords=chords, lowpass=6500, echo=(0.75, 0.45, 0.5),
+        tracks=(Track("notes", calm(FM_FLUTE), hook, gain=0.85, send=0.9),
+                Track("notes", FM_BELL, hook, transpose=12, gain=0.3, send=0.8),
+                Track("arp", arp, "1 2 3 4 5 4 3 2", send=1.0, low=60),
                 Track("arp", pad, "c - - - - - - -", low=53),
                 Track("bass", TRI_BASS, "R - - - 5 - - -", gain=0.8, low=36)),
-        drums={"kick": ["x.........x....."], "shaker": ["..x...x...x...x."], "snare": ["........g......."]},
-        drum_gain={"kick": 0.45, "shaker": 0.25, "snare": 0.2},
+        drums={"kick": ["x..............."], "shaker": ["....x.......x..."]},
+        drum_gain={"kick": 0.35, "shaker": 0.18},
     )
     transfer = Part(
-        bpm=128, chords=join(chords, chords), bars=16, echo=(0.75, 0.38, 0.4),
+        bpm=100, chords=join(chords, chords), bars=16, lowpass=7500, echo=(0.75, 0.4, 0.42),
         tracks=(Track("notes", FM_FLUTE, join(hook, hook), send=0.6),
                 Track("notes", FM_BELL, join(rests(8), hook), transpose=12, gain=0.4, send=0.7),
                 Track("notes", replace(FM_FLUTE, gain=0.2), join(rests(8), harmonize(hook, F_LYD, -2)), send=0.5),
-                Track("arp", replace(arp, gain=0.12), "1 2 3 4 5 6 5 4 3 4 5 6 7 6 5 4", send=0.9, low=60),
+                Track("arp", replace(arp, gain=0.1), "1 2 3 4 5 6 5 4 3 4 5 6 7 6 5 4", send=0.9, low=60),
                 Track("arp", pad, "c - - - - - - -", gain=0.8, low=53),
                 Track("bass", TRI_BASS, "R 5 8 5 R 5 8 5", low=36)),
-        drums={"kick": ["x.....x...x....."], "snare": [BACK], "shaker": ["gxgxgxgxgxgxgxgx"],
-               "hat": ["..x...x...x...x."]},
-        drum_gain={"kick": 0.6, "snare": 0.3, "shaker": 0.25, "hat": 0.2},
+        drums={"kick": ["x.....x...x....."], "brush": [BACK], "shaker": ["g.x.g.x.g.x.g.x."]},
+        drum_gain={"kick": 0.5, "brush": 0.25, "shaker": 0.2},
     )
     done = Part(
-        bpm=120, chords="Fmaj9", seconds=2.4, bars=1, echo=(0.5, 0.4, 0.45),
+        bpm=120, chords="Fmaj9", seconds=2.4, bars=1, rms_db=-21.0, echo=(0.5, 0.4, 0.45),
         tracks=(Track("notes", FM_BELL, "F5 A5 C6 E6 . G6 . A6 - - - - - - - .", send=0.8, gain=1.2),
                 Track("notes", FM_FLUTE, ". . . . . . . A5 - - - - - - - .", gain=0.8, send=0.5),
                 Track("arp", pad, ". . . . . . c - - - - - - - - .", low=53, gain=1.2),
@@ -729,26 +740,26 @@ def night() -> Theme:
         E5 -  -   D5  -   - .  .
     """
     idle = Part(
-        bpm=90, chords=chords, swing=0.58, swing_grid=0.5, echo=(0.75, 0.35, 0.35),
-        tracks=(Track("notes", FM_LEAD, hook, send=0.6),
+        bpm=78, chords=chords, swing=0.58, swing_grid=0.5, lowpass=6500, echo=(0.75, 0.4, 0.42),
+        tracks=(Track("notes", calm(FM_LEAD), hook, gain=0.85, send=0.7),
                 Track("arp", FM_EP, "c - - - - - . c - - . . . . . .", low=55),
-                Track("bass", FM_BASS, "R - - . . . R 5 . . 8 - . . 7 .", low=38)),
-        drums={"kick": ["x.....x...x....."], "snare": [BACK], "hat": ["x.xgx.x.x.xgx.x."]},
-        drum_gain={"kick": 0.6, "snare": 0.35, "hat": 0.22},
+                Track("bass", FM_BASS, "R - - . . . . 5 . . 8 - . . . .", low=38)),
+        drums={"kick": ["x.........x....."], "brush": [BACK], "shaker": ["..x...x...x...x."]},
+        drum_gain={"kick": 0.45, "brush": 0.25, "shaker": 0.12},
     )
     # Transfer: lo-fi turns into a city-pop disco groove.
     transfer = Part(
-        bpm=124, chords=join(chords, chords), bars=16, echo=(0.75, 0.3, 0.3),
+        bpm=98, chords=join(chords, chords), bars=16, lowpass=7500, echo=(0.75, 0.32, 0.32),
         tracks=(Track("notes", FM_LEAD, join(hook, hook), send=0.5),
                 Track("notes", replace(PULSE25, gain=0.13), join(rests(8), harmonize(hook, D_MIN, -2)), send=0.4),
                 Track("arp", FM_EP, ". . c . . . c . . . c . . . c .", low=55),
                 Track("bass", FM_BASS, "R 8 R 8 5 8 7 8", low=38)),
-        drums={"kick": [FOUR], "snare": [BACK], "clap": [BACK], "hat": [HATS16], "ohat": ["..x...x...x...x."],
+        drums={"kick": [FOUR], "snare": [BACK], "clap": [BACK], "hat": [HATS8], "ohat": ["..x...x...x...x."],
                "crash": CRASH8},
-        drum_gain={"kick": 0.7, "snare": 0.35, "clap": 0.25, "hat": 0.25, "ohat": 0.18, "crash": 0.2},
+        drum_gain={"kick": 0.55, "snare": 0.28, "clap": 0.18, "hat": 0.18, "ohat": 0.12, "crash": 0.15},
     )
     done = Part(
-        bpm=110, chords="Dm9 Dmaj9", seconds=2.4, bars=1, echo=(0.5, 0.35, 0.35),
+        bpm=110, chords="Dm9 Dmaj9", seconds=2.4, bars=1, rms_db=-21.0, echo=(0.5, 0.35, 0.35),
         tracks=(Track("notes", FM_LEAD, "A5 C6 E6 . D6 . . . F#6 - - - - - - .", send=0.6),
                 Track("arp", FM_EP, "c - - - . . . . c - - - - - - -", low=55),
                 Track("bass", FM_BASS, "R - - - . . . . R - - - - - - .", low=38)),
@@ -783,19 +794,18 @@ def portal() -> Theme:
         Ab5 - C6  -   Bb5 -   Ab5 -  |
         G5  - -   -   -   -   .  .
     """
-    lead = replace(PULSE25, a=0.015, d=0.3, s=0.55, r=0.12, vib=(13, 5.0, 0.22), detune=6, gain=0.24)
+    lead = replace(PULSE25, a=0.025, d=0.3, s=0.6, r=0.2, gate=0.97, vib=(11, 4.8, 0.25), detune=6, gain=0.22)
     pad = Inst(wave="tri", a=0.4, d=1.2, s=0.75, r=0.5, gate=1.0, detune=9, gain=0.10)
     idle = Part(
-        bpm=96, chords=chords, bars=16, lowpass=5200, rms_db=-22.0, echo=(0.75, 0.35, 0.35),
-        tracks=(Track("notes", lead, join(a, b), send=0.55),
+        bpm=84, chords=chords, bars=16, lowpass=4800, rms_db=-26.0, echo=(0.75, 0.4, 0.4),
+        tracks=(Track("notes", lead, join(a, b), send=0.65),
                 Track("notes", replace(FM_FLUTE, gain=0.13), join(rests(8), b), transpose=-12, send=0.4),
                 Track("notes", replace(FM_BELL, gain=0.07), join(rests(8), b), transpose=12, send=0.7),
-                Track("arp", replace(PULSE12, a=0.006, gate=0.45, gain=0.12), ". c . c . c . c", low=58, send=0.2),
+                Track("arp", replace(PULSE12, a=0.006, gate=0.45, gain=0.12), ". . . c . . . c", low=58, send=0.2),
                 Track("arp", pad, "c - - - - - - -", low=51),
-                Track("bass", replace(FM_BASS, index=1.2, index_end=0.3, gain=0.5), "R . . 5 8 . 5 .", low=39)),
-        drums={"kick": ["x.......x......."], "brush": ["....x.......x..."],
-               "shaker": ["x.g.x.g.x.g.x.gg"]},
-        drum_gain={"kick": 0.45, "brush": 0.3, "shaker": 0.16},
+                Track("bass", replace(FM_BASS, index=1.2, index_end=0.3, gain=0.5), "R - . 5 8 - . .", low=39)),
+        drums={"kick": ["x.......x......."], "brush": ["....x.......x..."], "shaker": ["x...x...x...x..."]},
+        drum_gain={"kick": 0.35, "brush": 0.22, "shaker": 0.1},
     )
     return Theme("portal", "Eb major (maj7/add9)", "relaxing, cozy, gently bouncy", (3, 5, 7, 8, 10, 0, 2),
                  idle, None, None)
@@ -865,8 +875,8 @@ def plan(themes: list[str]):
         for which in ("idle", "transfer", "done"):
             yield f"{RAW}/music_{name}_{which}.ogg", name, which, ANDROID_SR, None, "ogg"
     if "purikura" in themes:
-        for which, bars in (("idle", None), ("transfer", DESKTOP_TRANSFER_BARS), ("done", None)):
-            yield f"{DESK}/desktop_{which}.wav", "purikura", which, DESKTOP_SR, bars, "wav"
+        yield f"{DESK}/desktop_idle.wav", "purikura", "idle", DESKTOP_IDLE_SR, None, "wav"
+        yield f"{DESK}/desktop_done.wav", "purikura", "done", DESKTOP_SR, None, "wav"
     if "portal" in themes:
         for fmt in ("ogg", "mp3"):
             yield f"{SITE_MUSIC}/portal.{fmt}", "portal", "idle", WEB_SR, None, fmt
@@ -881,7 +891,8 @@ def meta(rel: str, name: str, which: str, sr: int, bars: int | None) -> dict:
     n = round(beats * 60 / p.bpm * sr) if loop else round(p.seconds * sr)
     d = {"file": rel, "resource": Path(rel).name if name == "portal" else Path(rel).stem, "theme": name,
          "kind": "loop" if name == "portal" else which, "loop": loop,
-         "sample_rate": sr, "samples": n, "ms": round(n * 1000 / sr, 3), "bpm": p.bpm, "key": t.key}
+         "sample_rate": sr, "samples": n, "ms": round(n * 1000 / sr, 3), "bpm": p.bpm, "key": t.key,
+         "rms_db": RMS_OVERRIDE.get(rel, p.rms_db)}
     if loop:
         d |= {"bars": nbars, "beats_per_bar": p.beats_per_bar, "bar_ms": round(p.beats_per_bar * 60000 / p.bpm, 3)}
     return d
@@ -901,10 +912,11 @@ Original 16-bit-style chiptunes, one set per theme, synthesised from note data b
 
 Needs `pip install numpy soundfile`. Android files live in
 `apps/android/app/src/main/res/raw/` (Vorbis, 22050 Hz mono); the desktop set here is the
-Purikura music as 8-bit 16 kHz WAV for `PlaySoundW`. The download portal's quieter `portal`
+Purikura music as 8-bit WAV for `PlaySoundW` (installer loop 12 kHz, delivery jingle 16 kHz). The download portal's quieter `portal`
 loop is in `site/music/` (Vorbis + MP3, 32 kHz mono, with `portal.json` for the player).
 `manifest.json` lists exact lengths.
-Loops are sample-exact and seamless; `done` jingles are one-shots. Playback rules are in
+Loops are sample-exact and seamless; `done` jingles are one-shots. Levels (RMS): loops
+−24 dB, jingles −21 dB, installer `desktop_idle.wav` and the portal −26 dB; peaks ≤ −3 dBFS. Playback rules are in
 `docs/design/themes.md` ("Music").
 
 | Resource | Theme | Kind | Key | BPM | Bars | ms | Hz |
@@ -930,7 +942,7 @@ def main() -> None:
         part = getattr(PIECES[name], which)
         x = render(PIECES[name], which, sr, bars)
         loop = part.seconds == 0
-        x = normalize(x, loop, sr, part.rms_db)
+        x = normalize(x, loop, sr, RMS_OVERRIDE.get(rel, part.rms_db))
         errs += verify(rel, x, loop)
         want = meta(rel, name, which, sr, bars)["samples"]
         if len(x) != want:
