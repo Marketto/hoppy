@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use hoppy::{
     DialogGuard, bind_receiver, config, default_receive_dir, display_file_name, display_name,
-    display_platform, human, parse_direct, parse_seeds, platform, start_discovery,
+    display_platform, firewall, human, parse_direct, parse_seeds, platform, start_discovery,
 };
 use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
@@ -77,6 +77,19 @@ enum Command {
     Install,
     /// Windows: remove the shortcuts created by `install`.
     Uninstall,
+    /// Windows: can other devices reach this PC through the firewall? `--fix` adds the
+    /// Hoppy rules (asks for administrator permission).
+    Firewall {
+        /// Add the inbound rules for Hoppy (Private + Domain networks; UAC prompt).
+        #[arg(long)]
+        fix: bool,
+        /// Add the rules in this process (it must already run as administrator).
+        #[arg(long, hide = true, conflicts_with_all = ["fix", "remove"])]
+        apply: bool,
+        /// Remove the Hoppy rules (run from an administrator terminal).
+        #[arg(long, conflicts_with = "fix")]
+        remove: bool,
+    },
 }
 
 fn main() {
@@ -95,6 +108,11 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    // Before load_or_create: the elevated copy may run as another (admin) user, whose
+    // profile must not get a device.json.
+    if let Command::Firewall { fix, apply, remove } = cli.command {
+        return cmd_firewall(fix, apply, remove);
+    }
     let identity = config::load_or_create()?;
     let me = config::device_info(&identity);
     let seeds = parse_seeds(&cli.seed)?;
@@ -136,7 +154,101 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Install => platform::install(),
         Command::Uninstall => platform::uninstall(),
+        Command::Firewall { .. } => unreachable!("handled above"),
     }
+}
+
+fn cmd_firewall(fix: bool, apply: bool, remove: bool) -> Result<()> {
+    if !cfg!(windows) {
+        bail!("`hoppy firewall` is Windows-only; elsewhere open TCP 47471 and UDP 47470 by hand");
+    }
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().context("no program folder")?.to_path_buf();
+    if apply {
+        firewall::apply(&dir)?;
+        println!("✓ Firewall rules added for {}", dir.display());
+        return Ok(());
+    }
+    if remove {
+        firewall::remove(&dir)?;
+        println!("✓ Firewall rules removed");
+        return Ok(());
+    }
+    if fix {
+        println!("Asking for administrator permission…");
+        let child = platform::win::run_elevated(None, &exe, "firewall --apply")?;
+        match child.wait(120_000) {
+            Some(0) => println!("✓ Firewall rules added"),
+            Some(code) => bail!(
+                "adding the rules failed (exit code {code}); try `hoppy firewall --apply` \
+                 from an administrator terminal"
+            ),
+            None => bail!("adding the rules did not finish"),
+        }
+    }
+    let programs = firewall::programs_in(&dir);
+    let status = firewall::check(&programs)
+        .context("could not read the firewall state (PowerShell NetSecurity cmdlets)")?;
+    let networks: Vec<&str> = status
+        .networks
+        .iter()
+        .map(|n| match n {
+            firewall::Network::Domain => "Domain",
+            firewall::Network::Private => "Private",
+            firewall::Network::Public => "Public",
+        })
+        .collect();
+    println!(
+        "Connected networks: {}",
+        if networks.is_empty() {
+            "none".to_owned()
+        } else {
+            networks.join(", ")
+        }
+    );
+    for (i, program) in programs.iter().enumerate() {
+        let list = |allow: bool| {
+            let mut p = firewall::Profiles::default();
+            for r in status
+                .rules
+                .iter()
+                .filter(|r| r.program == i && r.allow == allow)
+            {
+                p.domain |= r.profiles.domain;
+                p.private |= r.profiles.private;
+                p.public |= r.profiles.public;
+            }
+            let names: Vec<&str> = [
+                (p.domain, "Domain"),
+                (p.private, "Private"),
+                (p.public, "Public"),
+            ]
+            .into_iter()
+            .filter_map(|(on, name)| on.then_some(name))
+            .collect();
+            if names.is_empty() {
+                "-".to_owned()
+            } else {
+                names.join(", ")
+            }
+        };
+        let verdict = match status.verdict(i) {
+            firewall::Verdict::Ok => "✓ reachable".to_owned(),
+            firewall::Verdict::PublicNetwork => {
+                "✗ the network is Public: set it to Private in Windows Settings".to_owned()
+            }
+            firewall::Verdict::NeedsRules => "✗ blocked: run `hoppy firewall --fix` (on \
+                corporate PCs a policy may ignore local rules: ask IT)"
+                .to_owned(),
+        };
+        println!(
+            "{}\n  allowed on: {}\n  blocked on: {}\n  {verdict}",
+            program.display(),
+            list(true),
+            list(false)
+        );
+    }
+    Ok(())
 }
 
 fn cmd_send(

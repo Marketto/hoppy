@@ -17,6 +17,11 @@
   Files: `res/xml/shortcuts.xml` (share-target category `app.hoppy.category.SHARE_TARGET`
   → `SendActivity`), `ui/ShareShortcuts.kt` (publishing), `ui/ShareTargets.kt` (pure ids,
   ranking and storage, unit-tested).
+- Send errors: if the connection cannot be opened (connect timeout / refused / no route,
+  `PeerUnreachableException` from `:core`), the send screen says it cannot reach the device
+  and suggests allowing Hoppy in the Windows firewall (*Private networks*) and checking both
+  are on the same Wi-Fi; the raw exception goes to logcat only (tag `HoppySend`). A refusal
+  shows "<name> said no"; other failures show "Could not send: <reason>".
 - *Send files* on the home screen opens the system document picker and hands the URIs to
   `SendActivity` as `ACTION_SEND` / `ACTION_SEND_MULTIPLE` (EXTRA_STREAM + ClipData + read
   grant), the same shape as an external share.

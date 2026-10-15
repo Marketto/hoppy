@@ -17,6 +17,10 @@ pub struct Identity {
     /// Windows `hoppyw send` plays music while sending (`hoppy music on|off`, tray menu).
     #[serde(default = "default_music")]
     pub music: bool,
+    /// Windows tray: version that last showed the firewall/Public-network balloon (once
+    /// per version; the menu item stays while the problem does).
+    #[serde(default)]
+    pub firewall_hint: String,
 }
 
 fn default_music() -> bool {
@@ -44,6 +48,7 @@ pub fn load_or_create() -> Result<Identity> {
         id: new_id(),
         name: default_name(),
         music: default_music(),
+        firewall_hint: String::new(),
     };
     save(&identity)?;
     Ok(identity)
@@ -66,6 +71,14 @@ pub fn set_music(on: bool) -> Result<Identity> {
     identity.music = on;
     save(&identity)?;
     Ok(identity)
+}
+
+/// Remembers that the tray showed the firewall hint for `version` (re-reads the file first,
+/// like `set_music`).
+pub fn set_firewall_hint(version: &str) -> Result<()> {
+    let mut identity = load_or_create()?;
+    identity.firewall_hint = version.to_owned();
+    save(&identity)
 }
 
 pub fn device_info(identity: &Identity) -> DeviceInfo {
@@ -98,6 +111,7 @@ mod tests {
     fn old_device_json_loads_with_music_on() {
         let old: Identity = serde_json::from_str(r#"{"id":"x","name":"PC"}"#).unwrap();
         assert!(old.music);
+        assert!(old.firewall_hint.is_empty());
         let off: Identity =
             serde_json::from_str(r#"{"id":"x","name":"PC","music":false}"#).unwrap();
         assert!(!off.music);

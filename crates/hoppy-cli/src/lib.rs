@@ -5,6 +5,7 @@
 //! Win32 FFI lives only in `platform.rs`; `gui.rs` is safe Rust on top of it.
 
 pub mod config;
+pub mod firewall;
 pub mod gui;
 pub mod platform;
 pub mod update;

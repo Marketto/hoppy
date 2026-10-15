@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Render app icons from the generated mascot SVGs (needs Playwright + Pillow).
+"""Render desktop/web app icons from the generated launcher icon (needs Playwright + Pillow).
 
-Writes assets/brand/hoppy.ico (Windows installer/exe) and assets/brand/hoppy-512.png
-(web portal, social preview). Run after tools/gen_mascots.py changes the Kawaii mascot.
+Input: assets/brand/hoppy-icon.svg (108x108 adaptive icon: gradient + sticker bunny),
+written by tools/gen_mascots.py. Writes assets/brand/hoppy.ico (Windows installer/exe) and
+assets/brand/hoppy-512.png (web portal, social preview) as a rounded square showing the
+central 80 units, so the bunny is as big as on Android. Run after tools/gen_mascots.py
+changes the icon.
 """
 from pathlib import Path
 
@@ -11,13 +14,15 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 BRAND = ROOT / "assets" / "brand"
+CROP = "14 14 80 80"  # viewBox: everything the 72dp launcher mask shows, plus a margin
 
 
 def main() -> None:
-    svg = (BRAND / "mascot-kawaii.svg").read_text().replace('width="200" height="200"', 'width="460" height="460"')
+    svg = (BRAND / "hoppy-icon.svg").read_text().replace(
+        'viewBox="0 0 108 108" width="108" height="108"', f'viewBox="{CROP}" width="512" height="512"')
+    assert f'viewBox="{CROP}"' in svg, "unexpected hoppy-icon.svg header"
     html = ('<body style="margin:0;background:transparent"><div style="width:512px;height:512px;'
-            'border-radius:112px;background:#FFE9F0;display:flex;align-items:center;justify-content:center">'
-            f'{svg}</div></body>')
+            f'border-radius:112px;overflow:hidden">{svg}</div></body>')
     png = BRAND / "hoppy-512.png"
     with sync_playwright() as p:
         browser = p.chromium.launch()

@@ -20,7 +20,8 @@ PoC UX (no console windows):
 ## Pieces
 
 - `crates/hoppy-cli/src/main.rs` — `hoppy` CLI (console): `send`, `receive`, `peers`,
-  `name`, `music [on|off]`, `install`, `uninstall`. The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
+  `name`, `music [on|off]`, `install`, `uninstall`, `firewall [--fix|--remove]` (runs before
+  `config::load_or_create`: the elevated copy may be another user). The CLI itself never plays sound. Kept intact for scripts, tests, Linux/macOS, and as a
   fallback (`send --pause` when `hoppyw.exe` is missing).
 - `crates/hoppy-cli/src/bin/hoppyw.rs` — GUI-subsystem binary; calls `hoppy::gui::run`.
   Off Windows it prints that it is Windows-only and exits 1.
@@ -38,13 +39,24 @@ PoC UX (no console windows):
   `Http` trait (fake in tests). `gui.rs` runs it on worker threads (30 s, then daily),
   shows the bold "Update to X…" item / balloon, runs the installer with `/UPDATE=1` and
   exits. Asset names are a contract with `release.yml` (docs/release.md).
+- `crates/hoppy-cli/src/firewall.rs` — firewall rules, cross-platform std code + Linux
+  tests: netsh argument lists (`add_commands`/`remove_commands`; delete only by program
+  path, never by name alone — other users' installs share the names), PowerShell
+  `STATUS_SCRIPT` (paths in `$env:HOPPY_EXES`) → `Status::parse` → `verdict` (tray/CLI) and
+  `check_code` (`hoppyw firewall --check`, read by the installer). Rule names, ports and
+  profiles (Private + Domain, never Public) are documented in docs/platforms/windows.md
+  "Firewall". `gui.rs` checks at tray start, balloon once per version (`firewall_hint` in
+  device.json), menu item while needed, fix = UAC `hoppyw firewall --apply`.
 - `crates/hoppy-cli/src/platform.rs` — **all Win32 FFI** (`windows-sys` 0.61) in
   `#[cfg(windows)] mod win`: hidden window + `Shell_NotifyIconW` (NOTIFYICON_VERSION_4,
   re-added on `TaskbarCreated`), popup menus, `GetOpenFileNameW`, `ShellExecuteW`, named
   mutex `Local\HoppyTray` (single instance; a 2nd launch makes the 1st show a balloon),
   `http_get` (WinHTTP, `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`, https only via
   `split_https_url`; bold menu items = `SetMenuDefaultItem`), and
-  `install()`, and `play_tune`/`stop_tune` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`, WAVs
+  `install()`, `run_elevated` (`ShellExecuteExW` "runas", hidden, returns an `Elevated`
+  process handle to wait on; UAC "No" = `ElevationDeclined`; needs the
+  `Win32_System_Registry` feature for `SHELLEXECUTEINFOW`), `no_window` (CREATE_NO_WINDOW
+  for netsh/powershell children of the GUI exe), and `play_tune`/`stop_tune` (`PlaySoundW` + `SND_MEMORY|SND_ASYNC`, WAVs
   from `assets/music/` embedded with `include_bytes!` only in Windows builds). A non-Windows stub with the same API makes `gui.rs` compile and lint on Linux.
   `install()` writes two `.lnk` via PowerShell `WScript.Shell` (values in env vars, never
   string-interpolated): `%APPDATA%\Microsoft\Windows\SendTo\Hoppy.lnk` → `hoppyw.exe send`
@@ -56,7 +68,10 @@ PoC UX (no console windows):
   receiver) and on uninstall (`usUninstall`), Start menu "Hoppy" → `hoppyw.exe`. Wizard
   music: WAVs as `dontcopy` files → `ExtractTemporaryFile` in `InitializeWizard`, winmm
   `PlaySoundW` imported twice (String name / Longint 0 = stop), skipped if `WizardSilent`,
-  stopped in `DeinitializeSetup`. `[Run]` relaunches `hoppyw.exe` when `IsUpdate`
+  stopped in `DeinitializeSetup`. Firewall task (checked, hidden when `IsUpdate`): in
+  `CurStepChanged(ssPostInstall)` `hoppyw firewall --check`, then `ShellExec('runas', …
+  'firewall --apply')` (declined UAC = silent False, so not `[Run]`); uninstall removes
+  them the same way only when rules exist. `[Run]` relaunches `hoppyw.exe` when `IsUpdate`
   (`/UPDATE=1`, passed by the tray updater with `/VERYSILENT`); if the update fails or
   stops before `ssPostInstall`, `DeinitializeSetup` relaunches `{app}\hoppyw.exe` instead. Keep every section (`grep -n '^\[' hoppy.iss`) after edits.
 - `apps/windows/install.ps1` — portable zip install into `%LOCALAPPDATA%\Programs\Hoppy`.
@@ -75,8 +90,11 @@ PoC UX (no console windows):
   `display_name`/`display_platform`/`display_file_name`/`display_text` (lib.rs) before
   any dialog, menu, tooltip or balloon: no control/bidi chars, capped length.
 - `&` in menu text is an accelerator: escape device names (`&&`), done in `popup_menu`.
-- Each exe path gets its own firewall rule: the first `hoppyw` receive triggers the prompt
-  again even if `hoppy.exe` was allowed; the user must allow **Private** networks.
+- Firewall: rules are per exe path. Without our rules the first `hoppyw` receive triggers
+  the Windows prompt; dismissing it creates *block* rules that beat any allow rule, hence
+  `apply` deletes all inbound rules for our paths first. Values never go into a UAC command
+  line or script: the elevated process derives paths from its own `current_exe`.
+  Environment variables do not survive UAC elevation.
 - `PlaySoundW` is one sound per process: a new call replaces the current one, a null name
   stops it. `SND_MEMORY` + `SND_ASYNC` needs the buffer alive during playback ('static).
 - `device.json` fields added later need `#[serde(default)]`; `config::set_music` re-reads
@@ -95,4 +113,5 @@ the `windows-latest` CI job (clippy + `cargo test` + artifacts `hoppy.exe`, `hop
 its failures appear as annotations (`tools/ci-annotate.sh`), not only in the log.
 Manual test on a real PC: tray icon at login, accept dialog, balloon click, Send to menu,
 send music (idle → transfer → done, mute toggle), installer music + checkbox, update flow
-(balloon → download % → silent install → tray back; portable → portal).
+(balloon → download % → silent install → tray back; portable → portal), firewall task
+(UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`.

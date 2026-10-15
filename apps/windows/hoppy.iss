@@ -47,6 +47,13 @@ it.StartNow=Avvia Hoppy adesso (pronto a ricevere)
 en.StartNow=Start Hoppy now (ready to receive)
 it.Music=Musica
 en.Music=Music
+it.Firewall=Consenti Hoppy nel firewall di Windows (reti private e aziendali, richiede la conferma di un amministratore)
+en.Firewall=Allow Hoppy through Windows Firewall (private and work networks, needs administrator approval)
+
+[Tasks]
+; Checked by default. Not offered to tray updates (/UPDATE=1): the rules from the first
+; install still match, the program paths never change. See "Firewall rules" in [Code].
+Name: "firewall"; Description: "{cm:Firewall}"; Check: not IsUpdate
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -88,10 +95,42 @@ end;
 var
   InstallFinished: Boolean;
 
+// ---- Firewall rules. hoppyw.exe adds/removes them with netsh when started elevated
+// (crates/hoppy-cli/src/firewall.rs: inbound allow for hoppyw.exe and hoppy.exe, TCP 47471
+// + UDP 47470, Private + Domain profiles). Done here rather than in [Run]/[UninstallRun] so
+// that a declined UAC prompt is silent (ShellExec just returns False) and nothing is asked
+// when it is not needed.
+
+// Exit code of `hoppyw firewall --check`: 0 allowed, 1 no rules, 2 rules but not allowed,
+// 3 unknown; -1 if it could not run.
+function FirewallCheck(): Integer;
+var
+  ResultCode: Integer;
+begin
+  Result := -1;
+  if Exec(ExpandConstant('{app}\hoppyw.exe'), 'firewall --check', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) then
+    Result := ResultCode;
+end;
+
+// Runs `hoppyw firewall <Params>` as administrator (UAC prompt). Params is a constant.
+procedure RunFirewallElevated(Params: String);
+var
+  ErrorCode: Integer;
+begin
+  if not ShellExec('runas', ExpandConstant('{app}\hoppyw.exe'), Params, '', SW_HIDE,
+    ewWaitUntilTerminated, ErrorCode) then
+    Log('Firewall rules not changed (UAC declined or failed): ' + IntToStr(ErrorCode));
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     InstallFinished := True;
+    if WizardIsTaskSelected('firewall') and (FirewallCheck() <> 0) then
+      RunFirewallElevated('firewall --apply');
+  end;
 end;
 
 // Update that failed or was aborted: the tray had already exited, bring back the copy
@@ -146,10 +185,20 @@ begin
 end;
 
 // usUninstall comes after the user confirms and before [UninstallRun] / file removal.
+// Firewall: only asks for administrator approval when rules for this folder exist
+// (check codes 0 and 2); best effort, declining leaves them behind (harmless: they name
+// programs that no longer exist).
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  CheckCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
+  begin
     StopHoppy();
+    CheckCode := FirewallCheck();
+    if (CheckCode = 0) or (CheckCode = 2) then
+      RunFirewallElevated('firewall --remove');
+  end;
 end;
 
 // ---- Wizard music: idle loop while the wizard is open, jingle on the finished page.

@@ -143,6 +143,16 @@ class CoreTest {
     }
 
     @Test
+    fun closedPortIsUnreachable() {
+        val src = Files.createTempDirectory("src").toFile()
+        File(src, "x.txt").writeText("x")
+        val port = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
+        assertFailsWith<PeerUnreachableException> {
+            TransferClient.send(InetAddress.getLoopbackAddress(), port, me, listOf(FileSource(File(src, "x.txt"))))
+        }
+    }
+
+    @Test
     fun corruptFileIsDroppedAndTraversalSanitized() {
         val dst = Files.createTempDirectory("dst").toFile()
         val rec = Recorder(accept = true)
