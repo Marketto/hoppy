@@ -3,7 +3,7 @@
 ## macOS
 
 The same experience as on Windows and Ubuntu (ADR 0008): a menu-bar icon that receives,
-"Send with Hoppy" from the Finder, a device menu at the pointer, notifications, the delivery
+"Send with Hoppy" from the Finder, a device picker window, notifications, the delivery
 jingle and an update notice.
 Target: **macOS 12 Monterey and later** — the newest macOS for 2015 MacBook Pro/Air, so it
 covers Intel Macs from 2015 and every Apple silicon Mac (M1 and later). One universal
@@ -66,7 +66,14 @@ in Applications.
   menu → Services works too), or drop files on the Hoppy icon (Applications, Launchpad
   shortcut, Finder sidebar), or *Open With → Hoppy*, or the menu-bar icon → *Invia file…*.
   The tray starts `hoppyw send FILE…` (a second status item shows "Cerco dispositivi…",
-  then the progress as its title); the device menu pops up at the mouse pointer; silent
+  then the progress as its title); the devices appear in a small **picker window** near
+  the mouse pointer (title "Invia «file» +N (size) a:", one button per device with its
+  ✓/🔒/⚠ badge, *Cerca di nuovo*, *Annulla*; Esc or the close button = cancel). Before
+  showing it the sender makes itself the active app (`activateIgnoringOtherApps`, plus
+  `activate` on macOS 14+, waiting up to 1 s) and logs `activation:` / `picker:` lines.
+  It is a window, not a menu at the pointer, because a popup menu from this background
+  process (started by the Finder service while the Finder is in front) closed again at
+  once on macOS 12 (0.7.0 bug). Silent
   until the done jingle (`NSSound`, the embedded `desktop_done.wav`) unless muted
   (*♪ Suono a fine invio*). Clicking the sender's icon offers *Annulla invio*.
 - **Notifications**: `UNUserNotificationCenter` when running from the bundle (needs
@@ -153,7 +160,10 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
    110 s = declined; a second offer during the alert is declined.
 5. **Send**: Finder → right-click 1 file and 20 files → Services → *Invia con Hoppy* (also
    with Hoppy not running: it starts and then sends); drop on the app icon; *Open With →
-   Hoppy*; menu *Invia file…*. Device menu at the pointer, *Cerca di nuovo*, *Annulla*;
+   Hoppy*; menu *Invia file…*. The picker window appears near the pointer, in front of the
+   Finder, and stays until a choice (2015 MacBook Air on macOS 12: the 0.7.0 bug); click a
+   device, *Cerca di nuovo*, *Annulla*, Esc and the close button (all cancel); the log has
+   `activation: active=true` and `picker: closed, choice=…`;
    progress in the second status item; jingle once on delivery and none when muted;
    *Annulla invio* from the second icon; "Non riesco a raggiungere" balloon with the
    receiver off.

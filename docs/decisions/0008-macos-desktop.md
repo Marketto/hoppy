@@ -28,7 +28,9 @@ needed), or AppKit directly from Rust through the objc2 crates behind the existi
   `NSApplication` event loop inside `Tray::next_event`; worker threads post to a channel and
   wake it with an application-defined `NSEvent`; dialogs requested by workers run on the main
   thread via `dispatch2::run_on_main`.
-- UX mapping: `NSStatusItem` + template image; device menu `NSMenu` at the pointer; accept
+- UX mapping: `NSStatusItem` + template image; device list in a modal picker panel near the
+  pointer (an `NSMenu` at the pointer was the first design, but from the background
+  `hoppyw send` process it closed at once on macOS 12: replaced in the 0.7.x fix); accept
   question `NSAlert` with Decline as the default button (never auto-accept, 110 s timeout =
   decline); file picker `NSOpenPanel`; jingle `NSSound`; folders/URLs `/usr/bin/open`;
   updates: notify + portal link (no self-install of an unsigned app), via `/usr/bin/curl`

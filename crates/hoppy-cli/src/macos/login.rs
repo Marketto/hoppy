@@ -26,7 +26,8 @@ use crate::update::CURRENT_VERSION;
 /// Value of `config::Identity::desktop_integration` after `hoppy uninstall`.
 pub const OFF: &str = "off";
 
-fn at_least(major: isize) -> bool {
+/// Running on macOS `major` or later.
+pub(super) fn at_least(major: isize) -> bool {
     NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(NSOperatingSystemVersion {
         majorVersion: major,
         minorVersion: 0,

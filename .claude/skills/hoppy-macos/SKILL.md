@@ -1,6 +1,6 @@
 ---
 name: hoppy-macos
-description: Use for the Mac desktop experience - hoppyw on macOS (menu-bar icon, NSAlert accept question, device menu at the pointer, notifications, Finder service, drops on the app icon, Open at login), the Hoppy.app bundle and .dmg, ad-hoc signing and the Developer ID/notarization upgrade path, Gatekeeper first-launch steps.
+description: Use for the Mac desktop experience - hoppyw on macOS (menu-bar icon, NSAlert accept question, device picker panel, notifications, Finder service, drops on the app icon, Open at login), the Hoppy.app bundle and .dmg, ad-hoc signing and the Developer ID/notarization upgrade path, Gatekeeper first-launch steps.
 ---
 
 # macOS desktop
@@ -26,6 +26,11 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
 
 ## Rules
 
+- The device list of `hoppyw send` is a modal panel (`pick_from_panel`, layout from the pure
+  `macos::picker_layout`), never an `NSMenu` popup: the sender is a background process and
+  macOS 12 closes such menus at once. Call `bring_to_front` before any window that process
+  shows; keep the `activation:` / `picker:` log lines (real-Mac reports depend on them).
+  The status-item menu (`above = true`) stays an `NSMenu`.
 - AppKit only in `macos/ui.rs` and `macos/login.rs` (`#[cfg(target_os = "macos")]`); logic
   that can be pure goes in `macos/mod.rs` with a test. `gui.rs` gets no `cfg`; a new `ui`
   function needs twins in `platform::win` and `crate::linux::ui`.

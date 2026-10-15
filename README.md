@@ -72,8 +72,8 @@ una volta:
 Dopo ogni aggiornamento macOS può chiedere di nuovo questi passaggi. Il coniglietto resta nella
 barra dei menu, in alto a destra, e si riapre a ogni accesso (voce *Apri all'accesso* nel suo
 menu). Per inviare: nel Finder seleziona uno o più file, tasto destro → **Servizi → Invia con
-Hoppy** (oppure trascinali sull'icona di Hoppy), poi scegli il dispositivo dal menu che compare
-accanto al puntatore; l'avanzamento è accanto al secondo coniglietto. Quando qualcuno ti invia
+Hoppy** (oppure trascinali sull'icona di Hoppy), poi scegli il dispositivo nella piccola finestra
+che compare accanto al puntatore (Esc annulla); l'avanzamento è accanto al secondo coniglietto. Quando qualcuno ti invia
 dei file compare una finestra **Rifiuta / Accetta** (Invio = Rifiuta); i file vanno in
 `Download/Hoppy`. Dettagli e risoluzione dei problemi:
 [`docs/platforms/macos-ios.md`](docs/platforms/macos-ios.md).
