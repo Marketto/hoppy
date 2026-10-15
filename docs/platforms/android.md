@@ -71,10 +71,15 @@
   `HandshakeGuard`), `Transfer.kt` (`Local`, version choice, sender/receiver sessions,
   `confirmQr`, `QrVerification.scan`). Tests: `V1Test` (every `v1` vector incl. `negative`,
   RFC KATs, sessions over TCP) + `CoreTest`; interop legs K1–K10 in `tools/interop.sh`.
-- Identity: `security/Security.kt` — `filesDir/identity.key` (created on first run, never
-  overwritten if a newer app wrote it) and `filesDir/trust.json`, one `HandshakeGuard` per
-  process; `Security.local(ctx)` (first call reads the files: off the main thread, `warm` at
-  app start). The device id stays in `Prefs`.
+- Identity: `security/Security.kt` — `noBackupFilesDir/identity.key` (created on first run,
+  never overwritten if a newer app wrote it: then a temporary key and a warning) and
+  `noBackupFilesDir/trust.json` (moved once from `filesDir`), one `HandshakeGuard` per
+  process. Never in a backup or a device-to-device transfer (`allowBackup=false`,
+  `res/xml/data_extraction_rules.xml`, `backup_rules.xml`): a copied key would give two
+  phones one identity. The device id (`Prefs`) is bound to the key: a new key ⇒ a new id
+  (peers see a New device, not a changed key). The key loads in `HoppyApp.onCreate` before
+  anything reads the id; an unreadable key is retried once, then sessions are refused and
+  the home screen says so (never a silent new key).
 - Device rows: `Windows · 🔒` (encrypted), `· 🔒 ✓` (verified), `· ⚠ not encrypted` (old v0
   app); TalkBack reads "encrypted / verified / not encrypted" (`PeerAdapter.trusted`, loaded
   off the main thread by `refreshTrustBadges`). A remembered id always gets 🔒.

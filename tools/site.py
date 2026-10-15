@@ -36,6 +36,7 @@ IOS_ASSET = "Hoppy-ios-unsigned.ipa"  # release.yml job `ios`; never rename (doc
 IOS_BUNDLE_ID = "app.hoppy.ios"
 IOS_MIN_OS = "15.0"
 SOURCE_FILE = "sidestore.json"
+SUMS_ASSET = "SHA256SUMS.txt"  # release.yml `publish` job: `sha256sum *` of every asset
 
 
 def latest_release(repo: str, timeout: float = 20) -> dict | None:
@@ -54,11 +55,38 @@ def latest_release(repo: str, timeout: float = 20) -> dict | None:
         raise
 
 
-def sidestore_source(base_url: str, repo: str, release: dict | None) -> dict:
+def asset_sha256(release: dict | None, name: str, timeout: float = 20) -> str | None:
+    """SHA-256 of asset `name` from the release's SHA256SUMS.txt; None if unavailable."""
+    sums = next((a for a in (release or {}).get("assets", []) if a.get("name") == SUMS_ASSET), None)
+    url = (sums or {}).get("browser_download_url", "")
+    if not url.startswith("https://"):
+        return None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "hoppy-site"}),
+                                    timeout=timeout) as r:  # noqa: S310 (https URL of the release)
+            text = r.read(1 << 20).decode("utf-8", "replace")
+    except (OSError, ValueError) as e:
+        print(f"! {SOURCE_FILE}: {SUMS_ASSET} unavailable ({e}); writing it without sha256")
+        return None
+    return parse_sha256sums(text).get(name)
+
+
+def parse_sha256sums(text: str) -> dict[str, str]:
+    """`sha256sum` output (`<64 hex>  <name>`, `*name` in binary mode) → {name: hex}."""
+    out = {}
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and len(parts[0]) == 64 and all(c in "0123456789abcdefABCDEF" for c in parts[0]):
+            out[parts[1].lstrip("*")] = parts[0].lower()
+    return out
+
+
+def sidestore_source(base_url: str, repo: str, release: dict | None, sha256: str | None = None) -> dict:
     """AltStore/SideStore source (https://faq.altstore.io/developers/make-a-source) listing the
     iPhone/iPad app with the .ipa of `release`, or no version when it has none. The version must
     equal the app's CFBundleShortVersionString (build-ipa.sh drops a `-suffix`), or SideStore
-    refuses the download."""
+    refuses the download. `sha256` (of the .ipa, from SHA256SUMS.txt) lets SideStore check the
+    download."""
     app = {
         "name": "Hoppy",
         "bundleIdentifier": IOS_BUNDLE_ID,
@@ -96,6 +124,8 @@ def sidestore_source(base_url: str, repo: str, release: dict | None) -> dict:
             "size": int(asset.get("size", 0)),
             "minOSVersion": IOS_MIN_OS,
         })
+        if sha256:
+            app["versions"][-1]["sha256"] = sha256
     return {
         "name": "Hoppy",
         "identifier": "io.github.marketto.hoppy",
@@ -138,7 +168,7 @@ def build(out: Path, base_url: str, repo: str, require_release: bool = False) ->
             raise SystemExit(f"✗ {SOURCE_FILE}: cannot read the latest release of {repo}: {e}") from e
         print(f"! {SOURCE_FILE}: latest release unavailable ({e}); writing it without versions")
         release = None
-    source = sidestore_source(base_url, repo, release)
+    source = sidestore_source(base_url, repo, release, asset_sha256(release, IOS_ASSET))
     (out / SOURCE_FILE).write_text(json.dumps(source, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     versions = [v["version"] for v in source["apps"][0]["versions"]]
     print(f"✓ {SOURCE_FILE}: {', '.join(versions) if versions else 'no iOS release yet'}")

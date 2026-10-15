@@ -210,6 +210,7 @@ class MainActivity : ThemedActivity() {
     /** A damaged list of known devices was set aside at startup: say so once. */
     private fun showTrustWarning() {
         val app = applicationContext
+        Security.takeKeyProblem()?.let { Toast.makeText(app, it, Toast.LENGTH_LONG).show() }
         thread(name = "hoppy-trust-warning") {
             val warning = runCatching { Security.trust(app).takeWarning() }.getOrNull() ?: return@thread
             Log.w("HoppyMain", warning)

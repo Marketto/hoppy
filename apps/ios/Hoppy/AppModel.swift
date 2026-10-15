@@ -371,6 +371,8 @@ final class AppModel: ObservableObject {
         case let .peers(list):
             peers = list
             Identity.remember(list)
+        case .peerLost:
+            break // the `peers` event before it already updated the list
         case let .receiving(on, _):
             receiving = on
         case let .offer(o):

@@ -111,6 +111,9 @@
     <string name="key_changed_title">Attenzione</string>
     <string name="key_changed_message">«%1$s» ha una chiave diversa da prima. Potrebbe essere stato reinstallato, oppure qualcuno si sta fingendo lui. Non ho inviato nulla.\n\nSe sei sicuro che sia lo stesso dispositivo, dimenticalo e invia di nuovo: verrà trattato come un dispositivo nuovo.</string>
     <string name="key_changed_message_rx">«%1$s» ha una chiave diversa da prima. Potrebbe essere stato reinstallato, oppure qualcuno si sta fingendo lui. I suoi file sono stati rifiutati.\n\nSe sei sicuro che sia lo stesso dispositivo, dimenticalo: la prossima volta verrà trattato come un dispositivo nuovo.</string>
+    <string name="key_unsupported">Hoppy ha trovato una chiave di sicurezza creata da una versione più nuova e ne usa una temporanea: gli altri dispositivi vedranno questo telefono come nuovo. Aggiorna Hoppy.</string>
+    <string name="key_unreadable">Hoppy non riesce a leggere la chiave di sicurezza di questo telefono: i trasferimenti cifrati non funzioneranno. Riavvia l\'app; se continua, reinstalla Hoppy.</string>
+    <string name="forget_failed">Non sono riuscito a dimenticare «%1$s»: %2$s</string>
     <string name="forget_device">Dimentica dispositivo</string>
     <string name="forgotten">«%1$s» dimenticato. La prossima volta sarà un dispositivo nuovo.</string>
     <string name="channel_security">Avvisi di sicurezza</string>

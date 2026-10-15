@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -288,6 +289,15 @@ class V1Test {
     @Test
     fun discoveryAndCallbackVectors() {
         val d = obj(v1, "discovery")
+        // `crypto` is read leniently, the same way in every implementation.
+        @Suppress("UNCHECKED_CAST")
+        for (case in d["lenient_crypto"] as List<Map<String, Any?>>) {
+            val text = """{"hoppy":0,"type":"announce","id":"x","name":"n","platform":"linux","port":1,"crypto":${Json.encode(case["value"])}}"""
+            val msg = DiscoveryMessage.decode(text.toByteArray())
+            assertNotNull(msg, text)
+            assertEquals((case["crypto"] as Long?)?.toInt(), msg.crypto, text)
+            assertEquals((case["crypto"] as Long?)?.toInt(), Protocol.lenientCrypto(case["value"]), text)
+        }
         val ann = DiscoveryMessage.decode(str(d, "announce_json").toByteArray())!!
         assertEquals(1, ann.crypto)
         assertEquals(str(d, "announce_json"), String(ann.encode()))

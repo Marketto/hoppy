@@ -13,10 +13,15 @@
 //!   remove the old one. Downloaded by curl, so no quarantine attribute: no Gatekeeper
 //!   prompt for the update.
 //! - **Linux** ([`install_deb`]): only when `hoppyw` runs as `/usr/bin/hoppyw` from the
-//!   `hoppy` package ([`deb_installed`]). `pkexec apt-get install -y FILE.deb` (the user's
-//!   password through the desktop's polkit agent; `dpkg -i` without apt-get). No pkexec, or
-//!   no polkit agent: the .deb is opened with the system's software installer
-//!   (`xdg-open`); dismissing the password prompt cancels.
+//!   `hoppy` package ([`deb_installed`]). `/usr/bin/pkexec /usr/lib/hoppy/install-update
+//!   SHA256 FILE.deb` (the user's password through the desktop's polkit agent, action
+//!   `app.hoppy.update`): the root-owned helper (`apps/linux/install-update`) copies the
+//!   package into a root-only folder and re-checks the SHA-256 and the package name on that
+//!   copy before `apt-get install -y` (`dpkg -i` without apt-get), so a process of the user
+//!   swapping the downloaded file cannot get anything else installed as root. Programs are
+//!   called by absolute path (never from `PATH`). No pkexec/helper, or no polkit agent: the
+//!   .deb is opened with the system's software installer (`/usr/bin/xdg-open`; it shows the
+//!   package and asks itself); dismissing the password prompt cancels.
 //!
 //! Every program runs through [`Runner`] with an argv; values are never put into shell text
 //! (the relaunch helper gets them as positional parameters), so the logic is unit-tested on
@@ -311,39 +316,73 @@ pub enum DebOutcome {
     OpenedInstaller,
 }
 
-/// `pkexec <apt-get|dpkg> …` for `deb` (absolute path, so never taken for an option).
-pub fn deb_install_args(apt_get: Option<&Path>, dpkg: &Path, deb: &Path) -> Vec<OsString> {
-    match apt_get {
-        Some(apt) => os(&[&apt, &"install", &"-y", &deb]),
-        None => os(&[&dpkg, &"-i", &deb]),
-    }
+/// The root-owned helper the .deb ships (`apps/linux/install-update`, polkit action
+/// `app.hoppy.update`): copies the package into a root-only folder, re-checks the SHA-256
+/// and the package name on that copy, installs it.
+pub const DEB_HELPER: &str = "/usr/lib/hoppy/install-update";
+/// Absolute paths only: a `pkexec` found on the user's `PATH` could be a fake that asks
+/// for the password.
+pub const PKEXEC: &str = "/usr/bin/pkexec";
+pub const XDG_OPEN: &str = "/usr/bin/xdg-open";
+
+/// `pkexec` arguments: the helper, the expected SHA-256 (lowercase hex) and the package.
+pub fn deb_install_args(sha256: &str, deb: &Path) -> Vec<OsString> {
+    os(&[&DEB_HELPER, &sha256, &deb])
 }
 
-/// Installs `deb` as root through pkexec (see the module docs). `which` finds programs on
-/// `PATH` (fake in tests).
+/// Lowercase hex SHA-256 of a file.
+pub fn file_sha256(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Installs `deb` (whose verified SHA-256 is `sha256`) as root: `/usr/bin/pkexec
+/// /usr/lib/hoppy/install-update SHA256 FILE` (see the module docs). The user's copy is
+/// never what root installs: the helper hashes its own root-only copy. No pkexec or helper,
+/// or no polkit agent: the package is opened with the software installer (which shows and
+/// checks the package itself). `exists` checks programs (fake in tests).
 pub fn install_deb(
     runner: &dyn Runner,
     deb: &Path,
-    which: &dyn Fn(&str) -> Option<PathBuf>,
+    sha256: &str,
+    exists: &dyn Fn(&Path) -> bool,
 ) -> Result<DebOutcome> {
     if !deb.is_absolute() {
         bail!("the package path must be absolute");
     }
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        bail!("bad package checksum");
+    }
     let open_installer = || -> Result<DebOutcome> {
-        let out = runner.run("xdg-open".as_ref(), &os(&[&deb]))?;
+        let out = runner.run(XDG_OPEN.as_ref(), &os(&[&deb]))?;
         if !out.ok() {
             bail!("no software installer could open the package");
         }
         Ok(DebOutcome::OpenedInstaller)
     };
-    let Some(pkexec) = which("pkexec") else {
+    if !exists(Path::new(PKEXEC)) || !exists(Path::new(DEB_HELPER)) {
         return open_installer();
-    };
-    let apt = which("apt-get");
-    let dpkg = which("dpkg").unwrap_or_else(|| PathBuf::from("/usr/bin/dpkg"));
-    let args = deb_install_args(apt.as_deref(), &dpkg, deb);
+    }
     let out = runner
-        .run(pkexec.as_os_str(), &args)
+        .run(PKEXEC.as_ref(), &deb_install_args(sha256, deb))
         .context("starting pkexec")?;
     match out.code {
         Some(0) => Ok(DebOutcome::Installed),
@@ -405,11 +444,13 @@ pub fn fetch_and_install(
             install_mac(&System, &package, &work, &app, &release.version.to_string())
                 .map(|()| update::UpdateReady::Restart)
         }
-        Target::Deb => install_deb(&System, &package, &|p| super::which(p)).map(|o| match o {
-            DebOutcome::Installed => update::UpdateReady::Restart,
-            DebOutcome::Cancelled => update::UpdateReady::Cancelled,
-            DebOutcome::OpenedInstaller => update::UpdateReady::OpenedInstaller,
-        }),
+        Target::Deb => file_sha256(&package)
+            .and_then(|sha| install_deb(&System, &package, &sha, &|p| p.is_file()))
+            .map(|o| match o {
+                DebOutcome::Installed => update::UpdateReady::Restart,
+                DebOutcome::Cancelled => update::UpdateReady::Cancelled,
+                DebOutcome::OpenedInstaller => update::UpdateReady::OpenedInstaller,
+            }),
     };
     if !matches!(result, Ok(update::UpdateReady::OpenedInstaller)) {
         let _ = fs::remove_dir_all(&work);
@@ -467,6 +508,7 @@ pub fn spawn_relaunch(command: &[OsString]) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::os::unix::fs::PermissionsExt;
 
     type Answer = Box<dyn Fn(&str, &[String]) -> Output>;
 
@@ -664,50 +706,105 @@ mod tests {
         assert!(!dir_writable(&dir.path().join("missing")));
     }
 
+    const SHA: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
     #[test]
-    fn deb_install_uses_pkexec_and_maps_its_exit_codes() {
+    fn deb_install_runs_the_root_helper_by_absolute_path() {
         let deb = Path::new("/tmp/Hoppy-update-x/Hoppy-linux-amd64.deb");
-        let all = |p: &str| Some(PathBuf::from(format!("/usr/bin/{p}")));
+        let all = |_: &Path| true;
         for (code, want) in [
             (0, Ok(DebOutcome::Installed)),
             (PKEXEC_DISMISSED, Ok(DebOutcome::Cancelled)),
             (PKEXEC_NOT_AUTHORIZED, Ok(DebOutcome::OpenedInstaller)),
-            (100, Err("exit 100")),
+            (66, Err("exit 66")),
         ] {
             let fake = Fake::new(move |program, _| match program {
-                "/usr/bin/pkexec" if code == 0 => ok(""),
-                "/usr/bin/pkexec" => fail(code, "E: Unable to locate package"),
+                PKEXEC if code == 0 => ok(""),
+                PKEXEC => fail(code, "SHA-256 mismatch"),
                 _ => ok(""),
             });
-            let got = install_deb(&fake, deb, &all);
+            let got = install_deb(&fake, deb, SHA, &all);
             match want {
                 Ok(outcome) => assert_eq!(got.unwrap(), outcome),
                 Err(text) => assert!(format!("{:#}", got.unwrap_err()).contains(text)),
             }
             assert_eq!(
                 fake.calls.borrow()[0],
-                [
-                    "/usr/bin/pkexec",
-                    "/usr/bin/apt-get",
-                    "install",
-                    "-y",
-                    deb.to_str().unwrap()
-                ]
+                [PKEXEC, DEB_HELPER, SHA, deb.to_str().unwrap()]
             );
         }
-        // No apt-get: dpkg -i; no pkexec: straight to the software installer.
-        let no_apt = |p: &str| (p != "apt-get").then(|| PathBuf::from(format!("/usr/bin/{p}")));
+        // No pkexec or no helper: straight to the software installer, by absolute path.
+        for missing in [PKEXEC, DEB_HELPER] {
+            let fake = Fake::new(|_, _| ok(""));
+            let has = move |p: &Path| p != Path::new(missing);
+            assert_eq!(
+                install_deb(&fake, deb, SHA, &has).unwrap(),
+                DebOutcome::OpenedInstaller
+            );
+            assert_eq!(fake.programs(), [format!("{XDG_OPEN} {}", deb.display())]);
+        }
         let fake = Fake::new(|_, _| ok(""));
-        install_deb(&fake, deb, &no_apt).unwrap();
-        assert_eq!(fake.calls.borrow()[0][1..3], ["/usr/bin/dpkg", "-i"]);
-        let none = |_: &str| None;
-        let fake = Fake::new(|_, _| ok(""));
-        assert_eq!(
-            install_deb(&fake, deb, &none).unwrap(),
-            DebOutcome::OpenedInstaller
+        assert!(install_deb(&fake, Path::new("x.deb"), SHA, &all).is_err());
+        assert!(install_deb(&fake, deb, "ABC", &all).is_err());
+        assert!(install_deb(&fake, deb, &SHA.to_uppercase(), &all).is_err());
+        assert!(
+            fake.calls.borrow().is_empty(),
+            "bad input never reaches pkexec"
         );
-        assert_eq!(fake.programs(), [format!("xdg-open {}", deb.display())]);
-        assert!(install_deb(&fake, Path::new("x.deb"), &all).is_err());
+    }
+
+    /// The real helper script, run up to the point where it would install (needs only
+    /// coreutils; the dpkg-deb case only where dpkg-deb exists).
+    #[test]
+    fn root_helper_validates_before_installing() {
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/linux/install-update");
+        let dir = tempfile::tempdir().unwrap();
+        let deb = dir.path().join("Hoppy-linux-amd64.deb");
+        fs::write(&deb, b"not really a package").unwrap();
+        let sha = file_sha256(&deb).unwrap();
+        let link = dir.path().join("link.deb");
+        std::os::unix::fs::symlink(&deb, &link).unwrap();
+        let run = |args: &[&OsStr]| {
+            Command::new("/bin/sh")
+                .arg(&helper)
+                .args(args)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .code()
+        };
+        let d = deb.as_os_str();
+        assert_eq!(run(&[]), Some(64));
+        assert_eq!(run(&["abc".as_ref(), d]), Some(64));
+        assert_eq!(run(&[SHA.to_uppercase().as_ref(), d]), Some(64));
+        assert_eq!(run(&[sha.as_ref(), "relative.deb".as_ref()]), Some(64));
+        assert_eq!(run(&[sha.as_ref(), "/etc/passwd".as_ref()]), Some(64));
+        assert_eq!(
+            run(&[sha.as_ref(), dir.path().join("missing.deb").as_os_str()]),
+            Some(65)
+        );
+        assert_eq!(run(&[sha.as_ref(), link.as_os_str()]), Some(65));
+        assert_eq!(run(&[SHA.as_ref(), d]), Some(66));
+        if Path::new("/usr/bin/dpkg-deb").exists() {
+            assert_eq!(
+                run(&[sha.as_ref(), d]),
+                Some(67),
+                "right hash, not a hoppy package"
+            );
+        }
+        assert!(fs::metadata(&helper).unwrap().permissions().mode() & 0o111 != 0);
+    }
+
+    #[test]
+    fn helper_and_polkit_policy_are_packaged() {
+        let cargo = include_str!("../../Cargo.toml");
+        assert!(cargo.contains(r#"["../../apps/linux/install-update", "usr/lib/hoppy/", "755"]"#));
+        assert!(cargo.contains(r#""usr/share/polkit-1/actions/app.hoppy.update.policy""#));
+        let policy = include_str!("../../../../apps/linux/app.hoppy.update.policy");
+        assert!(policy.contains(&format!(
+            r#"<annotate key="org.freedesktop.policykit.exec.path">{DEB_HELPER}</annotate>"#
+        )));
     }
 
     #[test]

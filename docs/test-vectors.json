@@ -206,13 +206,59 @@
         "HOPPY:VERIFY:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899AABBCCDDEEFF",
         "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42:00112233445566778899aabbccddeeff",
         "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899AABBCCDDEEFF",
-        "hoppy:verify:1::UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff"
+        "hoppy:verify:1::UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff",
+        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:ıghsq2zggce2ldo22qx7xmft2tczchr2x4erkibec76s6hphd42q:00112233445566778899aabbccddeeff",
+        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff"
       ]
     },
     "discovery": {
       "announce_json": "{\"hoppy\":0,\"type\":\"announce\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"name\":\"PC\",\"platform\":\"windows\",\"port\":47471,\"crypto\":1}",
       "callback_json": "{\"hoppy\":0,\"type\":\"callback\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"name\":\"Phone\",\"platform\":\"android\",\"port\":50123,\"token\":\"00112233445566778899aabbccddeeff\",\"to\":\"00000000-0000-4000-8000-000000000002\",\"crypto\":1}",
       "callback_hello_json": "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"token\":\"00112233445566778899aabbccddeeff\",\"crypto\":1}",
+      "lenient_crypto": [
+        {
+          "value": true,
+          "crypto": null
+        },
+        {
+          "value": false,
+          "crypto": null
+        },
+        {
+          "value": -1,
+          "crypto": null
+        },
+        {
+          "value": 1.5,
+          "crypto": null
+        },
+        {
+          "value": "1",
+          "crypto": null
+        },
+        {
+          "value": null,
+          "crypto": null
+        },
+        {
+          "value": {
+            "v": 2
+          },
+          "crypto": null
+        },
+        {
+          "value": 300,
+          "crypto": 255
+        },
+        {
+          "value": 2,
+          "crypto": 2
+        },
+        {
+          "value": 0,
+          "crypto": 0
+        }
+      ],
       "callback_hello_hex": "484f504300000000637b226964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303032222c22746f6b656e223a223030313132323333343435353636373738383939616162626363646465656666222c2263727970746f223a317d"
     },
     "negative": {

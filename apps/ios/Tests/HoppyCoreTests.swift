@@ -134,12 +134,15 @@ final class HoppyCoreTests: XCTestCase {
         XCTAssertEqual(outcome2, .declined)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: inbox.path).count, 1)
 
-        // Receiving off: the sender's list empties (bye).
+        // Receiving off: the receiver leaves the sender's list (its bye; peer_lost signals any
+        // removal, and the peers list no longer has it).
         let mark = txEvents.all.count
         let before = tx.peers.map { "\($0.name)@\($0.addr)" }
+        let rxId = peer.id
         XCTAssertEqual(rx.setReceiving(false), 0)
-        let gone = txEvents.wait("bye", after: mark) { e -> Bool? in
-            if case let .peers(list) = e, list.isEmpty { return true }
+        let gone = txEvents.wait("peer lost", after: mark) { e -> Bool? in
+            if case let .peerLost(id) = e, id == rxId { return true }
+            if case let .peers(list) = e, !list.contains(where: { $0.id == rxId }) { return true }
             return nil
         }
         if gone == nil {

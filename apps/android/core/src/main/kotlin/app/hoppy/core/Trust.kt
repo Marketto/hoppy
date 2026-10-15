@@ -129,7 +129,9 @@ class TrustStore(val version: Int = 1, peers: Map<String, TrustEntry> = emptyMap
             } catch (e: JsonException) {
                 throw IOException("trust store: ${e.message}")
             }
-            val version = (m["version"] as? Long)?.toInt() ?: if ("version" in m) throw IOException("trust store: bad version") else 1
+            // Same range as Rust (u8): anything else is a damaged file.
+            val version = (m["version"] as? Long)?.takeIf { it in 0..255 }?.toInt()
+                ?: if ("version" in m) throw IOException("trust store: bad version") else 1
             val raw = m["peers"] ?: emptyMap<String, Any?>()
             val peers = raw as? Map<*, *> ?: throw IOException("trust store: bad peers")
             val out = HashMap<String, TrustEntry>()
@@ -190,11 +192,15 @@ class Trust private constructor(private var store: TrustStore, private val file:
         try {
             stamp = null // always re-read under the lock
             reload()
-            val (out, changed) = f(store)
+            // Change a copy; it replaces the store only once it is saved (a failed write leaves
+            // memory and file in agreement).
+            val next = store.copy()
+            val (out, changed) = f(next)
             if (changed && file != null) {
-                writePrivate(file, store.toJson().toByteArray(Charsets.UTF_8))
+                writePrivate(file, next.toJson().toByteArray(Charsets.UTF_8))
                 stamp = file.lastModified() to file.length()
             }
+            if (changed) store = next
             out
         } finally {
             lock?.release()

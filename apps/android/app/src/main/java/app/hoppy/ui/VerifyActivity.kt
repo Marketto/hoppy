@@ -84,10 +84,16 @@ class VerifyActivity : ThemedActivity() {
         b.forget.setOnClickListener {
             val app = applicationContext
             thread(name = "hoppy-forget") {
-                runCatching { Security.trust(app).forget(id) }
+                val result = runCatching { Security.trust(app).forget(id) }
                 runOnUiThread {
-                    Toast.makeText(app, getString(R.string.forgotten, name), Toast.LENGTH_LONG).show()
-                    finish()
+                    val error = result.exceptionOrNull()
+                    val message = if (error == null) {
+                        getString(R.string.forgotten, name)
+                    } else {
+                        getString(R.string.forget_failed, name, error.message ?: "?")
+                    }
+                    Toast.makeText(app, message, Toast.LENGTH_LONG).show()
+                    if (error == null) finish()
                 }
             }
         }

@@ -361,10 +361,14 @@ class SendActivity : ThemedActivity() {
             .setPositiveButton(R.string.forget_device) { _, _ ->
                 val app = applicationContext
                 thread(name = "hoppy-forget") {
-                    runCatching { Security.trust(app).forget(peer.id) }
+                    val error = runCatching { Security.trust(app).forget(peer.id) }.exceptionOrNull()
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
-                        b.status.text = getString(R.string.forgotten, name)
+                        b.status.text = if (error == null) {
+                            getString(R.string.forgotten, name)
+                        } else {
+                            getString(R.string.forget_failed, name, error.message ?: "?")
+                        }
                         refreshTrustBadges(this, adapter)
                     }
                 }

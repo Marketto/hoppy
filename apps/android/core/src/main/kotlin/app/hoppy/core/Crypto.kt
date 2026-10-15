@@ -254,7 +254,10 @@ data class QrPayload(val id: String, val fingerprint: String, val code: String) 
             val c1 = rest.lastIndexOf(':', c2 - 1)
             if (c1 < 0) return null
             val id = rest.substring(0, c1)
-            val fp = rest.substring(c1 + 1, c2).uppercase(java.util.Locale.ROOT)
+            // ASCII-only upper case (like Rust's to_ascii_uppercase): "ı" or "ß" must not turn
+            // into valid base32 letters.
+            val fp = rest.substring(c1 + 1, c2).map { if (it in 'a'..'z') it - ('a' - 'A') else it }
+                .joinToString("")
             val code = rest.substring(c2 + 1)
             val codeOk = code.length == Crypto.QR_CODE_HEX_LEN && Crypto.unhex(code) != null
             val idOk = id.isNotEmpty() && id.toByteArray(Charsets.UTF_8).size <= Crypto.MAX_ID_BYTES &&

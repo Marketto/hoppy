@@ -120,7 +120,8 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
   hand-written field arithmetic is not worth the risk. SHA-256/HMAC come from the JDK. It
   passes every `v1` vector (positive and negative) and the RFC KATs, and the interop legs
   K1–K10. Cost: the APK grows by the (unshrunk) BouncyCastle classes until R8 is enabled.
-- Key and trust store in app-private storage (`filesDir/identity.key`, `filesDir/trust.json`).
+- Key and trust store in app-private `noBackupFilesDir` (excluded from cloud backup and
+  device-to-device transfer); a new key comes with a new device id (as on iOS).
 - UI: device rows 🔒 / ✓ / ⚠ non cifrato; while sending to a New/Known device the code shows
   over the list (4 emoji, «123» → 8 digits, TalkBack reads the names) with «Coincide»,
   «Verifica con QR», «Mostra il mio QR», «Più tardi»; the incoming-offer notification carries

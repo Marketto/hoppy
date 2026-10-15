@@ -419,8 +419,10 @@ def parse_qr(text: str) -> dict | None:
     parts = text[len(QR_PREFIX):].rsplit(":", 2)
     if len(parts) != 3:
         return None
-    device_id, fp, code = parts[0], parts[1].upper(), parts[2]
-    ok = (device_id and len(device_id.encode()) <= 128 and not any(ord(c) < 32 or ord(c) == 127 for c in device_id)
+    # ASCII-only upper case (Rust to_ascii_uppercase): "ı".upper() == "I" must not pass.
+    device_id, fp, code = parts[0], "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c in parts[1]), parts[2]
+    ok = (device_id and len(device_id.encode()) <= 128
+          and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in device_id)  # C0, DEL, C1
           and len(fp) == 52 and all(c in BASE32 for c in fp)
           and len(code) == 32 and all(c in "0123456789abcdef" for c in code))
     return {"id": device_id, "fingerprint": fp, "code": code} if ok else None
@@ -743,6 +745,12 @@ def respond(sock: socket.socket, ident: Identity) -> tuple[NoiseSocket, dict, di
     return stream, info, first
 
 
+def lenient_crypto(v) -> int | None:
+    """`crypto` (spec §7.1): a non-negative integer capped at 255; anything else (true,
+    negative, text, float) counts as absent."""
+    return min(v, 255) if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
 def describe(info: dict) -> str:
     if not info.get("encrypted"):
         return "NOT encrypted connection"
@@ -810,7 +818,7 @@ def send_to(host: str, port: int, paths: list[Path], ident: Identity, peer_udp: 
                                 lambda: socket.create_connection((host, port), timeout=10))
     cb = callback_connect(peer_udp, ident, udp_port)
     with cb as s:
-        advertised = max(cb.hello.get("crypto") or 0, cb.peer_crypto or 0)
+        advertised = max(lenient_crypto(cb.hello.get("crypto")) or 0, cb.peer_crypto or 0)
         return send_session(s, paths, ident, advertised, cb.peer_id, None)
 
 
@@ -1022,7 +1030,7 @@ class callback_connect:
                     if self.peer_id is None:
                         self.peer_id = m["id"]
                     if m["id"] == self.peer_id:  # reply inside the firewall's response window
-                        self.peer_crypto = m.get("crypto") if isinstance(m.get("crypto"), int) else 0
+                        self.peer_crypto = lenient_crypto(m.get("crypto")) or 0
                         target = addr
                         udp.sendto(msg("callback", sender, port, token=token, to=self.peer_id), addr)
                         next_resend = time.monotonic() + CALLBACK_RESEND
@@ -1038,7 +1046,7 @@ class callback_connect:
                     hello = read_json(conn, MAX_CALLBACK_HELLO_FRAME, deadline)
                     if hmac.compare_digest(str(hello.get("token", "")).encode(), token.encode()) and hello.get("id") == self.peer_id:
                         conn.settimeout(10)
-                        self.hello = hello if isinstance(hello.get("crypto", 0), int) else {}
+                        self.hello = hello
                         return conn
                     raise ValueError("callback token mismatch")
                 except (OSError, ValueError):
@@ -1578,7 +1586,10 @@ def v1_vectors() -> dict:
             "invalid": [qr.replace("hoppy:verify:1:", "hoppy:verify:2:"), qr[:-1], qr.upper(),
                         qr.replace(kr["fingerprint"], kr["fingerprint"][:-1]),
                         qr.replace(":" + code, ":" + code.upper()),
-                        "hoppy:verify:1::" + kr["fingerprint"] + ":" + code],
+                        "hoppy:verify:1::" + kr["fingerprint"] + ":" + code,
+                        # non-ASCII letters whose Unicode upper case is ASCII ("ı" → "I")
+                        qr.replace(kr["fingerprint"], "\u0131" + kr["fingerprint"][1:].lower()),
+                        qr.replace(dev_r["id"], dev_r["id"] + "\u0085")],  # C1 control in the id
         },
         "discovery": {
             "announce_json": json.dumps({"hoppy": 0, "type": "announce", **dev_r, "port": 47471, "crypto": 1},
@@ -1586,6 +1597,10 @@ def v1_vectors() -> dict:
             "callback_json": json.dumps({"hoppy": 0, "type": "callback", **dev_i, "port": 50123, "token": code,
                                          "to": dev_r["id"], "crypto": 1}, separators=(",", ":")),
             "callback_hello_json": hello_json,
+            "lenient_crypto": [
+                {"value": v, "crypto": lenient_crypto(v)}
+                for v in (True, False, -1, 1.5, "1", None, {"v": 2}, 300, 2, 0)
+            ],
             "callback_hello_hex": (CALLBACK_MAGIC + b"\x00" + struct.pack(">I", len(hello_json))
                                    + hello_json.encode()).hex(),
         },
@@ -1717,7 +1732,7 @@ def main() -> int:
         return 0
     if a.cmd == "peers":
         for m in peers(a.wait, a.seed).values():
-            crypto = "v1" if isinstance(m.get("crypto"), int) and m["crypto"] >= 1 else "v0"
+            crypto = "v1" if (lenient_crypto(m.get("crypto")) or 0) >= 1 else "v0"
             print(f"{m['name']:<24} {m['platform']:<8} {crypto} {m['ip']}:{m['port']}  {m['id']}")
         return 0
     if a.cmd == "abort-handshakes":

@@ -85,6 +85,8 @@ enum HoppySendOutcome: String {
 
 enum HoppyEvent {
     case peers([HoppyPeer])
+    /// A device left the list (its bye, or 15 s of silence); `peers` already reflects it.
+    case peerLost(String)
     case receiving(on: Bool, port: Int)
     case offer(HoppyOffer)
     case offerClosed(UInt64)
@@ -111,6 +113,7 @@ enum HoppyEvent {
 private struct RawEvent: Decodable {
     struct From: Decodable { let id: String?; let name: String; let platform: String }
     let type: String
+    let id: String?
     let peers: [HoppyPeer]?
     let on: Bool?
     let port: Int?
@@ -155,6 +158,8 @@ private struct RawEvent: Decodable {
         switch type {
         case "peers":
             return .peers(peers ?? [])
+        case "peer_lost":
+            return id.map { .peerLost($0) }
         case "receiving":
             return .receiving(on: on ?? false, port: port ?? 0)
         case "offer":

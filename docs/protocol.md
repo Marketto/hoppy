@@ -93,7 +93,10 @@ Apple's multicast entitlement, ADR 0009) MAY discover by unicast:
    Seeds (rule 2) still get every message.
 2. Receivers answer each `query` with a unicast `announce` and record the sweeping node as a
    peer when its `port != 0` (rule 3): both sides learn each other.
-3. While receiving (`port != 0`) it also sends `query` to each known peer every 5 s, and a
+3. While receiving (`port != 0`) it also sends `query` to each known peer every 5 s and, as
+   soon as it learns a new peer from an `announce`, one `query` to that peer (its earlier
+   sweep may have carried `port: 0`, so the peer would not list it, nor get its `bye`); when it
+   starts receiving it sweeps again (rate limits of rule 1 apply). A
    node that does not multicast sends `bye`/`announce` for state changes to its known peers
    by unicast too (e.g. `bye` when it stops receiving or quits).
 4. A send-only node on an ephemeral port (rule 6) never hears these nodes' unicast

@@ -13,7 +13,9 @@
 //!
 //! Event JSON (`type` field):
 //! - `peers`: `{"peers":[{"id","name","platform","addr","encrypted","trust"}]}` whenever the
-//!   list changes. `encrypted`: the device speaks protocol v1; `trust`: `"new"` (never
+//!   list changes. This list is authoritative: a device missing from it is gone.
+//! - `peer_lost`: `{"id"}` right after a `peers` event that no longer lists `id`, whatever
+//!   the reason (its `bye`, or 15 s without hearing from it). `encrypted`: the device speaks protocol v1; `trust`: `"new"` (never
 //!   seen), `"known"` or `"verified"` from the trust store (by id; the key itself is checked
 //!   in each session).
 //! - `receiving`: `{"on":bool,"port":u16}` after `hoppy_node_set_receiving`.
@@ -571,6 +573,14 @@ impl Node {
                         shared
                             .events
                             .emit(json!({ "type": "peers", "peers": list.clone() }));
+                        for gone in last.iter().flatten().filter_map(|old| {
+                            let id = old["id"].as_str()?;
+                            (!list.iter().any(|p| p["id"].as_str() == Some(id))).then_some(id)
+                        }) {
+                            shared
+                                .events
+                                .emit(json!({ "type": "peer_lost", "id": gone }));
+                        }
                         last = Some(list);
                     }
                     thread::sleep(PEER_POLL);

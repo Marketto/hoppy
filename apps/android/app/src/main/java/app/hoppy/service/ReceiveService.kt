@@ -77,7 +77,9 @@ class ReceiveService : Service() {
             var socket: Socket? = null
             try {
                 // Encrypted like direct connections (spec §7.2); the Local is read per connection.
-                serve { CallbackReceiver.answer(request, Security.local(this), sink, it) { s -> socket = s; track(s) } }
+                // No usable key: refuse the session (logged; the home screen tells the user).
+                val local = localOrNull()
+                if (local != null) serve { CallbackReceiver.answer(request, local, sink, it) { s -> socket = s; track(s) } }
             } finally {
                 socket?.let { sockets -= it }
             }
@@ -128,7 +130,8 @@ class ReceiveService : Service() {
             runCatching {
                 pool.execute {
                     try {
-                        serve { TransferServer.handle(client, sink, it, Security.local(this)) }
+                        val local = localOrNull()
+                        if (local == null) runCatching { client.close() } else serve { TransferServer.handle(client, sink, it, local) }
                     } finally {
                         sockets -= client
                     }
@@ -136,6 +139,10 @@ class ReceiveService : Service() {
             }.onFailure { sockets -= client; runCatching { client.close() } } // pool shut down
         }
     }
+
+    /** This device for a session, or null if the device key cannot be loaded (never a silent new key). */
+    private fun localOrNull(): app.hoppy.core.Local? =
+        runCatching { Security.local(this) }.onFailure { android.util.Log.e("HoppyReceive", "no device key", it) }.getOrNull()
 
     /** Registers a transfer socket; one opened after [onDestroy] began is closed at once. */
     private fun track(s: Socket) {

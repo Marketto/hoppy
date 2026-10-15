@@ -12,6 +12,7 @@ import app.hoppy.Node
 import app.hoppy.R
 import app.hoppy.core.KeyChangedException
 import app.hoppy.core.PeerKey
+import app.hoppy.core.QrPayload
 import app.hoppy.core.QrVerification
 import app.hoppy.core.Sas
 import app.hoppy.core.SessionInfo
@@ -161,6 +162,8 @@ class QrScanner(
     }
 
     companion object {
+        private const val PEER_WAIT_MS = 3_000L
+
         /**
          * Runs the scanner flow of spec §7.7 on a background thread ([live]: the session on
          * screen, if any) and reports a user message. Never sends the code to another key.
@@ -170,6 +173,17 @@ class QrScanner(
             Node.acquire(app) // the shower is reached through discovery (direct or callback)
             thread(name = "hoppy-qr-verify") {
                 val result = try {
+                    // The node may have just started: give discovery up to ~3 s to find the
+                    // device that shows the code (asking everyone to announce) before scanning
+                    // with what is known; without it the code cannot be confirmed over there.
+                    val wanted = QrPayload.parse(payload)?.id
+                    if (wanted != null && Node.peers().none { it.device.id == wanted }) {
+                        Node.refresh()
+                        val end = System.currentTimeMillis() + PEER_WAIT_MS
+                        while (Node.peers().none { it.device.id == wanted } && System.currentTimeMillis() < end) {
+                            Thread.sleep(100)
+                        }
+                    }
                     val r = QrVerification.scan(payload, live, Security.local(app), Node.peers(), Node.node())
                     val name = SafeText.label(r.peer.name)
                     true to app.getString(if (r.confirmed) R.string.verify_qr_ok else R.string.verify_qr_ok_local, name)

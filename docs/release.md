@@ -34,7 +34,7 @@ The **Linux tray** (docs/platforms/linux.md "Updates") reads the same `releases/
 and offers a version only when `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached.
 Installed from the .deb (`/usr/bin/hoppyw`), it downloads `Hoppy-linux-amd64.deb` from
 `releases/download/<tag>/`, refuses it unless its SHA-256 matches its line in that release's
-`SHA256SUMS.txt`, installs it with `pkexec apt-get install -y` (password through polkit) and
+`SHA256SUMS.txt`, installs it through the packaged root helper (`pkexec /usr/lib/hoppy/install-update`, which re-checks a root-only copy; password through polkit) and
 restarts; other copies link to the portal, whose Ubuntu button points at
 `releases/latest/download/Hoppy-linux-amd64.deb` (`site/app.js`). **Never rename it.**
 The **Mac menu-bar app** (docs/platforms/macos-ios.md "Updates") does the same with

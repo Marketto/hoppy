@@ -391,9 +391,18 @@ fn receiver_off_says_bye_to_sweeping_ipad() {
     }
     let mark = tx_events.count();
     assert_eq!(unsafe { hoppy_node_set_receiving(rx, false) }, 0);
-    tx_events.wait_after(mark, "bye", |v| {
-        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| p.is_empty())
+    // Removal is signalled by `peer_lost` (and a `peers` list without it). The bye makes it
+    // prompt: well inside the 15 s peer expiry.
+    let t0 = Instant::now();
+    tx_events.wait_after(mark, "peer_lost", |v| {
+        v["type"] == "peer_lost" && v["id"] == "rx-3"
     });
+    assert!(t0.elapsed() < Duration::from_secs(5), "bye, not expiry");
+    let listed = take(unsafe { hoppy_node_peers(tx) });
+    assert!(
+        !listed.as_array().unwrap().iter().any(|p| p["id"] == "rx-3"),
+        "{listed}"
+    );
     unsafe {
         hoppy_node_stop(tx);
         hoppy_node_stop(rx);

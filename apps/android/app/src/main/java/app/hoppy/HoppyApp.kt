@@ -38,6 +38,8 @@ class HoppyApp : Application() {
                 NotificationChannel(CH_SECURITY, getString(R.string.channel_security), NotificationManager.IMPORTANCE_HIGH),
             ),
         )
+        // Before anything reads the device id: a new key comes with a new id (Security).
+        Security.loadKey(this)
         Security.warm(this)
         Music.init(this)
         Updater.init(this)
@@ -67,6 +69,14 @@ object Prefs {
             p.edit().putString("device_id", it).apply()
         }
         return DeviceInfo(id, deviceName(ctx), "android")
+    }
+
+    /**
+     * A new device key was created (first run, key replaced): a new id goes with it, so peers
+     * see a New device instead of a changed key (protocol §7.5). Called by `Security` only.
+     */
+    fun resetDeviceId(ctx: Context) {
+        sp(ctx).edit().putString("device_id", UUID.randomUUID().toString()).commit()
     }
 
     fun deviceName(ctx: Context): String =

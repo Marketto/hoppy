@@ -114,6 +114,9 @@
     <string name="key_changed_title">Warning</string>
     <string name="key_changed_message">“%1$s” has a different key than before. It may have been reinstalled, or someone may be pretending to be it. Nothing was sent.\n\nIf you are sure it is the same device, forget it and send again: it will be treated as a new device.</string>
     <string name="key_changed_message_rx">“%1$s” has a different key than before. It may have been reinstalled, or someone may be pretending to be it. Its files were refused.\n\nIf you are sure it is the same device, forget it: next time it will be treated as a new device.</string>
+    <string name="key_unsupported">Hoppy found a security key made by a newer version and is using a temporary one: other devices will see this phone as new. Update Hoppy.</string>
+    <string name="key_unreadable">Hoppy cannot read this phone\'s security key, so encrypted transfers will fail. Restart the app; if it persists, reinstall Hoppy.</string>
+    <string name="forget_failed">Could not forget “%1$s”: %2$s</string>
     <string name="forget_device">Forget device</string>
     <string name="forgotten">“%1$s” forgotten. Next time it will be a new device.</string>
     <string name="channel_security">Security warnings</string>

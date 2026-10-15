@@ -1,0 +1,36 @@
+#!/bin/sh
+# Hoppy update helper, packaged as /usr/lib/hoppy/install-update (root:root 0755) and run
+# as root only through `/usr/bin/pkexec /usr/lib/hoppy/install-update SHA256 FILE.deb` by
+# hoppyw (crates/hoppy-cli/src/unix/selfupdate.rs; polkit action app.hoppy.update).
+#
+# FILE.deb lives in the user's folder, so the user's processes could swap it after hoppyw
+# checked it: this helper copies it into a fresh root-only folder first and checks the
+# copy (SHA-256 from argv = the line of the release's SHA256SUMS.txt, package name hoppy)
+# before installing that copy. Exit codes: 64 bad arguments, 65 not a regular file,
+# 66 hash mismatch, 67 not the hoppy package, else apt-get/dpkg's.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+[ "$#" -eq 2 ] || { echo "usage: install-update SHA256 /path/to/file.deb" >&2; exit 64; }
+want=$1
+src=$2
+case "$want" in "" | *[!0-9a-f]*) echo "bad hash" >&2; exit 64 ;; esac
+[ "${#want}" -eq 64 ] || { echo "bad hash" >&2; exit 64; }
+case "$src" in /*.deb) ;; *) echo "bad path" >&2; exit 64 ;; esac
+[ -f "$src" ] && [ ! -L "$src" ] || { echo "not a regular file" >&2; exit 65; }
+dir=$(mktemp -d /var/tmp/hoppy-update.XXXXXXXX)
+trap 'rm -rf "$dir"' EXIT HUP INT TERM
+copy=$dir/hoppy.deb
+# At most 256 MB; a FIFO swapped in meanwhile cannot hang it for long.
+timeout 120 head -c 268435456 <"$src" >"$copy"
+got=$(sha256sum "$copy" | cut -d' ' -f1)
+[ "$got" = "$want" ] || { echo "SHA-256 mismatch" >&2; exit 66; }
+pkg=$(dpkg-deb -f "$copy" Package 2>/dev/null || true)
+[ "$pkg" = hoppy ] || { echo "not the hoppy package" >&2; exit 67; }
+chmod 0644 "$copy"
+if [ -x /usr/bin/apt-get ]; then
+  /usr/bin/apt-get install -y "$copy"
+else
+  /usr/bin/dpkg -i "$copy"
+fi

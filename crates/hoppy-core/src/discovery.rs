@@ -309,6 +309,10 @@ impl Discovery {
             send_payload_everywhere(&self.inner, &bye);
         } else {
             self.inner.send_everywhere(MessageKind::Announce);
+            if self.inner.sweeping() {
+                // Hosts we swept while send-only never recorded us: sweep again soon.
+                self.inner.sweep_requested.store(true, Ordering::Relaxed);
+            }
         }
     }
 
@@ -692,22 +696,36 @@ fn receive_loop(inner: &Arc<Inner>, rx: &UdpSocket, stop: &AtomicBool) {
                 if claimed {
                     continue;
                 }
+                let mut learned = false;
                 if msg.port != 0 {
                     let peer = Peer {
                         device: msg.device(),
                         addr: SocketAddr::new(from.ip(), msg.port),
                         crypto: Some(msg.crypto.unwrap_or(0)),
                     };
-                    map.insert(
-                        msg.id.clone(),
-                        Seen {
-                            peer,
-                            udp: from,
-                            last: Instant::now(),
-                        },
-                    );
+                    learned = map
+                        .insert(
+                            msg.id.clone(),
+                            Seen {
+                                peer,
+                                udp: from,
+                                last: Instant::now(),
+                            },
+                        )
+                        .is_none();
                 }
                 drop(map);
+                // Spec §2.1 rule 3: a sweeping receiver that learns a peer from its announce
+                // queries it at once, so that peer lists us too (our first sweep may have
+                // gone out before we were receiving) and gets our `bye` later.
+                if learned
+                    && msg.kind == MessageKind::Announce
+                    && inner.sweeping()
+                    && inner.port() != 0
+                {
+                    let q = DiscoveryMessage::new(MessageKind::Query, &config.me, inner.port());
+                    let _ = socket.send_to(&q.encode(), from);
+                }
                 // A firewalled receiver accepts unicast replies to its own announces for a
                 // few seconds only: answer pending callback requests right now (spec §6).
                 for p in inner.pending.lock().expect("pending poisoned").values() {

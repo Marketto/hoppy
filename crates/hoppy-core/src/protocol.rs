@@ -390,6 +390,22 @@ mod tests {
             .is_none()
         );
         assert!(DiscoveryMessage::decode(b"garbage").is_none());
+        // Shared vectors: `crypto` values and how every implementation reads them.
+        for case in vectors()["v1"]["discovery"]["lenient_crypto"]
+            .as_array()
+            .unwrap()
+        {
+            let text = format!(
+                r#"{{"hoppy":0,"type":"announce","id":"x","name":"n","platform":"linux","port":1,"crypto":{}}}"#,
+                case["value"]
+            );
+            let msg = DiscoveryMessage::decode(text.as_bytes()).expect("still a valid datagram");
+            let want = case["crypto"].as_u64().map(|v| v as u8);
+            assert_eq!(msg.crypto, want, "{text}");
+            let hello = format!(r#"{{"id":"r","token":"t","crypto":{}}}"#, case["value"]);
+            let h: CallbackHello = serde_json::from_str(&hello).unwrap();
+            assert_eq!(h.crypto, want, "{hello}");
+        }
         // `crypto` of an unexpected type or size never hides the peer.
         for (raw, want) in [
             (r#""crypto":"1""#, None),

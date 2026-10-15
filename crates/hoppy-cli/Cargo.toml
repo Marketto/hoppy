@@ -162,14 +162,18 @@ receives files, and "Send with Hoppy" in the Files right-click menu."""
 section = "net"
 priority = "optional"
 depends = "$auto"
-# zenity/kdialog: device list and file picker; curl/wget: update check; xdg-utils: open folders.
-recommends = "zenity | kdialog, curl | wget, xdg-utils"
+# zenity/kdialog: device list and file picker; curl/wget: update check; xdg-utils: open folders;
+# pkexec: installing updates (else the .deb opens in the software installer).
+recommends = "zenity | kdialog, curl | wget, xdg-utils, pkexec | policykit-1"
 # Shows the panel icon on GNOME (preinstalled and enabled on Ubuntu).
 suggests = "gnome-shell-extension-appindicator"
 assets = [
     ["target/release/hoppy", "usr/bin/", "755"],
     ["target/release/hoppyw", "usr/bin/", "755"],
     ["../../apps/linux/hoppy.desktop", "usr/share/applications/", "644"],
+    # Self-update: root-owned helper run through pkexec, and its polkit action ("Aggiorna Hoppy").
+    ["../../apps/linux/install-update", "usr/lib/hoppy/", "755"],
+    ["../../apps/linux/app.hoppy.update.policy", "usr/share/polkit-1/actions/app.hoppy.update.policy", "644"],
     ["../../assets/brand/linux/hoppy-48.png", "usr/share/icons/hicolor/48x48/apps/hoppy.png", "644"],
     ["../../assets/brand/linux/hoppy-128.png", "usr/share/icons/hicolor/128x128/apps/hoppy.png", "644"],
     ["../../assets/brand/linux/hoppy-256.png", "usr/share/icons/hicolor/256x256/apps/hoppy.png", "644"],

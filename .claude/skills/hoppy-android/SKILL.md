@@ -49,7 +49,7 @@ Two modules in `apps/android/`:
   - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
     all animated views (see `hoppy-themes`).
   - v1 security (docs/platforms/android.md "Encryption and device verification"):
-    `security/Security.kt` (key + trust store in `filesDir`, `Security.local(ctx)` off the
+    `security/Security.kt` (key + trust store in `noBackupFilesDir`, excluded from backup/transfer; new key ⇒ new device id; `Security.local(ctx)` off the
     main thread, `PendingVerifications`), `ui/VerifyPanel.kt` + `layout/view_verify.xml`
     (code panel, `QrScanner`), `ui/VerifyActivity.kt` (receiver code / changed key),
     `ui/QrActivity.kt` (show my QR / scan). Badges in `PeerAdapter.trusted`.

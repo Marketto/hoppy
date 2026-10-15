@@ -46,8 +46,11 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
   cannot change an open dialog: `ui::show_dialog` re-opens it for the "123" toggle and for
   ✓ after a QR scan (`run_watch` kills the old one).
 - Self-update only for `/usr/bin/hoppyw` from the package (`selfupdate::deb_installed`);
-  root only through `pkexec` (the user's password), never sudo or a setuid helper; values to
-  `/bin/sh` only as positional parameters.
+  root only through `/usr/bin/pkexec /usr/lib/hoppy/install-update SHA256 FILE` (root-owned
+  helper `apps/linux/install-update` + polkit action `apps/linux/app.hoppy.update.policy`,
+  both cargo-deb assets): root never installs the user-writable file, only its own copy
+  re-hashed in a root-only folder. Programs by absolute path, never `which`/`PATH`; never
+  sudo or a setuid helper; values to `/bin/sh` only as positional parameters.
 - Integration files carry `integration::MARKER`; never overwrite or delete a file without it.
 - Asset names are a contract (`docs/release.md`): `Hoppy-linux-amd64.deb`, `SHA256SUMS.txt`.
 

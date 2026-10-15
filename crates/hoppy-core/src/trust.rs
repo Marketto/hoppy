@@ -322,9 +322,9 @@ impl Inner {
         }
     }
 
-    fn save(&self) -> Result<(), Error> {
+    fn save(&self, store: &TrustStore) -> Result<(), Error> {
         match &self.path {
-            Some(path) => crypto::write_private(path, self.store.to_json().as_bytes()),
+            Some(path) => crypto::write_private(path, store.to_json().as_bytes()),
             None => Ok(()),
         }
     }
@@ -387,9 +387,13 @@ impl Trust {
             None => None,
         };
         inner.reload();
-        let (out, changed) = f(&mut inner.store);
+        // Change a copy; it replaces the store only once it is saved (a failed write leaves
+        // memory and file in agreement).
+        let mut next = inner.store.clone();
+        let (out, changed) = f(&mut next);
         if changed {
-            inner.save()?;
+            inner.save(&next)?;
+            inner.store = next;
         }
         Ok(out)
     }

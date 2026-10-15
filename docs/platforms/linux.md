@@ -98,13 +98,23 @@ portal.
    release (`releases/download/vX.Y.Z/`, not `latest`) into a fresh private folder
    (`$TMPDIR/Hoppy-update-<random>`, 0700), hashing it while it is written; it is kept only
    if its SHA-256 matches the line in the same release's `SHA256SUMS.txt`.
-2. "Installing Hoppy X…" notification, then `pkexec /usr/bin/apt-get install -y <file>`
-   (`pkexec dpkg -i` without apt-get): the desktop's polkit agent asks for the password.
+2. "Installing Hoppy X…" notification, then `/usr/bin/pkexec /usr/lib/hoppy/install-update
+   <sha256> <file>`: the desktop's polkit agent asks for the password ("Aggiorna Hoppy",
+   action `app.hoppy.update`, `/usr/share/polkit-1/actions/app.hoppy.update.policy`). The
+   root-owned helper (`apps/linux/install-update`, shipped in the .deb, 0755 root) never
+   installs the user's file: it refuses symlinks and non-regular files, copies it into a
+   fresh root-only folder (`mktemp -d /var/tmp/…`), checks the copy's SHA-256 against the
+   argument and that `dpkg-deb -f` says `Package: hoppy`, then `apt-get install -y` that
+   copy (`dpkg -i` without apt-get) and removes it. So a process of the user that swaps
+   the downloaded file cannot get anything else installed as root. Every program is called
+   by absolute path, never from `PATH` (a fake `pkexec` there could phish the password).
    Dismissed (exit 126) = "Update cancelled", nothing changed.
 3. Installed: the tray starts a tiny helper (`/bin/sh`, values as positional parameters)
    that waits for the tray to exit, then starts `/usr/bin/hoppyw` again; the tray exits.
-4. No `pkexec`, or no polkit agent (exit 127): the .deb is opened with the system's
-   software installer (`xdg-open`) and a notification says to finish there. Any other
+4. No `pkexec` or helper, or no polkit agent (exit 127): the .deb is opened with the
+   system's software installer (`/usr/bin/xdg-open`), which shows the package and asks for
+   the password itself (lower risk: the user sees what is installed; the file could still be
+   swapped before it opens), and a notification says to finish there. Any other
    failure: "Update failed" (click = the portal).
 
 ### Per-user files (`hoppy install`, tray first run of each version)
