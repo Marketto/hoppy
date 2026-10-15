@@ -10,9 +10,8 @@
 //! mode, also while a menu or another dialog is open.
 //!
 //! Verification dialogs (`show_dialog`): an `NSAlert` whose accessory view holds the 4
-//! emoji (Apple Color Emoji) with their names, the same code as digits behind a "123"
-//! button, and the QR code as an image; a worker watches the `DialogLive` and updates or
-//! closes the alert through the main queue.
+//! emoji (Apple Color Emoji) with their names under them; a worker watches the `DialogLive`
+//! and closes the alert through the main queue.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -35,11 +34,11 @@ use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send,
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSApplicationActivationPolicy,
     NSApplicationDelegate, NSBackingStoreType, NSButton, NSControlStateValueOn, NSEvent,
-    NSEventMask, NSEventModifierFlags, NSEventType, NSFont, NSFontAttributeName, NSImage,
-    NSImageScaling, NSImageView, NSMenu, NSMenuDelegate, NSMenuItem, NSModalResponseOK,
-    NSOpenPanel, NSPanel, NSPasteboard, NSPasteboardTypeFileURL, NSResponder, NSScreen, NSSound,
-    NSStatusBar, NSStatusItem, NSTextAlignment, NSTextField, NSVariableStatusItemLength, NSView,
-    NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
+    NSEventMask, NSEventModifierFlags, NSEventType, NSFont, NSFontAttributeName, NSImage, NSMenu,
+    NSMenuDelegate, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPanel, NSPasteboard,
+    NSPasteboardTypeFileURL, NSResponder, NSScreen, NSSound, NSStatusBar, NSStatusItem,
+    NSTextAlignment, NSTextField, NSVariableStatusItemLength, NSView, NSWindow,
+    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSData, NSDate, NSDefaultRunLoopMode, NSDictionary, NSError,
@@ -187,8 +186,6 @@ thread_local! {
     /// Windows of the open dialogs by sequence number (see `abort_ask`); dialogs can nest
     /// (a warning over an accept question).
     static ASK_WINDOWS: RefCell<HashMap<u64, Retained<NSWindow>>> = RefCell::new(HashMap::new());
-    /// Views of open verification dialogs that change while they are shown.
-    static DIALOGS: RefCell<HashMap<u64, DialogViews>> = RefCell::new(HashMap::new());
 }
 
 /// The shared `NSApplication`: accessory (menu-bar only, no Dock icon even outside the
@@ -248,22 +245,6 @@ define_class!(
         fn panel_picked(&self, sender: Option<&NSButton>) {
             let tag = sender.map(|b| b.tag());
             end_picker(tag);
-        }
-
-        /// The "123" / "Emoji" button of a verification dialog.
-        #[unsafe(method(toggleCode:))]
-        fn toggle_code(&self, sender: Option<&AnyObject>) {
-            let Some(sender) = sender else { return };
-            DIALOGS.with(|d| {
-                for views in d.borrow_mut().values_mut() {
-                    let ours = views.toggle.as_ref().is_some_and(|b| {
-                        std::ptr::eq(Retained::as_ptr(b).cast::<AnyObject>(), sender)
-                    });
-                    if ours {
-                        views.toggle();
-                    }
-                }
-            });
         }
 
         /// Finder → Services → "Send with Hoppy".
@@ -687,50 +668,6 @@ fn is_open(seq: u64) -> bool {
 
 /// Accessory width of a verification dialog (points).
 const ACCESSORY_WIDTH: f64 = 360.0;
-/// QR code: pixels per module in the image, points per module on screen (2× = Retina).
-const QR_PIXELS: usize = 8;
-const QR_POINTS: f64 = 4.0;
-
-/// What the "123" toggle and a confirmed QR scan change. Main thread.
-struct DialogViews {
-    /// The 4 emoji and their 4 names.
-    emoji: Vec<Retained<NSTextField>>,
-    digits: Retained<NSTextField>,
-    toggle: Option<Retained<NSButton>>,
-    labels: (String, String),
-    showing_digits: bool,
-    qr: Option<Retained<NSImageView>>,
-    caption: Option<Retained<NSTextField>>,
-    verified: String,
-}
-
-impl DialogViews {
-    fn toggle(&mut self) {
-        self.showing_digits = !self.showing_digits;
-        for v in &self.emoji {
-            v.setHidden(self.showing_digits);
-        }
-        self.digits.setHidden(!self.showing_digits);
-        if let Some(button) = &self.toggle {
-            let label = if self.showing_digits {
-                &self.labels.1
-            } else {
-                &self.labels.0
-            };
-            button.setTitle(&NSString::from_str(label));
-        }
-    }
-
-    fn show_verified(&self) {
-        if let Some(qr) = &self.qr {
-            qr.setHidden(true);
-        }
-        if let Some(caption) = &self.caption {
-            caption.setStringValue(&NSString::from_str(&self.verified));
-        }
-    }
-}
-
 fn label(
     mtm: MainThreadMarker,
     text: &str,
@@ -754,91 +691,20 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
 }
 
-/// The accessory view (code, toggle, QR code), laid out bottom-up; `None` if there is
-/// nothing to show besides the text.
-fn accessory(mtm: MainThreadMarker, view: &DialogView) -> Option<(Retained<NSView>, DialogViews)> {
-    if view.code.is_none() && view.qr.is_none() {
-        return None;
-    }
+/// The accessory view (the 4 emoji, their names under them); `None` if there is no code.
+fn accessory(mtm: MainThreadMarker, view: &DialogView) -> Option<Retained<NSView>> {
+    let code = view.code.as_ref()?;
     let w = ACCESSORY_WIDTH;
-    let mut y = 0.0;
-    let mut subviews: Vec<Retained<NSView>> = Vec::new();
-    let mut views = DialogViews {
-        emoji: Vec::new(),
-        digits: label(mtm, "", rect(0.0, 0.0, 0.0, 0.0), 12.0, false),
-        toggle: None,
-        labels: (String::new(), String::new()),
-        showing_digits: false,
-        qr: None,
-        caption: None,
-        verified: String::new(),
-    };
-    if let Some(qr) = &view.qr {
-        let caption = label(mtm, &qr.caption, rect(0.0, y, w, 34.0), 12.0, true);
-        y += 40.0;
-        let side = qr.matrix.full_width() as f64 * QR_POINTS;
-        let data = NSData::with_bytes(&qr.matrix.bmp(QR_PIXELS));
-        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
-            image.setSize(NSSize::new(side, side));
-            image.setAccessibilityDescription(Some(&NSString::from_str(&qr.caption)));
-            let image_view = NSImageView::imageViewWithImage(&image, mtm);
-            image_view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
-            image_view.setFrame(rect((w - side) / 2.0, y, side, side));
-            y += side + 12.0;
-            subviews.push(Retained::into_super(Retained::into_super(
-                image_view.clone(),
-            )));
-            views.qr = Some(image_view);
-        }
-        views.verified = qr.verified.clone();
-        subviews.push(Retained::into_super(Retained::into_super(caption.clone())));
-        views.caption = Some(caption);
+    let cell = w / 4.0;
+    let container = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, w, 82.0));
+    for (i, name) in code.names.iter().enumerate() {
+        let x = cell * i as f64;
+        let name = label(mtm, name, rect(x, 0.0, cell, 30.0), 11.0, true);
+        let emoji = label(mtm, code.emoji[i], rect(x, 30.0, cell, 46.0), 36.0, false);
+        container.addSubview(&name);
+        container.addSubview(&emoji);
     }
-    if let Some(code) = &view.code {
-        let target = delegate(mtm);
-        let target: &AnyObject = &target;
-        // SAFETY: the delegate implements `toggleCode:` and lives as long as the app.
-        let toggle = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str(&code.to_digits),
-                Some(target),
-                Some(sel!(toggleCode:)),
-                mtm,
-            )
-        };
-        toggle.setFrame(rect((w - 110.0) / 2.0, y, 110.0, 28.0));
-        y += 36.0;
-        let cell = w / 4.0;
-        let digits = label(mtm, &code.digits, rect(0.0, y, w, 76.0), 34.0, false);
-        digits.setFont(Some(&NSFont::boldSystemFontOfSize(34.0)));
-        digits.setHidden(true);
-        for (i, name) in code.names.iter().enumerate() {
-            let x = cell * i as f64;
-            let name = label(mtm, name, rect(x, y, cell, 30.0), 11.0, true);
-            let emoji = label(
-                mtm,
-                code.emoji[i],
-                rect(x, y + 30.0, cell, 46.0),
-                36.0,
-                false,
-            );
-            views.emoji.extend([name, emoji]);
-        }
-        y += 82.0;
-        for v in &views.emoji {
-            subviews.push(Retained::into_super(Retained::into_super(v.clone())));
-        }
-        subviews.push(Retained::into_super(Retained::into_super(digits.clone())));
-        subviews.push(Retained::into_super(Retained::into_super(toggle.clone())));
-        views.digits = digits;
-        views.toggle = Some(toggle);
-        views.labels = (code.to_digits.clone(), code.to_emoji.clone());
-    }
-    let container = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, w, y));
-    for v in &subviews {
-        container.addSubview(v);
-    }
-    Some((container, views))
+    Some(container)
 }
 
 /// The accept question: the verification dialog (Decline is the default button).
@@ -847,9 +713,8 @@ pub fn ask_offer(view: &DialogView, live: &DialogLive) -> Option<u32> {
 }
 
 /// A verification or warning dialog: `NSAlert` with the view's buttons (the first is the
-/// default, Return), the code/QR accessory, ended as `None` (= default) after
-/// `view.timeout` or when `live` says close; ✓ replaces the QR code when `live` says
-/// verified. Blocks; any thread (runs on the main thread).
+/// default, Return), the emoji accessory, ended as `None` (= default) after `view.timeout`
+/// or when `live` says close. Blocks; any thread (runs on the main thread).
 pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
     let (view, live) = (view.clone(), live.clone());
     run_on_main(move |mtm| {
@@ -866,9 +731,8 @@ pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
             alert.addButtonWithTitle(&NSString::from_str(title));
         }
         let seq = ASK_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some((accessory, views)) = accessory(mtm, &view) {
+        if let Some(accessory) = accessory(mtm, &view) {
             alert.setAccessoryView(Some(&accessory));
-            DIALOGS.with(|d| d.borrow_mut().insert(seq, views));
         }
         // Seen even when macOS does not activate Hoppy (no click started this): on every
         // Space and over full-screen apps.
@@ -878,24 +742,21 @@ pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
         );
         lock(&OPEN_ASKS).push(seq);
         ASK_WINDOWS.with(|w| w.borrow_mut().insert(seq, alert.window()));
-        watch_dialog(seq, live, view.timeout, view.qr.is_some());
+        watch_dialog(seq, live, view.timeout);
         activate(&app);
         let answer = alert.runModal();
         lock(&OPEN_ASKS).retain(|&s| s != seq);
         ASK_WINDOWS.with(|w| w.borrow_mut().remove(&seq));
-        DIALOGS.with(|d| d.borrow_mut().remove(&seq));
         after_modal();
         let index = usize::try_from(answer - NSAlertFirstButtonReturn).ok()?;
         view.buttons.get(index).map(|b| b.0)
     })
 }
 
-/// Watches dialog `seq` from a worker: closes it on `live.close()` or after `timeout`, and
-/// shows ✓ (main queue) once `live` says verified.
-fn watch_dialog(seq: u64, live: DialogLive, timeout: Option<Duration>, has_qr: bool) {
+/// Watches dialog `seq` from a worker: closes it on `live.close()` or after `timeout`.
+fn watch_dialog(seq: u64, live: DialogLive, timeout: Option<Duration>) {
     thread::spawn(move || {
         let started = std::time::Instant::now();
-        let mut shown_verified = false;
         loop {
             thread::sleep(LIVE_POLL);
             if !is_open(seq) {
@@ -905,19 +766,10 @@ fn watch_dialog(seq: u64, live: DialogLive, timeout: Option<Duration>, has_qr: b
                 DispatchQueue::main().exec_async(move || abort_ask(seq));
                 return;
             }
-            if has_qr && !shown_verified && live.verified() {
-                shown_verified = true;
-                DispatchQueue::main().exec_async(move || {
-                    DIALOGS.with(|d| {
-                        if let Some(views) = d.borrow().get(&seq) {
-                            views.show_verified();
-                        }
-                    });
-                });
-            }
         }
     });
 }
+
 /// Timeout or close of dialog `seq` (main thread): ends it with the default answer, but
 /// only while its alert is the modal window on top; under another dialog it retries a bit
 /// later, so `abortModal` never closes someone else's dialog.
@@ -1514,31 +1366,21 @@ pub fn smoke_test() -> i32 {
     assert_eq!(send.popup_menu(&items, false, None), None);
     println!("picker panel: click, Esc and close OK");
 
-    // Verification dialog pieces (not run modally): code, toggle, QR image, ✓.
+    // Verification dialog accessory (not run modally): 4 emoji + 4 names, nothing else.
     let sas = hoppy_core::Sas::from_value(0x05_1234);
     let view = DialogView {
         title: "Hoppy — smoke".into(),
         text: "Pixel wants to send you 1 file".into(),
-        code: Some(crate::verify::CodeView::new(&sas, true, "123", "Emoji")),
-        qr: Some(crate::verify::QrView {
-            matrix: crate::verify::QrMatrix::encode("hoppy:verify:1:smoke:FP:00").expect("qr"),
-            caption: "Inquadra con Hoppy sul telefono".into(),
-            verified: "✓ Verificato".into(),
-        }),
-        buttons: vec![(1, "Rifiuta".into()), (2, "Accetta".into())],
+        code: Some(crate::verify::CodeView::new(&sas, true)),
+        buttons: vec![
+            (1, "Rifiuta".into()),
+            (2, "Accetta".into()),
+            (3, "Coincide, accetta".into()),
+        ],
         ..Default::default()
     };
-    let (container, mut views) = accessory(mtm, &view).expect("accessory view");
-    assert_eq!(
-        container.subviews().count(),
-        8 + 2 + 2,
-        "emoji+names, digits+toggle, QR+caption"
-    );
-    assert!(views.qr.is_some(), "the BMP decodes as an NSImage");
-    views.toggle();
-    assert!(views.showing_digits && !views.digits.isHidden());
-    views.show_verified();
-    assert!(views.qr.as_ref().is_some_and(|q| q.isHidden()));
+    let container = accessory(mtm, &view).expect("accessory view");
+    assert_eq!(container.subviews().count(), 8, "4 emoji + 4 names");
     let plain = DialogView {
         buttons: vec![(1, "OK".into())],
         ..Default::default()

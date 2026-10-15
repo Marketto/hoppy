@@ -1,4 +1,4 @@
-//! Receiver-side limits of protocol v1 (spec §7.3 "Aborted handshakes", §7.8).
+//! Receiver-side limits of protocol v1 (spec §7.3 "Aborted handshakes", §7.7).
 //!
 //! The party that sends handshake message 3 learns the session's SAS before the other side
 //! shows it. A man in the middle that plays the sender towards a receiver can therefore

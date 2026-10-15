@@ -1,3 +1,2 @@
 "CFBundleDisplayName" = "Hoppy";
 "NSLocalNetworkUsageDescription" = "Hoppy cerca i tuoi dispositivi su questa rete Wi-Fi per inviare e ricevere file.";
-"NSCameraUsageDescription" = "Hoppy usa la fotocamera solo per inquadrare il codice QR di un altro dispositivo e verificarlo.";

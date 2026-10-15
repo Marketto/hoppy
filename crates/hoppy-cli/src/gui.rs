@@ -25,8 +25,8 @@
 //!   the .deb through pkexec, then a helper restarts the tray (`unix::selfupdate`). Copies
 //!   that cannot update themselves only link to the portal.
 //! - Device verification (protocol v1, spec §7): the accept question shows the 4-emoji code
-//!   (with a "123" switch and "They match, accept") and, for phones, this device's QR code;
-//!   the sender shows the same code while the receiver decides; a changed key is a blocking
+//!   with the emoji names and "They match, accept"; the sender shows the same code while the
+//!   receiver decides ("They match" / "Later"); people compare the emoji by eye; a changed key is a blocking
 //!   warning with "Forget device"; "Trusted devices…" lists remembered devices. The dialogs
 //!   are `verify::DialogView`s built here and drawn by `ui::show_dialog` / `ui::ask_offer`.
 //! - Firewall (`firewall.rs`): the tray checks at start whether other devices can reach it;
@@ -69,7 +69,7 @@ use hoppy_core::{
 use crate::firewall::{self, Verdict};
 use crate::platform::ui::{self, Tray, Waker};
 use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent};
-use crate::verify::{CodeView, DialogLive, DialogView, QrMatrix, QrView};
+use crate::verify::{CodeView, DialogLive, DialogView};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
     display_file_name, display_name, display_platform, display_text, human, start_discovery,
@@ -159,13 +159,10 @@ pub struct Strings {
     pub sec_plain: &'static str,
     pub sec_new: &'static str,
     pub sec_known: &'static str,
-    pub to_digits: &'static str,
-    pub to_emoji: &'static str,
     pub match_accept: &'static str,
     pub match_only: &'static str,
     pub verify_details: &'static str,
-    pub qr_caption: &'static str,
-    pub qr_verified: &'static str,
+    pub later: &'static str,
     pub code_title: &'static str,
     pub code_text: &'static str,
     pub waiting_code: &'static str,
@@ -265,16 +262,13 @@ pub const IT: Strings = Strings {
     sec_plain: "⚠ Non cifrato: {name} usa una versione di Hoppy senza cifratura",
     sec_new: "dispositivo nuovo",
     sec_known: "già visto, non verificato",
-    to_digits: "123",
-    to_emoji: "Emoji",
     match_accept: "Coincide, accetta",
     match_only: "Coincide",
     verify_details: "Verifica…",
-    qr_caption: "Oppure inquadra questo codice con Hoppy sul telefono",
-    qr_verified: "✓ Verificato: il telefono ha confermato il codice",
+    later: "Più tardi",
     code_title: "Hoppy — verifica {name}",
     code_text: "Invio a {name} ({state}) con connessione cifrata 🔒.\nControlla che sull'altro schermo ci siano le stesse 4 immagini, poi premi «Coincide».",
-    waiting_code: "In attesa che {name} accetti… codice {digits}",
+    waiting_code: "In attesa che {name} accetti… codice {code}",
     waiting_plain: "In attesa che {name} accetti… (non cifrato)",
     key_changed_title: "Attenzione: la chiave di sicurezza di «{name}» è cambiata",
     key_changed_text: "Il trasferimento è stato bloccato: {name} si è presentato con una chiave di sicurezza diversa da quella che Hoppy ricorda.\n\nSe {name} è stato reinstallato o ripristinato, scegli «Dimentica dispositivo» e riprova: tornerà a essere un dispositivo nuovo e potrai verificarlo con il codice.\n\nAltrimenti qualcuno sulla rete potrebbe fingersi {name}: chiudi senza dimenticarlo.",
@@ -371,16 +365,13 @@ pub const EN: Strings = Strings {
     sec_plain: "⚠ Not encrypted: {name} runs a version of Hoppy without encryption",
     sec_new: "new device",
     sec_known: "seen before, not verified",
-    to_digits: "123",
-    to_emoji: "Emoji",
     match_accept: "They match, accept",
     match_only: "They match",
     verify_details: "Verify…",
-    qr_caption: "Or scan this code with Hoppy on the phone",
-    qr_verified: "✓ Verified: the phone confirmed the code",
+    later: "Later",
     code_title: "Hoppy — verify {name}",
     code_text: "Sending to {name} ({state}) over an encrypted connection 🔒.\nCheck that the other screen shows the same 4 pictures, then press “They match”.",
-    waiting_code: "Waiting for {name} to accept… code {digits}",
+    waiting_code: "Waiting for {name} to accept… code {code}",
     waiting_plain: "Waiting for {name} to accept… (not encrypted)",
     key_changed_title: "Warning: the security key of “{name}” has changed",
     key_changed_text: "The transfer was blocked: {name} presented a different security key from the one Hoppy remembers.\n\nIf {name} was reinstalled or reset, choose “Forget device” and try again: it becomes a new device and you can verify it with the code.\n\nOtherwise someone on the network may be pretending to be {name}: close without forgetting it.",
@@ -537,11 +528,6 @@ pub const ASK_TIMEOUT: Duration = Duration::from_secs(110);
 /// At most one "suspicious interrupted connections" balloon this often.
 const ABORTS_BALLOON_EVERY: Duration = Duration::from_secs(60);
 
-/// Phones and tablets: they have a camera and Hoppy there scans QR codes (spec §7.7).
-pub fn is_mobile(platform: &str) -> bool {
-    matches!(platform, "android" | "ios")
-}
-
 fn state_word(s: &Strings, trust: Option<TrustState>) -> &'static str {
     if trust == Some(TrustState::New) {
         s.sec_new
@@ -573,21 +559,19 @@ pub fn security_note(s: &Strings, session: &SessionInfo, name: &str) -> String {
 pub fn code_view(s: &Strings, session: &SessionInfo) -> Option<CodeView> {
     match (session.encrypted, session.trust, &session.sas) {
         (true, Some(TrustState::New | TrustState::Known), Some(sas)) => {
-            Some(CodeView::new(sas, s.italian, s.to_digits, s.to_emoji))
+            Some(CodeView::new(sas, s.italian))
         }
         _ => None,
     }
 }
 
 /// The receiver's accept question. Decline is the first (default) button; "They match,
-/// accept" appears with a code. `qr`: this device's verification payload
-/// (`Local::begin_qr`), shown when the sender is a phone that can scan it.
+/// accept" appears with a code.
 pub fn offer_dialog(
     s: &Strings,
     offer: &Offer,
     from: SocketAddr,
     session: &SessionInfo,
-    qr: Option<&str>,
 ) -> DialogView {
     let name = display_name(&offer.sender.name);
     let code = code_view(s, session);
@@ -598,28 +582,20 @@ pub fn offer_dialog(
     if code.is_some() {
         buttons.push((BTN_MATCH, s.match_accept.to_owned()));
     }
-    let qr = qr
-        .filter(|_| code.is_some())
-        .and_then(QrMatrix::encode)
-        .map(|matrix| QrView {
-            matrix,
-            caption: s.qr_caption.to_owned(),
-            verified: s.qr_verified.to_owned(),
-        });
     DialogView {
         title: s.incoming_title.to_owned(),
         text: offer_body(s, offer, from),
         note: security_note(s, session, &name),
         details: code.is_some().then(|| s.verify_details.to_owned()),
         code,
-        qr,
         buttons,
         timeout: Some(ASK_TIMEOUT),
     }
 }
 
 /// The sender's code window while the receiver decides (New/Known devices only): the same
-/// 4 emoji as on the other screen, "They match" marks the receiver verified here.
+/// 4 emoji as on the other screen, "They match" marks the receiver verified here, "Later"
+/// (the default) just closes it.
 pub fn code_dialog(s: &Strings, name: &str, session: &SessionInfo) -> Option<DialogView> {
     let code = code_view(s, session)?;
     let state = state_word(s, session.trust);
@@ -633,7 +609,7 @@ pub fn code_dialog(s: &Strings, name: &str, session: &SessionInfo) -> Option<Dia
         },
         code: Some(code),
         buttons: vec![
-            (BTN_CLOSE, s.close.to_owned()),
+            (BTN_CLOSE, s.later.to_owned()),
             (BTN_MATCH, s.match_only.to_owned()),
         ],
         ..Default::default()
@@ -800,15 +776,12 @@ struct GuiReceiver {
     s: &'static Strings,
     waker: Waker,
     notices: Arc<Mutex<VecDeque<Notice>>>,
-    /// This device (QR codes) and its trust store ("They match", "Forget device").
+    /// This device and its trust store ("They match", "Forget device").
     local: Local,
     /// Sender names by connection, remembered at accept time for the final balloon.
     names: Mutex<HashMap<SocketAddr, String>>,
     /// One accept dialog at a time; offers arriving meanwhile are declined.
     asking: AtomicBool,
-    /// The open accept question: the sender's key fingerprint and the dialog's handle, so a
-    /// QR scan by that phone (`verified`: same key) turns its QR code into ✓.
-    open: Mutex<Option<(String, DialogLive)>>,
     /// Last "suspicious interrupted connections" balloon.
     last_aborts: Mutex<Option<Instant>>,
 }
@@ -835,34 +808,17 @@ impl ReceiveHandler for GuiReceiver {
             diag::log(format!("receive: offer from {} declined (busy)", from.ip()));
             return false; // another offer is waiting for an answer
         };
-        // A phone can scan this device's QR code instead of comparing (spec §7.7). The
-        // platform of an encrypted session comes from the authenticated handshake.
-        let platform = session
-            .peer
-            .as_ref()
-            .map_or(offer.sender.platform.as_str(), |p| p.platform.as_str());
-        let qr = (is_mobile(platform) && code_view(self.s, session).is_some())
-            .then(|| self.local.begin_qr());
-        let view = offer_dialog(self.s, offer, from, session, qr.as_deref());
-        let live = DialogLive::new();
-        if let Some(peer) = &session.peer {
-            *lock(&self.open) = Some((peer.fingerprint.clone(), live.clone()));
-        }
-        let answer = ui::ask_offer(&view, &live).unwrap_or(BTN_DECLINE);
-        *lock(&self.open) = None;
-        if qr.is_some() {
-            self.local.trust.end_qr();
-        }
+        let view = offer_dialog(self.s, offer, from, session);
+        let answer = ui::ask_offer(&view, &DialogLive::new()).unwrap_or(BTN_DECLINE);
         let accepted = matches!(answer, BTN_ACCEPT | BTN_MATCH);
         diag::log(format!(
             "receive: offer of {} file(s) from {}: accepted={accepted} encrypted={} trust={:?} \
-             match={} qr={}",
+             match={}",
             offer.files.len(),
             from.ip(),
             session.encrypted,
             session.trust,
-            answer == BTN_MATCH,
-            qr.is_some()
+            answer == BTN_MATCH
         ));
         if answer == BTN_MATCH
             && let Some(peer) = &session.peer
@@ -983,26 +939,6 @@ impl ReceiveHandler for GuiReceiver {
             }
         };
         self.notice(title, text, true);
-    }
-
-    fn verified(&self, from: SocketAddr, peer: &PeerKey) {
-        diag::log(format!(
-            "receive: {} verified this device by QR code",
-            from.ip()
-        ));
-        if let Some((fingerprint, live)) = &*lock(&self.open)
-            && *fingerprint == peer.fingerprint
-        {
-            live.set_verified(); // the open accept question shows ✓ instead of the QR code
-        }
-        self.notice(
-            fill(
-                self.s.verified_title,
-                &[("name", &display_name(&peer.name))],
-            ),
-            String::new(),
-            false,
-        );
     }
 }
 
@@ -1426,7 +1362,6 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
         local: local.clone(),
         names: Mutex::new(HashMap::new()),
         asking: AtomicBool::new(false),
-        open: Mutex::new(None),
         last_aborts: Mutex::new(None),
     });
     // Same folder and handler for both paths, so `GuiReceiver::asking` covers callbacks too.
@@ -2274,15 +2209,11 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     tray.set_tip(&fill(s.sending, &[("name", name), ("pct", &pct)]));
                 } else if let (Some(session), false) = (&session, accepted) {
                     let tip = match &session.sas {
-                        Some(sas) => {
-                            fill(s.waiting_code, &[("name", name), ("digits", &sas.digits)])
-                        }
+                        Some(sas) => fill(s.waiting_code, &[("name", name), ("code", &sas.text)]),
                         None => fill(s.waiting_plain, &[("name", name)]),
                     };
                     tray.set_tip(&tip);
                     // New/Known receiver: the same code in a window, with "They match".
-                    // No QR code here: its one-time code would live in this short-lived
-                    // process, while a phone's confirmation reaches the tray receiver.
                     if !code_shown
                         && let Some(view) = code_dialog(s, name, session)
                         && let Some(peer) = session.peer.clone()
@@ -2703,10 +2634,10 @@ mod tests {
     }
 
     #[test]
-    fn accept_question_offers_the_code_and_a_qr_code_for_phones() {
+    fn accept_question_offers_the_emoji_code() {
         let from: SocketAddr = "10.0.0.9:1".parse().unwrap();
         let new = session(Some(TrustState::New), "android");
-        let view = offer_dialog(&IT, &offer(), from, &new, Some("hoppy:verify:1:me:FP:00"));
+        let view = offer_dialog(&IT, &offer(), from, &new);
         let ids: Vec<u32> = view.buttons.iter().map(|b| b.0).collect();
         assert_eq!(
             ids,
@@ -2717,12 +2648,6 @@ mod tests {
         let code = view.code.as_ref().unwrap();
         assert_eq!(code.emoji, ["🐘"; 4]);
         assert_eq!(code.names, ["elefante"; 4]);
-        assert_eq!(code.digits, "0000 0000");
-        assert_eq!(
-            (code.to_digits.as_str(), code.to_emoji.as_str()),
-            ("123", "Emoji")
-        );
-        assert_eq!(view.qr.as_ref().unwrap().caption, IT.qr_caption);
         assert_eq!(view.details.as_deref(), Some("Verifica…"));
         assert_eq!(view.timeout, Some(ASK_TIMEOUT));
         assert!(
@@ -2730,20 +2655,16 @@ mod tests {
                 .starts_with("Pixel (android, 10.0.0.9) vuole inviarti 1 file")
         );
 
-        // Verified or plaintext: no code, no QR code, no "They match".
+        // Verified or plaintext: no code, no "They match".
         for s in [
             session(Some(TrustState::Verified), "android"),
             SessionInfo::plaintext(),
         ] {
-            let view = offer_dialog(&EN, &offer(), from, &s, Some("hoppy:verify:1:me:FP:00"));
-            assert!(view.code.is_none() && view.qr.is_none() && view.details.is_none());
+            let view = offer_dialog(&EN, &offer(), from, &s);
+            assert!(view.code.is_none() && view.details.is_none());
             assert_eq!(view.buttons.len(), 2);
             assert_eq!(view.default_id(), BTN_DECLINE);
         }
-        // No payload (a desktop sender): code but no QR code.
-        let view = offer_dialog(&EN, &offer(), from, &new, None);
-        assert!(view.code.is_some() && view.qr.is_none());
-        assert!(is_mobile("ios") && is_mobile("android") && !is_mobile("macos"));
     }
 
     #[test]
@@ -2755,9 +2676,12 @@ mod tests {
             view.text
                 .starts_with("Sending to Laptop (seen before, not verified)")
         );
-        assert_eq!(view.default_id(), BTN_CLOSE);
+        assert_eq!(view.buttons[0], (BTN_CLOSE, "Later".to_owned()));
         assert_eq!(view.buttons[1], (BTN_MATCH, "They match".to_owned()));
-        assert!(view.timeout.is_none() && view.qr.is_none());
+        assert!(view.timeout.is_none());
+        let it = code_dialog(&IT, "Laptop", &known).unwrap();
+        assert_eq!(it.buttons[0].1, "Più tardi");
+        assert_eq!(it.buttons[1].1, "Coincide");
         assert!(code_dialog(&EN, "x", &session(Some(TrustState::Verified), "linux")).is_none());
         assert!(code_dialog(&EN, "x", &SessionInfo::plaintext()).is_none());
 

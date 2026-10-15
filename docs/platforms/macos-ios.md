@@ -52,12 +52,9 @@ in Applications.
   notification "Ricevuti N file da …"; clicking it opens the folder.
 - **Device verification** (protocol v1, docs/protocol.md §7): the alert's accessory view
   (`macos::ui::accessory`) shows the 4 emoji (Apple Color Emoji) with their names under
-  them and a **123** button that switches to the same value as 8 digits; from a phone
-  (`android`/`ios`) also the QR code (an `NSImage` from `verify::QrMatrix::bmp`, black on
-  white) "Inquadra con Hoppy sul telefono", replaced by "✓ Verificato…" once the phone
-  confirms it. The sender (`hoppyw send`) shows the same code in an alert with **Chiudi**
-  (Return) and **Coincide** while the receiver decides (no QR code: its one-time code would
-  live in the send process); it closes when the transfer ends (the send worker closes it:
+  them, compared by eye with the other screen (the only form of the code: no digits, no QR
+  code). The sender (`hoppyw send`) shows the same code in an alert with **Più tardi /
+  Later** (Return) and **Coincide / They match** while the receiver decides; it closes when the transfer ends (the send worker closes it:
   while that alert is up the menu-bar title is not updated). A changed key gives a warning
   alert with **Chiudi** (Return) and **Dimentica dispositivo**; *Dispositivi fidati…* in the
   menu lists remembered devices and forgets one. Dialogs can nest (a warning over an accept
@@ -185,12 +182,10 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
    riuscito", app unchanged, no `.hoppy-*` folder left in /Applications.
 10. **Notifications off** in System Settings: no notification at all; turning them back on
     restores them.
-11. **Verification**: phone → Mac: the alert shows the 4 colour emoji with names, *123*
-    toggles to digits and back, the QR code scans with the phone's Hoppy and turns into ✓,
-    *Coincide, accetta* → next time the device shows ✓ in the send menu; Mac → PC: the code
+11. **Verification**: phone → Mac: the alert shows the 4 colour emoji with names (no digits,
+    no QR code), *Coincide, accetta* → next time the device shows ✓ in the send menu; Mac → PC: the code
     alert matches the PC's dialog, *Coincide* → ✓; reinstall the phone → warning alert,
-    *Dimentica dispositivo*; *Dispositivi fidati…*; VoiceOver reads the emoji names and the
-    digits; a warning arriving while the accept alert is open stacks on top, and each one
+    *Dimentica dispositivo*; *Dispositivi fidati…*; VoiceOver reads the emoji names; a warning arriving while the accept alert is open stacks on top, and each one
     times out on its own.
 
 ## iPhone / iPad

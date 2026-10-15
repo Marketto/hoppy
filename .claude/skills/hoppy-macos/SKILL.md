@@ -17,7 +17,7 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
 | Pure helpers + Info.plist consistency test (run on Linux) | `crates/hoppy-cli/src/macos/mod.rs` |
 | curl update transport (shared with Linux) | `crates/hoppy-cli/src/unix/http.rs` |
 | Self-update (download .dmg, hdiutil/ditto/codesign/PlistBuddy, swap, relaunch) | `crates/hoppy-cli/src/unix/selfupdate.rs` |
-| Verification dialogs (`show_dialog`: NSAlert + accessory view) | `crates/hoppy-cli/src/macos/ui.rs`, model in `crates/hoppy-cli/src/verify.rs` |
+| Verification dialogs (`show_dialog`: NSAlert + accessory view with the 4 emoji and their names only; the smoke test checks its 8 labels) | `crates/hoppy-cli/src/macos/ui.rs`, model in `crates/hoppy-cli/src/verify.rs` |
 | Bundle metadata, Finder service, privacy texts | `apps/macos/Info.plist`, `apps/macos/it.lproj/`, `apps/macos/en.lproj/` |
 | Build universal app + dmg / bundle given binaries | `apps/macos/build-app.sh` (`release` / `bundle`) |
 | Icons (generated: `python3 tools/gen_icons.py --macos`) | `assets/brand/macos/` |
@@ -39,7 +39,7 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
   event loop (menus, `runModal`) is followed by `after_modal()` (re-arms the wake-up event).
 - Never auto-accept: Decline is the alert's first (default) button; timeout = decline.
 - Dialogs nest (a warning over an accept question): per-dialog state is keyed by sequence
-  number (`OPEN_ASKS`, `ASK_WINDOWS`, `DIALOGS`); `abort_ask` only aborts its own alert when
+  number (`OPEN_ASKS`, `ASK_WINDOWS`); `abort_ask` only aborts its own alert when
   it is the modal window on top. While a modal alert runs, `gui.rs`'s loop is blocked: work
   that must happen meanwhile (closing the sender's code window) is done by workers.
 - Self-update replaces only `/Applications/Hoppy.app` or `~/Applications/Hoppy.app` in a

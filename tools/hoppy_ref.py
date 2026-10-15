@@ -6,15 +6,14 @@ Independent second implementation of docs/protocol.md, used to:
   * debug real devices from any machine with Python 3.9+.
 
 v1 (spec §7) is implemented from scratch here: X25519 (RFC 7748), ChaCha20-Poly1305
-(RFC 8439), HMAC/HKDF over hashlib, Noise_XX_25519_ChaChaPoly_SHA256, the SAS and the QR
-payload. Pure Python is slow (~1 MB/s encrypted): use small files.
+(RFC 8439), HMAC/HKDF over hashlib, Noise_XX_25519_ChaChaPoly_SHA256 and the SAS (4 emoji).
+Pure Python is slow (~1 MB/s encrypted): use small files.
 
 Usage:
   hoppy_ref.py selftest                    run docs/test-vectors.json + RFC vectors
   hoppy_ref.py peers [--wait 3]            list nearby devices
   hoppy_ref.py receive DIR [--port P]      accept everything into DIR (trusted LAN only);
                                            also answers callback requests (spec §6).
-                                           --show-qr prints a QR payload (spec §7.7)
   hoppy_ref.py send HOST[:PORT] FILE...    send files; falls back to a callback if the
                                            TCP connect fails (--no-direct: callback only)
   hoppy_ref.py abort-handshakes HOST:PORT N   play a code-guessing attacker (spec §7.3): N v1
@@ -350,10 +349,8 @@ class NoiseXX:
         return (c1, c2) if self.initiator else (c2, c1)
 
 
-# ---------------------------------------------------------------- v1 identity, SAS, QR
+# ---------------------------------------------------------------- v1 identity, SAS
 BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-QR_PREFIX = "hoppy:verify:1:"
-QR_CODE_TTL = 600.0
 # Spec §7.6 table (same as docs/test-vectors.json "v1.sas_emoji"; selftest compares).
 SAS_EMOJI = [
     ("🐘", "elefante", "elephant"), ("🐢", "tartaruga", "turtle"), ("🐙", "polpo", "octopus"),
@@ -403,29 +400,8 @@ def sas_value(h2: bytes, initiator_nonce: bytes, responder_nonce: bytes) -> int:
 def sas_render(value: int) -> dict:
     value &= 0xFFFFFF
     idx = [(value >> shift) & 63 for shift in (18, 12, 6, 0)]
-    d = f"{value:08d}"
     return {"value": value, "emoji": idx, "text": "".join(SAS_EMOJI[i][0] for i in idx),
-            "digits": f"{d[:4]} {d[4:]}", "it": [SAS_EMOJI[i][1] for i in idx], "en": [SAS_EMOJI[i][2] for i in idx]}
-
-
-def qr_payload(device_id: str, fp: str, code: str) -> str:
-    return f"{QR_PREFIX}{device_id}:{fp}:{code}"
-
-
-def parse_qr(text: str) -> dict | None:
-    text = text.strip()
-    if not text.startswith(QR_PREFIX):
-        return None
-    parts = text[len(QR_PREFIX):].rsplit(":", 2)
-    if len(parts) != 3:
-        return None
-    # ASCII-only upper case (Rust to_ascii_uppercase): "ı".upper() == "I" must not pass.
-    device_id, fp, code = parts[0], "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c in parts[1]), parts[2]
-    ok = (device_id and len(device_id.encode()) <= 128
-          and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in device_id)  # C0, DEL, C1
-          and len(fp) == 52 and all(c in BASE32 for c in fp)
-          and len(code) == 32 and all(c in "0123456789abcdef" for c in code))
-    return {"id": device_id, "fingerprint": fp, "code": code} if ok else None
+            "it": [SAS_EMOJI[i][1] for i in idx], "en": [SAS_EMOJI[i][2] for i in idx]}
 
 
 def write_private(path: Path, data: bytes, exclusive: bool = False) -> None:
@@ -500,7 +476,7 @@ class HandshakeGuard:
 
 
 class Identity:
-    """Device key (static X25519) + trust store + live QR codes; optionally persisted."""
+    """Device key (static X25519) + trust store; optionally persisted."""
 
     def __init__(self, device: dict, key_file: Path | None = None, trust_file: Path | None = None,
                  v0: bool = False, require_encryption: bool = False) -> None:
@@ -528,7 +504,6 @@ class Identity:
             except (ValueError, AttributeError):
                 trust_file.rename(trust_file.with_suffix(".json.bad"))  # damaged: set aside
                 print(f"warning: {trust_file} was damaged; set aside", file=sys.stderr)
-        self.qr_codes: dict[str, float] = {}
         self.guard = HandshakeGuard()
 
     def _save(self) -> None:
@@ -569,23 +544,6 @@ class Identity:
         with self.lock:
             return bool(n) and any(i != peer_id and str(e.get("name", "")).strip().lower() == n
                                    for i, e in self.peers.items())
-
-    def begin_qr(self) -> str:
-        code = os.urandom(16).hex()
-        with self.lock:
-            self.qr_codes[code] = time.monotonic()
-        return qr_payload(self.device["id"], self.fingerprint, code)
-
-    def take_qr_code(self, code: str) -> bool:
-        with self.lock:
-            now = time.monotonic()
-            self.qr_codes = {c: t for c, t in self.qr_codes.items() if now - t < QR_CODE_TTL}
-            for c in list(self.qr_codes):
-                if hmac.compare_digest(c.encode(), str(code).encode()):
-                    del self.qr_codes[c]
-                    return True
-        return False
-
 
 def identity_payload(device: dict, nonce: bytes) -> bytes:
     body = {"id": device["id"], "name": device["name"], "platform": device["platform"], "nonce": nonce.hex()}
@@ -664,7 +622,7 @@ class PeerClosed(Exception):
 
 
 def initiate(sock: socket.socket, ident: Identity, expected_id: str | None = None,
-             expect_fp: str | None = None, deadline: float | None = None) -> tuple[NoiseSocket, dict]:
+             deadline: float | None = None) -> tuple[NoiseSocket, dict]:
     """Initiator side of spec §7.3. Returns the encrypted stream and the session info."""
     hs = NoiseXX(True, ident.private)
     nonce = os.urandom(32)
@@ -684,9 +642,7 @@ def initiate(sock: socket.socket, ident: Identity, expected_id: str | None = Non
     if expected_id and peer["id"] != expected_id:
         raise ValueError(f"the device answered as {peer['id']}, not {expected_id}")
     state = ident.state(peer["id"], peer["fingerprint"])
-    if expect_fp is not None and expect_fp != peer["fingerprint"]:
-        raise ValueError("verification failed: another key than the scanned code")
-    if expect_fp is None and state == "key_changed":
+    if state == "key_changed":
         raise ValueError(f"the security key of {peer['name']} has changed: not sending")
     sock.sendall(frame(hs.write_msg3(identity_payload(ident.device, nonce))))
     tx, rx = hs.split()
@@ -755,7 +711,7 @@ def describe(info: dict) -> str:
     if not info.get("encrypted"):
         return "NOT encrypted connection"
     sas = info["sas"]
-    return f"encrypted · {info['trust']} · {sas['text']} ({sas['digits']}) · {info['peer']['fingerprint'][:8]}…"
+    return f"encrypted · {info['trust']} · {sas['text']} · {info['peer']['fingerprint'][:8]}…"
 
 
 # ---------------------------------------------------------------- names (spec §4)
@@ -851,7 +807,7 @@ def send_session(s: socket.socket, paths: list[Path], ident: Identity, advertise
         print(describe(info), file=sys.stderr)
         result = send_over(stream, paths, ident.device, hello=False, deadline=deadline,
                            on_accept=lambda: ident.pin(info["peer"], addr=addr))
-        return {**result, "encrypted": True, "sas": info["sas"]["digits"], "trust": info["trust"]}
+        return {**result, "encrypted": True, "sas": info["sas"]["text"], "trust": info["trust"]}
 
 
 def send_over(s, paths: list[Path], sender: dict, hello: bool, on_accept=None, deadline: float | None = None) -> dict:
@@ -897,20 +853,6 @@ def abort_handshakes(host: str, port: int, count: int) -> dict:
                 refused += 1
         time.sleep(0.05)
     return {"served": served, "refused": refused}
-
-
-def verify(host: str, port: int, payload: str, ident: Identity) -> dict:
-    """Scanner side of spec §7.7: open a v1 session that must present the scanned key, then
-    send the one-time code."""
-    qr = parse_qr(payload)
-    if qr is None:
-        return {"ok": False, "error": "not a Hoppy verification code"}
-    with socket.create_connection((host, port), timeout=10) as s:
-        stream, info = initiate(s, ident, qr["id"], expect_fp=qr["fingerprint"])
-        # The scanned key matched the session's: verified here, before telling the other side.
-        ident.pin(info["peer"], verified=True)
-        write_json(stream, {"verify": qr["code"]})
-        return read_json(stream)
 
 
 # ---------------------------------------------------------------- callback (spec §6)
@@ -1072,19 +1014,6 @@ def handle(conn: socket.socket, out: Path, ident: Identity, log=print) -> None:
             first = read_json(stream)
         else:
             return  # a v0 node closes on any other version (the sender then falls back)
-        if "verify" in first:  # spec §7.7: only inside an encrypted session
-            if not info["encrypted"]:
-                return
-            peer = info["peer"]
-            if info["trust"] == "key_changed":
-                write_json(stream, {"ok": False, "error": "key_changed"})
-            elif ident.take_qr_code(first["verify"]):
-                ident.pin(peer, verified=True)
-                write_json(stream, {"ok": True})
-                log(f"verified {peer['name']} ({peer['fingerprint'][:8]}…) by QR")
-            else:
-                write_json(stream, {"ok": False, "error": "invalid_code"})
-            return
         offer = first
         files = offer.get("files", [])
         sender = offer.get("sender") if isinstance(offer.get("sender"), dict) else {}
@@ -1145,8 +1074,7 @@ def _handle_logged(conn: socket.socket, out: Path, ident: Identity) -> None:
         print(f"connection failed: {e}", file=sys.stderr)
 
 
-def receive(out: Path, port: int, ident: Identity, announce: bool = True, udp_port: int = DISCOVERY_PORT,
-            show_qr: bool = False) -> None:
+def receive(out: Path, port: int, ident: Identity, announce: bool = True, udp_port: int = DISCOVERY_PORT) -> None:
     srv = socket.create_server(("0.0.0.0", port), reuse_port=hasattr(socket, "SO_REUSEPORT"))
     port = srv.getsockname()[1]
     if announce:
@@ -1154,8 +1082,6 @@ def receive(out: Path, port: int, ident: Identity, announce: bool = True, udp_po
     print(f"receiving as {ident.device['name']!r} on port {port} into {out}", flush=True)
     if not ident.v0:
         print(f"fingerprint {ident.fingerprint}", flush=True)
-    if show_qr:
-        print(f"qr {ident.begin_qr()}", flush=True)
     while True:
         conn, _ = srv.accept()
         threading.Thread(target=_handle_logged, args=(conn, out, ident), daemon=True).start()
@@ -1467,11 +1393,6 @@ def v1_checks(want: dict) -> int:
         print("FAIL display_text")
     rejects("id with bidi", lambda: parse_identity(b'{"id":"x\\u202e","name":"n","platform":"p","nonce":"' + b"00" * 32 + b'"}'))
     rejects("non-string name", lambda: parse_identity(b'{"id":"x","name":1,"platform":"p","nonce":"' + b"00" * 32 + b'"}'))
-    qr = want["qr_example"]
-    if parse_qr(qr["payload"]) != {"id": qr["id"], "fingerprint": qr["fingerprint"], "code": qr["code"]} \
-            or any(parse_qr(x) is not None for x in qr["invalid"]):
-        bad += 1
-        print("FAIL QR payload parsing")
     # Tampering and replay are rejected by the transport.
     a = NoiseXX(True, os.urandom(32))
     b = NoiseXX(False, os.urandom(32))
@@ -1564,7 +1485,6 @@ def v1_vectors() -> dict:
         "busy_reply_hex": "0000",
     }
     code = "00112233445566778899aabbccddeeff"
-    qr = qr_payload(dev_r["id"], kr["fingerprint"], code)
     hello_json = json.dumps({"id": dev_r["id"], "token": code, "crypto": 1}, separators=(",", ":"))
     return {
         "_comment": "Spec §7 (protocol v1). Generated by `python3 tools/hoppy_ref.py vectors --v1`; Rust "
@@ -1577,20 +1497,10 @@ def v1_vectors() -> dict:
             "msg1_hex": m1.hex(), "msg2_hex": m2.hex(), "msg3_hex": m3.hex(),
             "h2_hex": h2.hex(), "h_hex": i.h.hex(),
         },
-        "sas": {k: sas[k] for k in ("value", "emoji", "text", "digits", "it", "en")},
+        "sas": {k: sas[k] for k in ("value", "emoji", "text", "it", "en")},
         "transport": transport,
-        "sas_values": [{k: sas_render(v)[k] for k in ("value", "emoji", "text", "digits")}
+        "sas_values": [{k: sas_render(v)[k] for k in ("value", "emoji", "text")}
                        for v in (0, 1, 63, 64, 0x123456, 9_999_999, 0xFFFFFF)],
-        "qr_example": {
-            "id": dev_r["id"], "fingerprint": kr["fingerprint"], "code": code, "payload": qr,
-            "invalid": [qr.replace("hoppy:verify:1:", "hoppy:verify:2:"), qr[:-1], qr.upper(),
-                        qr.replace(kr["fingerprint"], kr["fingerprint"][:-1]),
-                        qr.replace(":" + code, ":" + code.upper()),
-                        "hoppy:verify:1::" + kr["fingerprint"] + ":" + code,
-                        # non-ASCII letters whose Unicode upper case is ASCII ("ı" → "I")
-                        qr.replace(kr["fingerprint"], "\u0131" + kr["fingerprint"][1:].lower()),
-                        qr.replace(dev_r["id"], dev_r["id"] + "\u0085")],  # C1 control in the id
-        },
         "discovery": {
             "announce_json": json.dumps({"hoppy": 0, "type": "announce", **dev_r, "port": 47471, "crypto": 1},
                                         separators=(",", ":")),
@@ -1712,7 +1622,6 @@ def main() -> int:
     r.add_argument("--port", type=int, default=TRANSFER_PORT)
     r.add_argument("--no-announce", action="store_true")
     r.add_argument("--udp-port", type=int, default=DISCOVERY_PORT, help="discovery port to bind (tests)")
-    r.add_argument("--show-qr", action="store_true", help="print a QR verification payload (spec §7.7)")
     s = sub.add_parser("send", parents=[common])
     s.add_argument("target")
     s.add_argument("files", nargs="+", type=Path)
@@ -1723,9 +1632,6 @@ def main() -> int:
     ab = sub.add_parser("abort-handshakes", help="play a code-guessing attacker (spec §7.3)")
     ab.add_argument("target")
     ab.add_argument("count", type=int)
-    v = sub.add_parser("verify", parents=[common], help="scan side of the QR verification (spec §7.7)")
-    v.add_argument("target", help="HOST:PORT of the device that shows the code")
-    v.add_argument("payload")
     a = ap.parse_args()
 
     if a.cmd == "selftest":
@@ -1745,17 +1651,10 @@ def main() -> int:
     V0_MODE = a.v0
     ident = Identity(me(a.name), a.key, a.trust, v0=a.v0, require_encryption=a.require_encryption)
     if a.cmd == "receive":
-        receive(a.dir, a.port, ident, announce=not a.no_announce, udp_port=a.udp_port, show_qr=a.show_qr)
+        receive(a.dir, a.port, ident, announce=not a.no_announce, udp_port=a.udp_port)
         return 0
     host, _, port = a.target.rpartition(":") if a.target.count(":") == 1 else (a.target, "", "")
     host = host or a.target
-    if a.cmd == "verify":
-        try:
-            result = verify(host, int(port or TRANSFER_PORT), a.payload, ident)
-        except (OSError, ValueError, ConnectionError) as e:
-            result = {"ok": False, "error": str(e)}
-        print(json.dumps(result))
-        return 0 if result.get("ok") else 1
     uhost, _, uport = (a.peer_udp or host).rpartition(":") if a.peer_udp else (host, "", "")
     try:
         result = send_to(host, int(port or TRANSFER_PORT), a.files, ident, (uhost or host, int(uport or DISCOVERY_PORT)),

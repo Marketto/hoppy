@@ -60,16 +60,14 @@
 - Theme music (`audio/Music.kt`, rules in `docs/design/themes.md` "Music"): idle loop while
   the app is visible, faster loop on the sender during a send, jingle on delivery, silence
   on the receiver while receiving and whenever another app plays audio.
-- Overflow menu: theme, device name, *Show my QR* / *Scan a QR* (device verification),
-  music (on by default), accept automatically (with warning).
+- Overflow menu: theme, device name, music (on by default), accept automatically (with warning).
 
 ## Encryption and device verification (protocol v1, ADR 0010)
 - `:core` speaks v1 (spec §7) itself, pure JVM: `Crypto.kt` (X25519 + ChaCha20-Poly1305 from
   BouncyCastle's lightweight API, SHA-256/HMAC from the JDK; fingerprints, SAS + emoji table,
-  QR payload, `DeviceKey`), `Noise.kt` (Noise XX with the commit/reveal payloads, `u16`
+  `DeviceKey`), `Noise.kt` (Noise XX with the commit/reveal payloads, `u16`
   framing, `NoiseInputStream`/`NoiseOutputStream`, `Text.display`), `Trust.kt` (trust store,
-  `HandshakeGuard`), `Transfer.kt` (`Local`, version choice, sender/receiver sessions,
-  `confirmQr`, `QrVerification.scan`). Tests: `V1Test` (every `v1` vector incl. `negative`,
+  `HandshakeGuard`), `Transfer.kt` (`Local`, version choice, sender/receiver sessions). Tests: `V1Test` (every `v1` vector incl. `negative`,
   RFC KATs, sessions over TCP) + `CoreTest`; interop legs K1–K10 in `tools/interop.sh`.
 - Identity: `security/Security.kt` — `noBackupFilesDir/identity.key` (created on first run,
   never overwritten if a newer app wrote it: then a temporary key and a warning) and
@@ -85,9 +83,10 @@
   off the main thread by `refreshTrustBadges`). A remembered id always gets 🔒.
 - Sending (`SendActivity`): the session line under the status (🔒 / ✓ / ⚠ not encrypted);
   for a New/Known device `view_verify.xml` (`ui/VerifyPanel.kt`) covers the list while the
-  receiver decides: 4 emoji (system emoji font, names as contentDescription and caption),
-  "123" ↔ "Emoji" toggle for the 8 digits, *They match* (marks verified), *Verify with QR*,
-  *Show my QR*, *Later*. After delivery the screen stays until the code is answered.
+  receiver decides: 4 large emoji (system emoji font, names as contentDescription and
+  caption), *They match* (marks verified), *Later*. The 4 emoji are the only verification
+  method (owner decision): no numeric form, no QR, no camera. After delivery the screen
+  stays until the code is answered.
   `KeyChangedException` → blocking dialog with *Forget device* (nothing was sent);
   `ReceiverBusyException` → "busy, try again in a minute" (never a plaintext retry);
   `UnencryptedException` → "did not answer with encryption, nothing sent".
@@ -100,13 +99,6 @@
   plaintext from a device that encrypts) and code-guessing warnings go to the *Security
   warnings* channel (`security`), rate-limited by the core; a changed-key notification opens
   `VerifyActivity` with *Forget device*.
-- QR (`ui/QrActivity.kt`, ZXing Android Embedded): *Scan a QR* / *Verify with QR* ask for the
-  camera on use (denied → compare the code); `QrVerification.scan` checks the fingerprint
-  against the live session or the remembered key, marks it verified, then sends the one-time
-  code to that device over a session that must present exactly the scanned key (a device
-  never seen before is verified only that way). *Show my QR* renders `Local.beginQr()`
-  (dark on white), switches receiving on while shown (the scanner connects to us), shows ✓
-  and closes when a scanner proves it, expires after 10 min.
 
 ## Updates (in-app, from GitHub Releases)
 The APK is distributed from GitHub Releases, not the Play Store; every release is signed
@@ -151,8 +143,7 @@ JSON, `SHA256SUMS.txt` parsing; unit-tested), `update/InstallReceiver.kt`.
 - Discovery needs `CHANGE_WIFI_MULTICAST_STATE` and a held `MulticastLock` (`Node`).
 - Notifications permission (Android 13+) is required to ask before receiving; without it
   incoming transfers are declined unless auto-accept is on.
-- Camera permission only for scanning verification QR codes, asked on use; the camera is
-  not a required feature (`android.hardware.camera.any` optional).
+- No camera permission and no camera feature: verification is by emoji only.
 - APK size: BouncyCastle (`bcprov-jdk18on`) is packaged unshrunk while R8 is off.
 - Newer Android versions are adding local-network permission rules; re-check on each
   targetSdk bump.

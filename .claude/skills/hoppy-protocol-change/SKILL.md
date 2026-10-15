@@ -42,7 +42,7 @@ The protocol has **three implementations** that must agree byte for byte:
 
 ## v1 encryption (§7, ADR 0010)
 
-- Session crypto, SAS (emoji + 8 digits), QR verification and the TOFU trust store live in
+- Session crypto, SAS (4 emoji only: no digits, no QR — ADR 0010 amendment) and the TOFU trust store live in
   `crates/hoppy-core/src/{crypto,session,trust}.rs`, `tools/hoppy_ref.py` (pure-Python X25519/ChaCha20-Poly1305/Noise XX)
   and the Kotlin core (`Crypto.kt`, `Noise.kt`, `Trust.kt`, `Transfer.kt`; tested by `V1Test`); all three must match
   the `v1` block of `docs/test-vectors.json` byte for byte.

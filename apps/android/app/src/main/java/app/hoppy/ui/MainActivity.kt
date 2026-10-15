@@ -248,8 +248,6 @@ class MainActivity : ThemedActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.theme -> { chooseTheme(); true }
-        R.id.show_qr -> { startActivity(QrActivity.showIntent(this)); true }
-        R.id.scan_qr -> { startActivity(QrActivity.scanIntent(this)); true }
         R.id.rename -> { rename(); true }
         R.id.music -> {
             item.isChecked = !item.isChecked

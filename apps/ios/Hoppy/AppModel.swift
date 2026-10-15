@@ -1,6 +1,6 @@
 // The app's state: one Rust node while the app is in the foreground (iOS gives no
 // background listening without special entitlements), receive toggle, sends, the accept
-// question, the last received files, device verification (spec §7: code, QR, KeyChanged)
+// question, the last received files, device verification (spec §7: 4-emoji code, KeyChanged)
 // and the update notice. Used only on the main thread (events are posted there with
 // DispatchQueue.main.async, which keeps their order).
 import AVFoundation
@@ -31,13 +31,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var sendSecurity: HoppySecurity?
     @Published var sendCheckHidden = false
     @Published var offerCheckHidden = false
-    /// Result of "Coincide" / a QR scan, shown in the panel of `noteFor`.
+    /// Result of "Coincide", shown in the panel of `noteFor`.
     @Published private(set) var securityNote: String?
     @Published private(set) var noteFor: Session?
-    /// The camera scanner is open for this session.
-    @Published var scanningFor: Session?
-    /// "Mostra il mio QR" is open (payload) over this session's screen.
-    @Published private(set) var myQR: (payload: String, over: Session)?
     @Published var keyChanged: KeyChangedAlert?
     @Published var banner: String?
     /// A newer release to announce (UpdateCheck).
@@ -45,9 +41,6 @@ final class AppModel: ObservableObject {
 
     private var node: HoppyNode?
     private var transfer: (id: UInt64, peerId: String, peer: String, files: [URL])?
-    private var pendingScan: (id: UInt64, session: Session, name: String)?
-    /// Receiving was turned on only so a scan of "my QR" can reach us.
-    private var receivingForQR = false
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var inForeground = false
     private var player: AVAudioPlayer?
@@ -168,10 +161,6 @@ final class AppModel: ObservableObject {
         if let t = transfer { Outbox.remove(t.files) }
         transfer = nil
         sendSecurity = nil
-        pendingScan = nil
-        scanningFor = nil
-        myQR = nil
-        receivingForQR = false
         securityNote = nil
     }
 
@@ -302,56 +291,6 @@ final class AppModel: ObservableObject {
         if session == .offer { offerCheckHidden = true } else { sendCheckHidden = true }
     }
 
-    /// "Verifica con QR": camera if allowed, otherwise compare the code.
-    func startScan(_ session: Session) {
-        CameraAccess.request { [weak self] ok in
-            guard let self = self else { return }
-            if ok {
-                self.scanningFor = session
-            } else {
-                self.note(L(CameraAccess.hasCamera ? "camera_denied" : "camera_unavailable"), session)
-            }
-        }
-    }
-
-    func cancelScan() { scanningFor = nil }
-
-    func scanned(_ payload: String) {
-        guard let session = scanningFor else { return }
-        scanningFor = nil
-        guard let node = node else { return }
-        let live = security(of: session)?.peer
-        let id = node.qrScan(payload, live: live)
-        if id == 0 {
-            note(L("qr_invalid"), session)
-        } else {
-            pendingScan = (id, session, live?.name ?? "?")
-            note(L("qr_checking"), session)
-        }
-    }
-
-    /// "Mostra il mio QR": the other device's scan reaches us through the receiver, so it is
-    /// turned on while the code is shown.
-    func showMyQR(over session: Session) {
-        guard let node = node else { return }
-        if !receiving {
-            receivingForQR = node.setReceiving(true) != nil
-        }
-        if let payload = node.qrBegin() { myQR = (payload, session) }
-    }
-
-    func closeMyQR() {
-        guard myQR != nil else { return }
-        myQR = nil
-        node?.qrEnd()
-        if receivingForQR {
-            receivingForQR = false
-            if !(UserDefaults.standard.object(forKey: Self.receiveKey) as? Bool ?? true) {
-                node?.setReceiving(false)
-            }
-        }
-    }
-
     /// "Dimentica dispositivo": its next contact is New (trust on first use again).
     func forget(_ peerId: String) {
         node?.forget(peerId)
@@ -435,28 +374,10 @@ final class AppModel: ObservableObject {
             } else {
                 banner = L("plain_refused", name)
             }
-        case let .verified(peer):
-            markVerified(peer)
-            banner = L("sec_verified_now", peer.name)
-            closeMyQR()
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
         case let .handshakeAborts(from, recent):
             banner = L("aborts_banner", from, recent)
         case let .trustNotSaved(error):
             banner = L("trust_not_saved", error)
-        case let .qrDone(scan, ok, local, _, error):
-            guard let p = pendingScan, p.id == scan else { return }
-            pendingScan = nil
-            if ok {
-                note(L("sec_verified_now", p.name), p.session)
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-            } else if local {
-                note(L("qr_local_only", p.name, error ?? "?"), p.session)
-            } else {
-                note(L("qr_mismatch", error ?? "?"), p.session)
-            }
-            if local, let key = security(of: p.session)?.peer { markVerified(key) }
-            if noteFor == .send && sendSecurity == nil, let text = securityNote { banner = text }
         }
     }
 

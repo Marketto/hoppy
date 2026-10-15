@@ -95,8 +95,7 @@ stated goal is one engine).
   profile, and handing the files to the app needs the responder-chain URL hack. So the
   extension is **a separate device**, «<model> (Condividi)», with its own stable id, key and
   trust store: zero cost, nothing to configure, no KeyChanged; it is verified separately and
-  shows the code with «Coincide» (no QR: extensions cannot use the camera and it never
-  receives). With a paid account later, an App Group can merge the two identities.
+  shows the 4 emoji with «Coincide» / «Più tardi», like the app (it never receives). With a paid account later, an App Group can merge the two identities.
 - **Updates at zero cost.** The portal publishes an AltStore-format source,
   `sidestore.json`, built by `tools/site.py` from the latest release (portal rebuilt by
   `release.yml` after publishing): users of SideStore (free, re-signs on the device every

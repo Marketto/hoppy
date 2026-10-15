@@ -5,15 +5,15 @@ import java.io.IOException
 import java.util.TreeMap
 
 /**
- * Trust on first use (spec §7.5) and device verification (§7.6–7.7). Keep in lockstep with
+ * Trust on first use (spec §7.5) and device verification (§7.6: comparing 4 emoji). Keep in lockstep with
  * crates/hoppy-core/src/trust.rs.
  */
 enum class TrustState(val wire: String) {
-    /** First contact: never seen. Show the SAS and offer "Verify now" / "Later". */
+    /** First contact: never seen. Show the SAS (4 emoji), offer "They match" / "Later". */
     NEW("new"),
-    /** Seen before with this key, not verified. Show the SAS, offer "Verify". */
+    /** Seen before with this key, not verified. Same as NEW in the UI. */
     KNOWN("known"),
-    /** The user verified this key: show ✓. */
+    /** The user compared the emoji and confirmed "They match": show ✓. */
     VERIFIED("verified"),
     /** Seen before with a DIFFERENT key: block (never send, decline without asking) and warn. */
     KEY_CHANGED("key_changed"),
@@ -156,19 +156,15 @@ class TrustStore(val version: Int = 1, peers: Map<String, TrustEntry> = emptyMap
 class KeyChangedException(val peer: PeerKey) :
     CryptoException("the security key of ${peer.name} has changed (possible impersonation): forget the device to trust the new key")
 
-/** A QR code did not match the key this device knows (spec §7.7). */
-open class VerificationFailedException(message: String) : CryptoException(message)
-
 fun unixNow(): Long = System.currentTimeMillis() / 1000
 
 /**
  * Thread-safe trust store of a node, optionally backed by a JSON file that every change
  * re-reads, merges and replaces atomically under a lock file (`<name>.lock`, stale after
- * 10 s), plus the one-time codes of QR codes on screen. A damaged file is set aside as
+ * 10 s). A damaged file is set aside as
  * `<name>.bad` (Rust: `trust.json.bad`) and reported once through [takeWarning].
  */
 class Trust private constructor(private var store: TrustStore, private val file: File?) {
-    private val qrCodes = ArrayList<Pair<String, Long>>() // code, nanoTime
     private var warning: String? = null
     private var stamp: Pair<Long, Long>? = null // (lastModified, length) of the loaded file
 
@@ -226,7 +222,7 @@ class Trust private constructor(private var store: TrustStore, private val file:
 
     fun nameTakenByOther(id: String, name: String): Boolean = snapshot().nameTakenByOther(id, name)
 
-    /** "Coincide" / "They match", or a QR scan that matched. [KeyChangedException] if another key is pinned. */
+    /** "Coincide" / "They match" (local only: nothing is sent). [KeyChangedException] if another key is pinned. */
     fun markVerified(peer: PeerKey) {
         update { it.setVerified(peer, unixNow()); Unit to true }
     }
@@ -238,57 +234,7 @@ class Trust private constructor(private var store: TrustStore, private val file:
     /** "Forget this device": the next contact is New again. */
     fun forget(id: String): Boolean = update { s -> s.forget(id).let { it to it } }
 
-    /** Starts showing a QR code (spec §7.7): returns the payload to render. */
-    @Synchronized
-    fun beginQr(me: DeviceInfo, key: DeviceKey): String {
-        val code = Crypto.newQrCode()
-        pruneQr()
-        if (qrCodes.size >= MAX_QR_CODES) qrCodes.removeAt(0)
-        qrCodes += code to System.nanoTime()
-        return QrPayload(me.id, key.fingerprint, code).encode()
-    }
-
-    /** The QR code was closed: its codes are no longer accepted. */
-    @Synchronized
-    fun endQr() = qrCodes.clear()
-
-    private fun pruneQr() {
-        val now = System.nanoTime()
-        qrCodes.removeAll { now - it.second >= QR_CODE_TTL_NS }
-    }
-
-    /** Consumes a live one-time code (constant-time compare). */
-    @Synchronized
-    fun takeQrCode(code: String): Boolean {
-        pruneQr()
-        val given = code.toByteArray(Charsets.UTF_8)
-        var found = -1
-        qrCodes.forEachIndexed { i, (c, _) -> if (Crypto.constantTimeEquals(c.toByteArray(Charsets.UTF_8), given)) found = i }
-        if (found >= 0) qrCodes.removeAt(found)
-        return found >= 0
-    }
-
-    /**
-     * Scanner side, local part of spec §7.7: the scanned fingerprint must equal the key this
-     * device knows for that id — [live] (the session on screen) when its id matches, else
-     * the pinned one. On a match the key is marked verified.
-     */
-    fun checkQr(payload: String, live: PeerKey?): Pair<QrPayload, PeerKey> {
-        val qr = QrPayload.parse(payload) ?: throw IllegalArgumentException("not a Hoppy verification code")
-        val known = live?.takeIf { it.id == qr.id } ?: get(qr.id)?.let { PeerKey(qr.id, it.name, "", it.fingerprint) }
-            ?: throw UnknownDeviceException(qr)
-        if (known.fingerprint != qr.fingerprint) {
-            throw VerificationFailedException("the code does not match the key of ${known.name} (possible interception)")
-        }
-        markVerified(known)
-        return qr to known
-    }
-
     companion object {
-        const val QR_CODE_TTL_MS = 600_000L
-        private const val QR_CODE_TTL_NS = QR_CODE_TTL_MS * 1_000_000
-        private const val MAX_QR_CODES = 4
-
         fun inMemory(store: TrustStore = TrustStore()) = Trust(store, null)
 
         /** Backed by [file] (created on the first change). A damaged file is set aside, not fatal. */
@@ -317,10 +263,6 @@ class Trust private constructor(private var store: TrustStore, private val file:
         }
     }
 }
-
-/** The scanned device was never seen and no session with it is on screen. */
-class UnknownDeviceException(val qr: QrPayload) :
-    VerificationFailedException("unknown device: exchange a file with it first, then scan again")
 
 /** An exclusive lock file next to the store, so two processes do not undo each other. */
 private class FileLock private constructor(private val path: File) {

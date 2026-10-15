@@ -88,7 +88,6 @@
         12
       ],
       "text": "🎁📷⛵🐇",
-      "digits": "0909 9916",
       "it": [
         "regalo",
         "fotocamera",
@@ -125,8 +124,7 @@
           0,
           0
         ],
-        "text": "🐘🐘🐘🐘",
-        "digits": "0000 0000"
+        "text": "🐘🐘🐘🐘"
       },
       {
         "value": 1,
@@ -136,8 +134,7 @@
           0,
           1
         ],
-        "text": "🐘🐘🐘🐢",
-        "digits": "0000 0001"
+        "text": "🐘🐘🐘🐢"
       },
       {
         "value": 63,
@@ -147,8 +144,7 @@
           0,
           63
         ],
-        "text": "🐘🐘🐘🌋",
-        "digits": "0000 0063"
+        "text": "🐘🐘🐘🌋"
       },
       {
         "value": 64,
@@ -158,8 +154,7 @@
           1,
           0
         ],
-        "text": "🐘🐘🐢🐘",
-        "digits": "0000 0064"
+        "text": "🐘🐘🐢🐘"
       },
       {
         "value": 1193046,
@@ -169,8 +164,7 @@
           17,
           22
         ],
-        "text": "🐌🔑🍎🍍",
-        "digits": "0119 3046"
+        "text": "🐌🔑🍎🍍"
       },
       {
         "value": 9999999,
@@ -180,8 +174,7 @@
           25,
           63
         ],
-        "text": "🎺🐍☕🌋",
-        "digits": "0999 9999"
+        "text": "🎺🐍☕🌋"
       },
       {
         "value": 16777215,
@@ -191,26 +184,9 @@
           63,
           63
         ],
-        "text": "🌋🌋🌋🌋",
-        "digits": "1677 7215"
+        "text": "🌋🌋🌋🌋"
       }
     ],
-    "qr_example": {
-      "id": "00000000-0000-4000-8000-000000000002",
-      "fingerprint": "UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q",
-      "code": "00112233445566778899aabbccddeeff",
-      "payload": "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff",
-      "invalid": [
-        "hoppy:verify:2:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff",
-        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeef",
-        "HOPPY:VERIFY:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899AABBCCDDEEFF",
-        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42:00112233445566778899aabbccddeeff",
-        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899AABBCCDDEEFF",
-        "hoppy:verify:1::UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff",
-        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:ıghsq2zggce2ldo22qx7xmft2tczchr2x4erkibec76s6hphd42q:00112233445566778899aabbccddeeff",
-        "hoppy:verify:1:00000000-0000-4000-8000-000000000002:UGHSQ2ZGGCE2LDO22QX7XMFT2TCZCHR2X4ERKIBEC76S6HPHD42Q:00112233445566778899aabbccddeeff"
-      ]
-    },
     "discovery": {
       "announce_json": "{\"hoppy\":0,\"type\":\"announce\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"name\":\"PC\",\"platform\":\"windows\",\"port\":47471,\"crypto\":1}",
       "callback_json": "{\"hoppy\":0,\"type\":\"callback\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"name\":\"Phone\",\"platform\":\"android\",\"port\":50123,\"token\":\"00112233445566778899aabbccddeeff\",\"to\":\"00000000-0000-4000-8000-000000000002\",\"crypto\":1}",

@@ -41,9 +41,9 @@
 ## v1 — secure & resumable
 - Encryption + device verification (ADR 0010): phase 1 done — spec §7, Rust core, Python
   reference, vectors, CLI (`hoppy trust`), FFI. Phase 2: Android (done: Kotlin core v1,
-  interop-tested; code panel, QR scan/show, ✓, KeyChanged dialog; awaits the CI build and a
-  device test), desktop dialogs (emoji/number switch, "Coincide", QR display),
-  iOS UI (done: persistent key/trust per container, code + «Coincide», QR scan/show,
+  interop-tested; emoji code panel, ✓, KeyChanged dialog; awaits the CI build and a
+  device test), desktop dialogs (4 emoji, "Coincide"),
+  iOS UI (done: persistent key/trust per container, code + «Coincide»,
   KeyChanged alert; awaits the CI job `ios` and the manual plan); then switch plaintext off.
 - iPhone/iPad updates at zero cost: SideStore source `sidestore.json` on the portal + daily
   in-app notice (ADR 0009 addendum).

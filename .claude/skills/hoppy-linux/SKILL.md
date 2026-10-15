@@ -42,9 +42,9 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
   and never follow a bare `--` (zenity shows it as a row).
 - Never auto-accept: no notification buttons and no dialog program = declined.
 - The verification dialog is the only zenity text with markup on: every value goes through
-  `dialog::markup_escape`; sizes are integers (1/1024 pt) so old Pango parses them. zenity
-  cannot change an open dialog: `ui::show_dialog` re-opens it for the "123" toggle and for
-  ✓ after a QR scan (`run_watch` kills the old one).
+  `dialog::markup_escape`; sizes are integers (1/1024 pt) so old Pango parses them. It shows
+  only the 4 emoji + names (no digits, no QR code); `run_watch` kills it when its
+  `DialogLive` closes.
 - Self-update only for `/usr/bin/hoppyw` from the package (`selfupdate::deb_installed`);
   root only through `/usr/bin/pkexec /usr/lib/hoppy/install-update SHA256 FILE` (root-owned
   helper `apps/linux/install-update` + polkit action `apps/linux/app.hoppy.update.policy`,
@@ -62,4 +62,4 @@ runs need a private session bus (`dbus-run-session`) and a notification server/t
 (a fake one is fine; GNOME-specific behaviour still needs a real desktop: see the test
 plan in `docs/platforms/linux.md`). Real zenity renders under `Xvfb` (with
 `LANG=C.UTF-8`, else zenity rejects non-ASCII arguments, and `GSK_RENDERER=cairo` for
-zenity 4); `import -window root` + OpenCV's `QRCodeDetector` checks that the QR code scans. Keep Windows compiling: the `windows-latest` CI job.
+zenity 4); `import -window root` captures the dialog to check the emoji render. Keep Windows compiling: the `windows-latest` CI job.

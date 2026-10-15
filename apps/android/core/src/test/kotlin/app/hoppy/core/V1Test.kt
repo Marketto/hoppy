@@ -96,7 +96,6 @@ class V1Test {
         for (case in v1["sas_values"] as List<Map<String, Any?>>) {
             val sas = Sas.of((case["value"] as Long).toInt())
             assertEquals((case["emoji"] as List<Long>).map { it.toInt() }, sas.emoji)
-            assertEquals(case["digits"], sas.digits)
             assertEquals(case["text"], sas.text)
         }
         assertEquals(0xFFFFFF, Sas.of(0x1FFFFFF).value)
@@ -179,7 +178,6 @@ class V1Test {
         val sas = obj(v1, "sas")
         assertEquals(seenByI.sas, seenByR.sas)
         assertEquals((sas["value"] as Long).toInt(), seenByI.sas.value)
-        assertEquals(sas["digits"], seenByI.sas.digits)
         assertEquals(sas["text"], seenByI.sas.text)
 
         val (iTx, iRx) = p.i.finish()
@@ -320,19 +318,6 @@ class V1Test {
     }
 
     @Test
-    fun qrPayloadRoundTripAndRejects() {
-        val v = obj(v1, "qr_example")
-        val qr = QrPayload.parse(str(v, "payload"))!!
-        assertEquals(QrPayload(str(v, "id"), str(v, "fingerprint"), str(v, "code")), qr)
-        assertEquals(str(v, "payload"), qr.encode())
-        assertEquals(qr, QrPayload.parse(str(v, "payload").replace(qr.fingerprint, qr.fingerprint.lowercase())))
-        for (bad in v["invalid"] as List<String>) assertNull(QrPayload.parse(bad), bad)
-        val colon = qr.copy(id = "a:b")
-        assertEquals(colon, QrPayload.parse(colon.encode()))
-        assertNotEquals(Crypto.newQrCode(), Crypto.newQrCode())
-    }
-
-    @Test
     fun versionPlan() {
         val p = TransferClient.Plan.ENCRYPTED
         assertEquals(p, TransferClient.plan(1, false, true))
@@ -413,33 +398,6 @@ class V1Test {
     }
 
     @Test
-    fun qrCodesAreOneTimeAndScannerChecksFingerprint() {
-        val key = DeviceKey.generate()
-        val pc = DeviceInfo("pc", "PC", "windows")
-        val shower = Trust.inMemory()
-        val payload = shower.beginQr(pc, key)
-        val qr = QrPayload.parse(payload)!!
-        assertEquals(key.fingerprint, qr.fingerprint)
-        assertFalse(shower.takeQrCode("0".repeat(32)))
-        assertTrue(shower.takeQrCode(qr.code))
-        assertFalse(shower.takeQrCode(qr.code), "used once")
-        val again = QrPayload.parse(shower.beginQr(pc, key))!!
-        shower.endQr()
-        assertFalse(shower.takeQrCode(again.code), "closed")
-
-        val scanner = Trust.inMemory()
-        assertFailsWith<UnknownDeviceException> { scanner.checkQr(payload, null) }
-        val mitm = PeerKey("pc", "PC", "windows", DeviceKey.generate().fingerprint)
-        assertFailsWith<VerificationFailedException> { scanner.checkQr(payload, mitm) }
-        assertNull(scanner.get("pc"), "nothing stored on a mismatch")
-        val real = PeerKey("pc", "PC", "windows", key.fingerprint)
-        assertEquals(real, scanner.checkQr(payload, real).second)
-        assertEquals(TrustState.VERIFIED, scanner.state("pc", key.fingerprint))
-        scanner.checkQr(payload, null) // later, from the store alone
-        assertFailsWith<IllegalArgumentException> { scanner.checkQr("hello", null) }
-    }
-
-    @Test
     fun guardCapsAbortsPerIpAndInTotal() {
         val g = HandshakeGuard()
         val a = "192.168.1.9"
@@ -486,7 +444,6 @@ class V1Test {
         @Volatile var asked = 0
         @Volatile var error: String? = null
         val blocked = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val verified = java.util.concurrent.CopyOnWriteArrayList<PeerKey>()
         val warnings = java.util.concurrent.CopyOnWriteArrayList<Warning>()
         override fun decide(offer: Offer, from: InetAddress, session: SessionInfo): Boolean {
             asked++
@@ -496,7 +453,6 @@ class V1Test {
         override fun autoAccepts() = auto
         override fun onFinished(from: InetAddress, offer: Offer, saved: List<String>, error: String?) { this.error = error }
         override fun onBlocked(from: InetAddress, offer: Offer, session: SessionInfo, reason: String) { blocked += reason }
-        override fun onVerified(from: InetAddress, peer: PeerKey) { verified += peer }
         override fun onWarning(from: InetAddress, warning: Warning) { warnings += warning }
     }
 
@@ -742,6 +698,15 @@ class V1Test {
             Protocol.writeJson(w, Offer(DeviceInfo("someone-else", "X", "linux"), listOf(FileEntry("a", 1))).toMap())
             assertEquals("invalid_offer", Protocol.readJson(NoiseInputStream(s.getInputStream(), rxc))["reason"])
         }
+        // Any first frame that is not an Offer (e.g. the old {"verify":…}) is an invalid offer (spec §7.4).
+        Socket(InetAddress.getLoopbackAddress(), port).use { s ->
+            val (txc, rxc) = handshake(s)
+            val w = NoiseOutputStream(s.getOutputStream(), txc)
+            Protocol.writeJson(w, mapOf("verify" to "0".repeat(32)))
+            w.flush()
+            assertEquals("invalid_offer", Protocol.readJson(NoiseInputStream(s.getInputStream(), rxc))["reason"])
+        }
+        assertEquals(TrustState.NEW, rx.trust.state(me.id, key.fingerprint), "nothing verified")
         Socket(InetAddress.getLoopbackAddress(), port).use { s ->
             s.soTimeout = 5_000
             handshake(s)
@@ -755,29 +720,16 @@ class V1Test {
     private fun txcEmpty() = ByteArray(Crypto.TAG_LEN)
 
     @Test
-    fun qrVerificationEndToEnd() {
+    fun verificationIsLocalOnly() {
+        // "Coincide" marks the other device verified on this device only: nothing is sent (spec §7.6).
         val tx = Local.ephemeral(me)
         val rx = Local.ephemeral(rxDev)
         val rec = Rec()
         val port = server(rx, rec)
-        val payload = rx.beginQr()
-        val shower = peerAt(port)
-        // Never seen: verified through a session that must present the scanned key.
-        val result = QrVerification.scan(payload, null, tx, listOf(shower), null)
-        assertTrue(result.confirmed)
+        assertEquals(SendOutcome.Delivered, TransferClient.sendToPeer(peerAt(port), tx, listOf(file()), null))
+        waitFor { rx.trust.get(me.id) != null }
+        tx.trust.markVerified(PeerKey(rxDev.id, rxDev.name, rxDev.platform, rx.fingerprint))
         assertEquals(TrustState.VERIFIED, tx.trust.state(rxDev.id, rx.fingerprint))
-        waitFor { rec.verified.isNotEmpty() }
-        assertEquals(listOf(me.id), rec.verified.map { it.id })
-        assertEquals(TrustState.VERIFIED, rx.trust.state(me.id, tx.fingerprint), "both sides show ✓")
-        // One-time: a second use is refused by the shower (still verified locally).
-        val twice = QrVerification.scan(payload, null, tx, listOf(shower), null)
-        assertFalse(twice.confirmed)
-        // A QR code of another key for that id: refused, the code never leaves.
-        val forged = QrPayload(rxDev.id, DeviceKey.generate().fingerprint, Crypto.newQrCode()).encode()
-        assertFailsWith<VerificationFailedException> { QrVerification.scan(forged, null, tx, listOf(shower), null) }
-        val fresh = Local.ephemeral(DeviceInfo("fresh", "F", "android"))
-        assertFailsWith<VerificationFailedException> { QrVerification.scan(forged, null, fresh, listOf(shower), null) }
-        assertNull(fresh.trust.get(rxDev.id))
-        assertFailsWith<IllegalArgumentException> { QrVerification.scan("hello", null, tx, listOf(shower), null) }
+        assertEquals(TrustState.KNOWN, rx.trust.state(me.id, tx.fingerprint))
     }
 }

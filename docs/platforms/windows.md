@@ -182,18 +182,15 @@ remembers device keys. The dialogs are a small window of Hoppy's own
 `verify::DialogView` (shared with Linux and macOS):
 
 - **Code**: the 4 emoji in *Segoe UI Emoji* (GDI draws them in one colour, so each has its
-  name under it, Italian or English) and a **123** button that shows the same value as
-  8 digits ("1234 5678") and back (**Emoji**). Screen readers read the names and digits as
-  text.
+  name under it, Italian or English). That is the only form of the code: people compare the
+  4 emoji by eye with the other screen (no digits, no QR code). Screen readers read the
+  names as text.
 - **Receiver** (tray): the accept dialog above. *They match, accept* = accept + mark the
-  sender verified. When the sender is a phone (`android`/`ios`) the dialog also shows a QR
-  code (`Local::begin_qr`, painted module by module, black on white) — "Or scan this code
-  with Hoppy on the phone"; when the phone confirms it (spec §7.7) the QR code is replaced
-  by "✓ Verified: the phone confirmed the code" and a notification says so.
+  sender verified.
 - **Sender** (`hoppyw send`): after the handshake with a New/Known device, a window with the
-  same code, **Close** (default) and **They match** (marks the receiver verified); it closes
-  by itself when the transfer ends. No QR code there: its one-time code would live in the
-  short-lived send process, while a phone's confirmation reaches the tray.
+  same code, **Later** (default; Italian *Più tardi*) and **They match** (marks the receiver
+  verified); it closes by itself when the transfer ends. The tray tooltip says "Waiting for X
+  to accept… code 🐘🐢🐙🦋".
 - **Key changed** (a remembered device answers with another key): the sender refuses before
   the offer, the receiver declines without asking (spec §7.5); both show a warning dialog
   with **Close** (default) and **Forget device** (the next contact is a new device).
@@ -205,7 +202,7 @@ remembers device keys. The dialogs are a small window of Hoppy's own
 
 The dialog runs its own message loop on a worker thread (never the tray thread), Topmost,
 centred on the work area, `IsDialogMessageW` for Tab / Enter (= default button) / Esc
-(= closed = default answer); it polls its `DialogLive` (verified / close) every 200 ms.
+(= closed = default answer); it polls its `DialogLive` (close) every 200 ms.
 
 ## Known limits
 - Windows 11's new (compact) context menu only lists `IExplorerCommand` handlers from a

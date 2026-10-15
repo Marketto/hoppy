@@ -19,7 +19,6 @@ import app.hoppy.Prefs
 import app.hoppy.R
 import app.hoppy.core.CallbackReceiver
 import app.hoppy.core.Offer
-import app.hoppy.core.PeerKey
 import app.hoppy.core.Protocol
 import app.hoppy.core.ReceiveHandler
 import app.hoppy.core.SessionInfo
@@ -194,11 +193,6 @@ class ReceiveService : Service() {
             }
         }
 
-        override fun onVerified(from: InetAddress, peer: PeerKey) {
-            Security.notifyVerified(peer)
-            notifySecurity(getString(R.string.verified_by_qr, SafeText.label(peer.name)), null, null)
-        }
-
         override fun onWarning(from: InetAddress, warning: Warning) {
             when (warning) {
                 is Warning.HandshakeAborts ->
@@ -274,7 +268,7 @@ class ReceiveService : Service() {
 
     /**
      * A security notification (channel "Security warnings"): refused senders, code-guessing
-     * warnings (rate-limited by the core), QR verifications. [open] runs on tap.
+     * warnings (rate-limited by the core). [open] runs on tap.
      */
     private fun notifySecurity(title: String, text: String?, open: Intent?) {
         val id = nextId.incrementAndGet()
@@ -297,8 +291,8 @@ class ReceiveService : Service() {
         return when {
             !session.encrypted || sas == null -> getString(R.string.incoming_plain)
             verifiedNow || session.trust == TrustState.VERIFIED -> getString(R.string.incoming_secure_verified)
-            session.trust == TrustState.NEW -> getString(R.string.incoming_secure_new, sas.text, sas.digits)
-            else -> getString(R.string.incoming_secure_known, sas.text, sas.digits)
+            session.trust == TrustState.NEW -> getString(R.string.incoming_secure_new, sas.text)
+            else -> getString(R.string.incoming_secure_known, sas.text)
         }
     }
 

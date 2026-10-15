@@ -13,12 +13,12 @@ pub mod session;
 pub mod transfer;
 pub mod trust;
 
-pub use crypto::{DeviceKey, QrPayload, SAS_EMOJI, Sas, SasEmoji};
+pub use crypto::{DeviceKey, SAS_EMOJI, Sas, SasEmoji};
 pub use discovery::{CallbackRequest, Discovery, DiscoveryConfig, Peer, Sweep};
 pub use protocol::{DeviceInfo, Offer};
 pub use transfer::{
     ALLOW_PLAINTEXT_DEFAULT, CryptoPolicy, Local, Progress, ReceiveHandler, SendOutcome, Warning,
-    accept_callbacks, confirm_qr, send_files, send_to_peer, send_via_callback,
+    accept_callbacks, send_files, send_to_peer, send_via_callback,
 };
 pub use trust::{PeerKey, SessionInfo, Trust, TrustEntry, TrustState, TrustStore};
 
@@ -43,9 +43,6 @@ pub enum Error {
     /// reinstalled. Carries the device name.
     #[error("the security key of {0} has changed: not sending (forget the device to re-trust it)")]
     KeyChanged(String),
-    /// A QR / code verification did not match (spec §7.7).
-    #[error("verification failed: {0}")]
-    VerificationFailed(String),
     /// The peer cannot encrypt (old app) and plaintext is not allowed here, or a device
     /// known to encrypt answered without encryption (downgrade).
     #[error("not encrypted: {0}")]

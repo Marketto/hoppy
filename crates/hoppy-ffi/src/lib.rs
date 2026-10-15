@@ -26,8 +26,6 @@
 //! - `offer_closed`: `{"offer":u64}` — timed out or the node stopped.
 //! - `blocked`: `{"from":{"id","name","platform"},"reason":"key_changed"|"encryption_required"}`
 //!   — an offer declined without asking: warn the user (spec §7.5).
-//! - `verified`: `{"peer":{"id","name","platform","fingerprint"}}` — a device scanned our QR
-//!   code (spec §7.7): show ✓, close the QR code.
 //! - `handshake_aborts`: `{"from":"<ip>","recent":n}` — repeated interrupted encrypted
 //!   handshakes: someone may be trying to guess codes (spec §7.3); warn, rate-limited.
 //! - `trust_not_saved`: `{"error"}` — the trust store could not be written.
@@ -39,16 +37,15 @@
 //! - `send_progress`: `{"transfer","done","total"}` (throttled); `send_fallback`: `{"transfer"}`.
 //! - `send_done`: `{"transfer","outcome":"delivered"|"declined"|"unreachable"|"key_changed"|
 //!   "unencrypted"|"error","message"?}`.
-//! - `qr_done`: `{"scan","ok","local","remote","error"?}` after `hoppy_node_qr_scan`: `local`
-//!   = this device marked the other verified, `remote` = the other device confirmed too.
 //!
 //! SECURITY (spec §7): `{"encrypted":false}` for an old (v0) peer — show "non cifrato" —
 //! else `{"encrypted":true,"trust":"new"|"known"|"verified","name_matches_known":bool,
-//! "peer":PEER,"sas":{"value","emoji":[4 indices],"text","digits","it":[4 names],
+//! "peer":PEER,"sas":{"value","emoji":[4 indices],"text","it":[4 names],
 //! "en":[4 names]}}` (`name_matches_known`: a New device using the name of a known one —
 //! warn, it may be an impostor), with
 //! PEER = `{"id","name","platform","fingerprint"}` (pass it back to
-//! `hoppy_node_trust_verify` after "They match", or to `hoppy_node_qr_scan` as the live peer).
+//! `hoppy_node_trust_verify` after "They match": the only verification, spec §7.6; it is
+//! local, the other device is not told).
 //! Keys: `key_file` / `trust_file` in the config (the app's private container); without them
 //! the node uses a throw-away key and remembers nothing (tests only).
 
@@ -69,7 +66,7 @@ use hoppy_core::transfer::receive_one;
 use hoppy_core::{
     DeviceInfo, DeviceKey, Discovery, DiscoveryConfig, Error, Local, Offer, Peer, PeerKey,
     Progress, ReceiveHandler, SendOutcome, SessionInfo, Sweep, Trust, TrustState, TrustStore,
-    Warning, accept_callbacks, confirm_qr, send_to_peer,
+    Warning, accept_callbacks, send_to_peer,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -257,7 +254,7 @@ fn security_json(session: &SessionInfo) -> Value {
             "name_matches_known": session.name_matches_known,
             "peer": peer_key_json(peer),
             "sas": {
-                "value": sas.value, "emoji": sas.emoji, "text": sas.text, "digits": sas.digits,
+                "value": sas.value, "emoji": sas.emoji, "text": sas.text,
                 "it": sas.words(true), "en": sas.words(false),
             },
         }),
@@ -265,7 +262,7 @@ fn security_json(session: &SessionInfo) -> Value {
     }
 }
 
-/// A PEER object coming back from the app (`hoppy_node_trust_verify`, `qr_scan`).
+/// A PEER object coming back from the app (`hoppy_node_trust_verify`).
 fn parse_peer_key(text: &str) -> Option<PeerKey> {
     let v: Value = serde_json::from_str(text).ok()?;
     let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
@@ -371,12 +368,6 @@ impl ReceiveHandler for Handler {
             }),
             Warning::TrustNotSaved(e) => json!({ "type": "trust_not_saved", "error": e }),
         });
-    }
-
-    fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
-        self.0
-            .events
-            .emit(json!({ "type": "verified", "peer": peer_key_json(peer) }));
     }
 
     fn progress(&self, from: SocketAddr, event: Progress) {
@@ -626,41 +617,6 @@ impl Node {
             })
             .collect();
         json!({ "me": { "fingerprint": self.local.fingerprint() }, "peers": peers })
-    }
-
-    /// QR scan (spec §7.7), on a worker: local check, then tell the other device.
-    fn qr_scan(&self, payload: String, live: Option<PeerKey>) -> u64 {
-        let id = self.next_transfer.fetch_add(1, Ordering::Relaxed);
-        let (discovery, shared, local) = (
-            self.discovery.clone(),
-            self.shared.clone(),
-            self.local.clone(),
-        );
-        let spawned = thread::Builder::new()
-            .name("hoppy-ffi-qr".into())
-            .spawn(move || {
-                let done = |local_ok: bool, remote: bool, error: Option<String>| {
-                    shared.events.emit(json!({
-                        "type": "qr_done", "scan": id, "ok": local_ok && remote,
-                        "local": local_ok, "remote": remote, "error": error,
-                    }));
-                };
-                let (qr, _) = match local.trust.check_qr(&payload, live.as_ref()) {
-                    Ok(v) => v,
-                    Err(e) => return done(false, false, Some(e.to_string())),
-                };
-                let Some(peer) = wait_for_peer(&discovery, &qr.id) else {
-                    return done(true, false, Some("device not found".into()));
-                };
-                match confirm_qr(&peer, &local, Some(&discovery), &qr) {
-                    Ok(()) => done(true, true, None),
-                    Err(e) => done(true, false, Some(e.to_string())),
-                }
-            });
-        if spawned.is_err() {
-            return 0;
-        }
-        id
     }
 
     /// Turns the TCP receiver on/off; returns the port (0 = off).
@@ -1057,58 +1013,6 @@ pub unsafe extern "C" fn hoppy_node_trust_verify(
     };
     guard(false, || {
         parse_peer_key(&text).is_some_and(|p| n.local.trust.mark_verified(&p).is_ok())
-    })
-}
-
-/// Starts showing this device's QR code: returns the payload to render (a plain string,
-/// free it with `hoppy_string_free`). Its one-time code is accepted for 10 minutes.
-///
-/// # Safety
-/// `node` is a live node.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hoppy_node_qr_begin(node: *const Node) -> *mut c_char {
-    // SAFETY: caller contract.
-    let node = unsafe { node.as_ref() };
-    guard(ptr::null_mut(), || {
-        node.map_or(ptr::null_mut(), |n| to_c(n.local.begin_qr()))
-    })
-}
-
-/// The QR code was closed: its code is no longer accepted.
-///
-/// # Safety
-/// `node` is a live node.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hoppy_node_qr_end(node: *const Node) {
-    // SAFETY: caller contract.
-    if let Some(n) = unsafe { node.as_ref() } {
-        guard((), || n.local.trust.end_qr());
-    }
-}
-
-/// A scanned QR payload: checks it against the key known for that device (`live_peer_json`
-/// = the PEER of the session on screen, or NULL to use the remembered key), marks it
-/// verified, then tells that device (event `qr_done`). Returns the scan id, 0 if invalid.
-///
-/// # Safety
-/// `node` is a live node; `payload` a valid string; `live_peer_json` NULL or a valid string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hoppy_node_qr_scan(
-    node: *const Node,
-    payload: *const c_char,
-    live_peer_json: *const c_char,
-) -> u64 {
-    // SAFETY: caller contract.
-    let (Some(n), Some(payload)) = (unsafe { node.as_ref() }, unsafe { read_str(payload) }) else {
-        return 0;
-    };
-    // SAFETY: caller contract (NULL allowed).
-    let live = unsafe { read_str(live_peer_json) }.and_then(|t| parse_peer_key(&t));
-    guard(0, || {
-        if hoppy_core::QrPayload::parse(&payload).is_none() {
-            return 0;
-        }
-        n.qr_scan(payload, live)
     })
 }
 

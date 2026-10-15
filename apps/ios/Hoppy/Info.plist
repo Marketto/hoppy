@@ -34,10 +34,6 @@
 	<!-- The local network prompt; without it no device is found (unicast sweep, spec §2.1). -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hoppy looks for your devices on this Wi-Fi network to send and receive files.</string>
-	<!-- "Verifica con QR" (spec §7.7): only to scan another device's QR code; denied = compare
-	     the code. The Share extension never uses the camera (not allowed in extensions). -->
-	<key>NSCameraUsageDescription</key>
-	<string>Hoppy uses the camera only to scan the QR code of another device and verify it.</string>
 	<!-- Received files live in Documents: Files → On My iPad → Hoppy. -->
 	<key>UIFileSharingEnabled</key>
 	<true/>

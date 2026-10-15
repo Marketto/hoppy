@@ -351,7 +351,7 @@ fn header_matches_exports() {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>()
     );
-    assert_eq!(exported.len(), 16, "{exported:?}");
+    assert_eq!(exported.len(), 13, "{exported:?}");
 }
 
 /// The Swift simulator test's flow (apps/ios/Tests/HoppyCoreTests.swift): the "iPad" sweeps
@@ -409,18 +409,10 @@ fn receiver_off_says_bye_to_sweeping_ipad() {
     }
 }
 
-fn c_string(s: *mut c_char) -> String {
-    assert!(!s.is_null());
-    // SAFETY: returned by the library.
-    let v = unsafe { CStr::from_ptr(s) }.to_str().unwrap().to_owned();
-    unsafe { hoppy_string_free(s) };
-    v
-}
-
 /// Protocol v1 through the C API: offer and send_session carry the same code, "They match"
-/// verifies, a QR scan verifies both sides, forget works, and the key persists in key_file.
+/// verifies on this device only, forget works, and the key persists in key_file.
 #[test]
-fn security_events_trust_and_qr() {
+fn security_events_and_trust() {
     let data = tempfile::tempdir().unwrap();
     let rx_dir = tempfile::tempdir().unwrap();
     let (rx_events, tx_events) = (Events::default(), Events::default());
@@ -476,25 +468,14 @@ fn security_events_trust_and_qr() {
     assert_eq!(list["peers"][0]["id"], "tx-9");
     assert_eq!(list["peers"][0]["verified"], true);
     assert_eq!(list["me"]["fingerprint"], rx_fp.as_str());
-
-    // The phone scans the desk's QR code: both sides verified.
-    let payload = c_string(unsafe { hoppy_node_qr_begin(rx) });
-    assert!(payload.starts_with("hoppy:verify:1:rx-9:"));
-    let p = CString::new(payload).unwrap();
-    let scan = unsafe { hoppy_node_qr_scan(tx, p.as_ptr(), ptr::null()) };
-    assert_ne!(scan, 0);
-    let done = tx_events.wait("qr_done", |v| v["type"] == "qr_done" && v["scan"] == scan);
-    assert_eq!(done["ok"], true, "{done}");
-    let verified = rx_events.wait("verified", |v| v["type"] == "verified");
-    assert_eq!(verified["peer"]["id"], "tx-9");
+    assert!(sec["sas"].get("digits").is_none(), "4 emoji only: {sec}");
+    // Local only: the phone still shows the desk as not verified until its user confirms.
+    let list = take(unsafe { hoppy_node_trust_list(tx) });
+    assert_eq!(list["peers"][0]["verified"], false);
+    let desk = CString::new(session["security"]["peer"].to_string()).unwrap();
+    assert!(unsafe { hoppy_node_trust_verify(tx, desk.as_ptr()) });
     let list = take(unsafe { hoppy_node_trust_list(tx) });
     assert_eq!(list["peers"][0]["verified"], true);
-    let junk = CString::new("not a code").unwrap();
-    assert_eq!(
-        unsafe { hoppy_node_qr_scan(tx, junk.as_ptr(), ptr::null()) },
-        0
-    );
-    unsafe { hoppy_node_qr_end(rx) };
 
     // Forget, then the key file survives a restart.
     let id_c = CString::new("rx-9").unwrap();

@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -12,12 +11,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- In-app updater (update/Updater.kt): installs the signed APK from GitHub Releases. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Device verification: scan another device's Hoppy QR code inside the app (asked when
-         used; without it the user compares the code). Phones without a camera still install. -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature
-        android:name="android.hardware.camera.any"
-        android:required="false" />
 
     <application
         android:name=".HoppyApp"
@@ -49,21 +42,13 @@
             android:name=".ui.ThemePickerActivity"
             android:exported="false" />
 
-        <!-- Device verification (docs/protocol.md §7.5–7.7): only opened from our own
+        <!-- Device verification by emoji (docs/protocol.md §7.5–7.6): only opened from our own
              notifications / screens, never by other apps. -->
         <activity
             android:name=".ui.VerifyActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:taskAffinity="app.hoppy.verify" />
-        <activity
-            android:name=".ui.QrActivity"
-            android:exported="false" />
-        <!-- ZXing scanner screen: follow the phone's orientation (the library locks landscape). -->
-        <activity
-            android:name="com.journeyapps.barcodescanner.CaptureActivity"
-            android:screenOrientation="fullSensor"
-            tools:replace="screenOrientation" />
 
         <!-- "Share → Hoppy" from any app. -->
         <activity

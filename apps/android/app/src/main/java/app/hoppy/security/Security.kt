@@ -7,14 +7,12 @@ import app.hoppy.R
 import app.hoppy.core.DeviceKey
 import app.hoppy.core.HandshakeGuard
 import app.hoppy.core.Local
-import app.hoppy.core.PeerKey
 import app.hoppy.core.SessionInfo
 import app.hoppy.core.Trust
 import app.hoppy.core.UnsupportedKeyFileException
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.concurrent.thread
 
 /**
@@ -35,7 +33,6 @@ object Security {
     /** A key problem the user must hear about (string resource), taken once by the home screen. */
     @Volatile private var keyProblem: Int? = null
     private val guard = HandshakeGuard()
-    private val verifiedListeners = CopyOnWriteArraySet<(PeerKey) -> Unit>()
 
     /** This device for sessions: current id/name from [Prefs] + the persistent key and trust store. */
     fun local(ctx: Context): Local {
@@ -115,12 +112,6 @@ object Security {
     /** Ids remembered by this phone → verified? (for the ✓ / 🔒 badges). Reads the store. */
     fun trustedIds(ctx: Context): Map<String, Boolean> =
         trust(ctx).snapshot().peers.mapValues { it.value.verified }
-
-    fun addVerifiedListener(l: (PeerKey) -> Unit) { verifiedListeners += l }
-    fun removeVerifiedListener(l: (PeerKey) -> Unit) { verifiedListeners -= l }
-
-    /** A device that scanned our QR code proved it (receiver side): close the QR screen with ✓. */
-    fun notifyVerified(peer: PeerKey) = verifiedListeners.forEach { runCatching { it(peer) } }
 }
 
 /**

@@ -7,8 +7,7 @@
 //!   icon). `hoppyw send` shows its own status item with the progress as its title.
 //! - Device menu for sending: `NSMenu` at the mouse pointer.
 //! - Accept question and verification dialogs: `NSAlert` with an accessory view (the 4
-//!   emoji with their names, a "123" switch to the 8 digits, the QR code for phones),
-//!   "Decline"/"Close" is the default button (Return); never auto-accepted (no answer
+//!   emoji with their names, compared by eye), "Decline"/"Later" is the default button (Return); never auto-accepted (no answer
 //!   within `gui::ASK_TIMEOUT` = declined).
 //! - Notifications: `UNUserNotificationCenter` when running from the app bundle (a click
 //!   on "Received…" opens the folder); `osascript display notification` when that API is

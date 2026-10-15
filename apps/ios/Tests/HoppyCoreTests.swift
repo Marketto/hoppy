@@ -153,9 +153,9 @@ final class HoppyCoreTests: XCTestCase {
         }
     }
 
-    /// Protocol v1 through Swift (twin of security_events_trust_and_qr in
+    /// Protocol v1 through Swift (twin of the security/trust test in
     /// crates/hoppy-ffi/src/tests.rs): the SECURITY JSON decodes, both screens get the same
-    /// code, "Coincide", QR scan, forget, and the key persists in key_file.
+    /// 4-emoji code, "Coincide" on each side, forget, and the key persists in key_file.
     func testSecurityVerificationAndPersistentKey() throws {
         let data = try tempDir()
         let inbox = try tempDir()
@@ -206,7 +206,6 @@ final class HoppyCoreTests: XCTestCase {
         XCTAssertEqual(sas.symbols.count, 4)
         XCTAssertEqual(sas.it.count, 4)
         XCTAssertEqual(sas.en.count, 4)
-        XCTAssertEqual(sas.digits.count, 9) // "1234 5678"
         let session = try XCTUnwrap(txEvents.wait("send_session") { e -> HoppySecurity? in
             if case let .sendSession(id, sec) = e, id == transfer { return sec }
             return nil
@@ -225,26 +224,10 @@ final class HoppyCoreTests: XCTestCase {
         XCTAssertEqual(rx?.trustList?.peers.first?.verified, true)
         XCTAssertEqual(rx?.trustList?.me.fingerprint, rxFingerprint)
 
-        // The iPad scans the desk's QR code: both sides verified.
-        let payload = try XCTUnwrap(rx?.qrBegin())
-        XCTAssertTrue(payload.hasPrefix("hoppy:verify:1:\(rxConfig.id):"))
-        let scan = tx.qrScan(payload, live: nil)
-        XCTAssertNotEqual(scan, 0)
-        let done = txEvents.wait("qr_done") { e -> Bool? in
-            if case let .qrDone(id, ok, _, _, error) = e, id == scan {
-                XCTAssertTrue(ok, error ?? "")
-                return ok
-            }
-            return nil
-        }
-        XCTAssertEqual(done, true)
-        let verified = rxEvents.wait("verified") { e -> HoppyPeerKey? in
-            if case let .verified(key) = e { return key }
-            return nil
-        }
-        XCTAssertEqual(verified?.id, txConfig.id)
-        XCTAssertEqual(tx.qrScan("not a code", live: nil), 0)
-        rx?.qrEnd()
+        // "Coincide" on the sender too: both sides verified by eye.
+        let rxKey = try XCTUnwrap(session.peer)
+        XCTAssertTrue(tx.verify(rxKey))
+        XCTAssertEqual(tx.trustList?.peers.first { $0.id == rxConfig.id }?.verified, true)
 
         // Forget, then the key file survives a restart.
         XCTAssertTrue(tx.forget(rxConfig.id))

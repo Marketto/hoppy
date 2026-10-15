@@ -4,7 +4,7 @@
 // the user tap a device and streams the files. No App Group, no URL-scheme hand-off to the
 // app (ADR 0009). Protocol v1 (ADR 0010): it is its own device to others ("iPad (Condividi)"),
 // with a stable id, key and trust store in its own container, and shows the verification
-// code ("Coincide" / "Più tardi"; no QR: extensions cannot use the camera and it never receives).
+// 4-emoji code ("Coincide" / "Più tardi"), the same as in the app.
 import SwiftUI
 import UIKit
 

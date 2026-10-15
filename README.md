@@ -105,8 +105,8 @@ SideStore rinnova la firma ogni settimana e propone le nuove versioni. Altriment
 «Hoppy X disponibile» e basta reinstallare con Sideloadly.
 
 *Verifica dei dispositivi:* la prima volta che invii o ricevi da un dispositivo nuovo Hoppy mostra
-4 emoji (o 8 cifre con «123»): se sono uguali sull'altro schermo tocca **Coincide**, oppure
-**Verifica con QR** e inquadra il codice dell'altro dispositivo (✓ accanto al nome). Dettagli,
+4 emoji: se sono uguali sull'altro schermo tocca **Coincide** (✓ accanto al nome), altrimenti
+**Più tardi**. Dettagli,
 limiti e risoluzione dei problemi: [`docs/platforms/ios.md`](docs/platforms/ios.md).
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.

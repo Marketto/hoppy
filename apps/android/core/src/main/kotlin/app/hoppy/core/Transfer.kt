@@ -97,9 +97,6 @@ class Local(
 ) {
     val fingerprint: String get() = key.fingerprint
 
-    /** Starts showing a QR code for this device; returns the payload (spec §7.7). */
-    fun beginQr(): String = trust.beginQr(device, key)
-
     fun withDevice(d: DeviceInfo) = Local(d, key, trust, allowPlaintext, guard, sessionDeadlineMs)
 
     companion object {
@@ -214,41 +211,6 @@ object TransferClient {
         return sendSession(socket, maxCrypto(hello.crypto, peer.crypto), true, peer, local, sources, listener)
     }
 
-    /**
-     * Scanner side of the QR verification (spec §7.7), after [Trust.checkQr] matched (or,
-     * with [markVerified], for a device never seen before): opens an encrypted session to
-     * [peer] that must present exactly the scanned key and sends the one-time code, so the
-     * other device marks this one verified too. The code never goes to another key.
-     * Returns the session's peer. [RemoteException] if the other side refused the code.
-     */
-    fun confirmQr(peer: Peer, local: Local, node: DiscoveryNode?, qr: QrPayload, markVerified: Boolean = false): PeerKey {
-        if (peer.device.id != qr.id) throw IllegalArgumentException("the code belongs to another device")
-        val socket = try {
-            connect(peer, DIRECT_CONNECT_TIMEOUT_MS)
-        } catch (e: PeerUnreachableException) {
-            if (node == null) throw e
-            connectViaCallback(peer, node).first
-        }
-        socket.use { s ->
-            val timing = Timing(IO_TIMEOUT_MS, HandshakeGuard.nowMs() + IO_TIMEOUT_MS)
-            val input = BufferedInputStream(TimedInputStream(s, timing))
-            val opened = try {
-                openInitiator(s, input, local, qr.id, qr.fingerprint)
-            } catch (e: PeerClosedException) {
-                throw UnencryptedException("${peer.device.name} cannot verify (old Hoppy version)")
-            }
-            val sessionPeer = opened.info.peer!!
-            // The scanned key is the session's: verified here before telling the other side.
-            if (markVerified) local.trust.markVerified(sessionPeer)
-            val out = NoiseOutputStream(s.getOutputStream(), opened.tx)
-            Protocol.writeJson(out, mapOf("verify" to qr.code))
-            out.flush()
-            val result = Protocol.readJson(NoiseInputStream(input, opened.rx))
-            if (result["ok"] == true) return sessionPeer
-            throw RemoteException(result["error"] as? String ?: "verification refused")
-        }
-    }
-
     private fun maxCrypto(a: Int?, b: Int?): Int? = if (a == null) b else if (b == null) a else maxOf(a, b)
 
     private fun connect(peer: Peer, timeoutMs: Int): Socket {
@@ -316,10 +278,10 @@ object TransferClient {
 
     /**
      * Initiator side of spec §7.3 on a fresh connection: `HOPY 0x01` + message 1, read
-     * message 2, check the responder (expected id; [expectFp] for QR verification, else the
-     * trust store: a changed key aborts before we reveal anything), write message 3.
+     * message 2, check the responder (expected id, then the trust store: a changed key aborts
+     * before we reveal anything), write message 3.
      */
-    internal fun openInitiator(socket: Socket, input: InputStream, local: Local, expectedId: String?, expectFp: String?): Opened {
+    internal fun openInitiator(socket: Socket, input: InputStream, local: Local, expectedId: String?): Opened {
         socket.tcpNoDelay = true
         val out = socket.getOutputStream()
         val init = Initiator(local.key)
@@ -347,13 +309,7 @@ object TransferClient {
             throw CryptoException("the device at this address is not the one chosen (${remote.device.name})")
         }
         val state = local.trust.state(peer.id, peer.fingerprint)
-        if (expectFp != null) {
-            if (expectFp != peer.fingerprint) {
-                throw VerificationFailedException("${remote.device.name} presented another key than the scanned code (possible interception)")
-            }
-        } else if (state == TrustState.KEY_CHANGED) {
-            throw KeyChangedException(peer)
-        }
+        if (state == TrustState.KEY_CHANGED) throw KeyChangedException(peer)
         Noise.writeFrame(out, init.writeMsg3(local.device))
         out.flush()
         val (tx, rx) = init.finish()
@@ -386,7 +342,7 @@ object TransferClient {
             val timing = newTiming()
             val input = BufferedInputStream(TimedInputStream(s, timing), Protocol.CHUNK)
             val opened = try {
-                openInitiator(s, input, local, peer.device.id, null)
+                openInitiator(s, input, local, peer.device.id)
             } catch (e: PeerClosedException) {
                 if (plan == Plan.ENCRYPTED_OR_FALLBACK && !viaCallback) {
                     s.close()
@@ -497,46 +453,6 @@ private class DeadlineInputStream(private val socket: Socket, private val deadli
     override fun read(b: ByteArray, off: Int, len: Int): Int { arm(); return input.read(b, off, len) }
 }
 
-/** What a QR scan achieved (spec §7.7). */
-data class QrResult(
-    /** The device now verified here. */
-    val peer: PeerKey,
-    /** The other device was told (it now shows ✓ for this one too). */
-    val confirmed: Boolean,
-    /** Why it was not told (unreachable, refused code), for the UI. */
-    val problem: String? = null,
-)
-
-object QrVerification {
-    /**
-     * The whole scanner flow (spec §7.7): the fingerprint must match the key known for that
-     * id ([live] session on screen, else the remembered one) → verified here, then the code
-     * goes to the shower over a session that must present that key. A device never seen
-     * before (no entry, no live session) is verified only through that session: its key
-     * must be exactly the scanned one. [peers]: discovered devices (to reach the shower).
-     * Throws [IllegalArgumentException] (not a code), [VerificationFailedException]
-     * (mismatch: nothing is marked), [KeyChangedException], or I/O errors.
-     */
-    fun scan(payload: String, live: PeerKey?, local: Local, peers: List<Peer>, node: DiscoveryNode?): QrResult {
-        val qr = QrPayload.parse(payload) ?: throw IllegalArgumentException("not a Hoppy verification code")
-        val target = peers.firstOrNull { it.device.id == qr.id }
-        val who = try {
-            local.trust.checkQr(payload, live).second
-        } catch (e: UnknownDeviceException) {
-            if (target == null) throw e
-            val peer = TransferClient.confirmQr(target, local, node, qr, markVerified = true)
-            return QrResult(peer, confirmed = true)
-        }
-        if (target == null) return QrResult(who, confirmed = false, problem = "not reachable")
-        return try {
-            TransferClient.confirmQr(target, local, node, qr)
-            QrResult(who, confirmed = true)
-        } catch (e: IOException) {
-            QrResult(who, confirmed = false, problem = e.message)
-        }
-    }
-}
-
 /** Receiver side of spec §6: connect back to a sender that asked for it. */
 object CallbackReceiver {
     /**
@@ -640,8 +556,6 @@ interface ReceiveHandler {
      * allowed). Rate-limited by the core (once a minute per device and reason).
      */
     fun onBlocked(from: InetAddress, offer: Offer, session: SessionInfo, reason: String) {}
-    /** A device that scanned this device's QR code proved it: it is verified here too. */
-    fun onVerified(from: InetAddress, peer: PeerKey) {}
     /** Something to tell the user (rate-limited by the core). */
     fun onWarning(from: InetAddress, warning: Warning) {}
 }
@@ -705,8 +619,9 @@ object TransferServer {
     private class Opened(val remote: Remote, val tx: CipherState, val input: InputStream, val first: Map<String, Any?>)
 
     /**
-     * Responder side of spec §7.3, then the offer (or a verification, §7.7). Sessions that
-     * end after message 2 without a first frame count as aborted handshakes ([HandshakeGuard]).
+     * Responder side of spec §7.3, then the offer (§7.4: any other first frame is an invalid
+     * offer). Sessions that end after message 2 without a first frame count as aborted
+     * handshakes ([HandshakeGuard]).
      */
     private fun receiveV1(
         s: Socket,
@@ -763,13 +678,6 @@ object TransferServer {
         )
         val out = NoiseOutputStream(raw, opened.tx)
         val first = opened.first
-        if ("verify" in first) {
-            val reply = answerVerify(first["verify"] as? String ?: "", peer, state, local)
-            if (reply["ok"] == true) handler.onVerified(from, peer)
-            Protocol.writeJson(out, reply)
-            out.flush()
-            return
-        }
         val offer = try {
             Offer.from(first)
         } catch (e: ProtocolException) {
@@ -786,19 +694,6 @@ object TransferServer {
             return
         }
         receiveOffer(opened.input, out, offer, session, from, sink, handler, local)
-    }
-
-    /** The receiver's answer to a verification request (spec §7.7). */
-    private fun answerVerify(code: String, peer: PeerKey, state: TrustState, local: Local): Map<String, Any?> {
-        fun fail(e: String) = linkedMapOf<String, Any?>("ok" to false, "error" to e)
-        if (state == TrustState.KEY_CHANGED) return fail("key_changed")
-        if (!local.trust.takeQrCode(code)) return fail("invalid_code")
-        return try {
-            local.trust.markVerified(peer)
-            mapOf("ok" to true)
-        } catch (e: IOException) {
-            fail("key_changed")
-        }
     }
 
     /** Common to v0 and v1 once the offer is read: validate, ask, receive, answer. */

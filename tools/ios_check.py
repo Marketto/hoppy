@@ -11,8 +11,9 @@ check`); the real build and simulator tests run in CI (job `ios` in .github/work
 - Generated assets exist: an opaque 1024 px app icon, the mascot image sets.
 - Protocol v1 (ADR 0010): every node of the app and the Share extension starts through
   `Identity.startNode` (persistent key_file/trust_file in Application Support, never in
-  Documents); the camera (QR scan) is used by the app only, with NSCameraUsageDescription;
-  the update check asks for the release asset the release workflow publishes.
+  Documents); verification is the 4-emoji code compared by eye only, so no camera, no
+  NSCameraUsageDescription, no QR or digit code anywhere; the update check asks for the
+  release asset the release workflow publishes.
 """
 from __future__ import annotations
 
@@ -105,17 +106,21 @@ def main() -> int:
     app = load(IOS / "Hoppy" / "Info.plist")
     ext = load(IOS / "ShareExtension" / "Info.plist")
     for key in ("NSLocalNetworkUsageDescription", "UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace",
-                "CFBundleDocumentTypes", "UILaunchScreen", "NSCameraUsageDescription"):
+                "CFBundleDocumentTypes", "UILaunchScreen"):
         if key not in app:
             bad.append(f"apps/ios/Hoppy/Info.plist: missing {key}")
     if "NSLocalNetworkUsageDescription" not in ext:
         bad.append("apps/ios/ShareExtension/Info.plist: missing NSLocalNetworkUsageDescription")
-    for key in ("NSLocalNetworkUsageDescription", "NSCameraUsageDescription"):
-        for lang in LANGS:
-            if key in app and key not in tables["Hoppy/InfoPlist"][lang]:
-                bad.append(f"apps/ios/Hoppy/{lang}.lproj/InfoPlist.strings: missing {key}")
-    if "NSCameraUsageDescription" in ext:
-        bad.append("apps/ios/ShareExtension/Info.plist: app extensions cannot use the camera")
+    for lang in LANGS:
+        if "NSLocalNetworkUsageDescription" not in tables["Hoppy/InfoPlist"][lang]:
+            bad.append(f"apps/ios/Hoppy/{lang}.lproj/InfoPlist.strings: missing NSLocalNetworkUsageDescription")
+    # Verification is the 4 emoji compared by eye only: Hoppy never asks for the camera.
+    for name, plist in (("Hoppy", app), ("ShareExtension", ext)):
+        if "NSCameraUsageDescription" in plist:
+            bad.append(f"apps/ios/{name}/Info.plist: NSCameraUsageDescription must not exist (no camera, emoji-only verification)")
+    for lang in LANGS:
+        if "NSCameraUsageDescription" in tables["Hoppy/InfoPlist"][lang]:
+            bad.append(f"apps/ios/Hoppy/{lang}.lproj/InfoPlist.strings: NSCameraUsageDescription must not exist")
     nsext = ext.get("NSExtension", {})
     if nsext.get("NSExtensionPointIdentifier") != "com.apple.share-services" or \
             nsext.get("NSExtensionPrincipalClass") != "$(PRODUCT_MODULE_NAME).ShareViewController":
@@ -150,7 +155,7 @@ def main() -> int:
             if fn not in declared:
                 bad.append(f"{f.relative_to(ROOT)}: {fn} is not declared in hoppy.h")
 
-    # 4b. Protocol v1 identity, camera, updates (ADR 0010)
+    # 4b. Protocol v1 identity, emoji-only verification, updates (ADR 0010)
     identity = (IOS / "Shared" / "Identity.swift").read_text(encoding="utf-8")
     for needle in (".key_file = keyFile.path", ".trust_file = trustFile.path", ".applicationSupportDirectory", "isExcludedFromBackup"):
         if needle not in identity:
@@ -162,12 +167,16 @@ def main() -> int:
                 bad.append(f"{f.relative_to(ROOT)}: start nodes with Identity.startNode (persistent key), not HoppyNode(config:)")
             if "Identity.startNode" in text and folder == "ShareExtension" and "shareExtensionName" not in text:
                 bad.append(f"{f.relative_to(ROOT)}: the Share extension must use Identity.shareExtensionName")
-    for f in [*(IOS / "ShareExtension").glob("*.swift"), *(IOS / "Shared").glob("*.swift")]:
-        if "AVCapture" in f.read_text(encoding="utf-8"):
-            bad.append(f"{f.relative_to(ROOT)}: no camera code in the Share extension or Shared (extensions cannot use it)")
-    if not any("hoppy_node_qr_scan" in f.read_text(encoding="utf-8") for f in swift) or \
-            not any("AVCaptureMetadataOutput" in f.read_text(encoding="utf-8") for f in (IOS / "Hoppy").glob("*.swift")):
-        bad.append("apps/ios/Hoppy: the QR scanner (AVCaptureMetadataOutput → hoppy_node_qr_scan) is missing")
+    forbidden = (("AVCapture", "camera capture"), ("CIQRCodeGenerator", "QR rendering"),
+                 ("hoppy_node_qr_", "QR exports"), ("qr_done", "the qr_done event"),
+                 ("sas.digits", "the digit code"), ("let digits", "the digit code"))
+    for f in swift:
+        text = f.read_text(encoding="utf-8")
+        for needle, what in forbidden:
+            if needle in text:
+                bad.append(f"{f.relative_to(ROOT)}: {what} ({needle!r}): verification is the 4 emoji compared by eye only")
+    if (IOS / "Hoppy" / "QRViews.swift").exists():
+        bad.append("apps/ios/Hoppy/QRViews.swift: QR verification was removed (emoji only)")
     update = IOS / "Hoppy" / "UpdateCheck.swift"
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     if not update.exists() or 'asset = "Hoppy-ios-unsigned.ipa"' not in update.read_text(encoding="utf-8") \
