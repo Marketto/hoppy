@@ -508,6 +508,7 @@ pub fn spawn_relaunch(command: &[OsString]) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt;
 
     type Answer = Box<dyn Fn(&str, &[String]) -> Output>;
