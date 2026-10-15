@@ -9,7 +9,8 @@ object UpdateLogic {
     const val APK_ASSET = "Hoppy-android.apk"
     const val SUMS_ASSET = "SHA256SUMS.txt"
 
-    const val CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
+    /** Automatic checks on the home screen: at most every 3 h (the menu item checks at once). */
+    const val CHECK_INTERVAL_MS = 3L * 60 * 60 * 1000
 
     /** Local/CI builds that were not stamped by the release workflow never check. */
     fun isDevBuild(versionName: String): Boolean = versionName.contains("-dev")

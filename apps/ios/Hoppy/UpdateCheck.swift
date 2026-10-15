@@ -1,4 +1,5 @@
-// "Hoppy X disponibile": at most once a day, while the app is open, ask GitHub for the
+// "Hoppy X disponibile": at most every 3 hours, when the app comes to the foreground (and at
+// once from the menu item "Controlla aggiornamenti"), ask GitHub for the
 // latest release (the same `releases/latest` contract as the other platforms, docs/release.md)
 // and announce it when it carries Hoppy-ios-unsigned.ipa and is newer than this build. No
 // download: a sideloaded app is replaced by SideStore (source on the portal) or Sideloadly.
@@ -8,7 +9,7 @@ enum UpdateCheck {
     static let latestAPI = URL(string: "https://api.github.com/repos/Marketto/hoppy/releases/latest")!
     static let portal = URL(string: "https://marketto.github.io/hoppy/")!
     static let asset = "Hoppy-ios-unsigned.ipa"
-    static let every: TimeInterval = 24 * 3600
+    static let every: TimeInterval = 3 * 3600
 
     private static let checkedKey = "hoppy.update.checked"
     private static let latestKey = "hoppy.update.latest"
@@ -30,25 +31,64 @@ enum UpdateCheck {
         UserDefaults.standard.set(version, forKey: dismissedKey)
     }
 
-    /// Checks if the last check is older than a day; `done` runs on the main queue with
-    /// `pending` (also when no check was due).
+    /// Answer of `checkNow`.
+    enum Outcome {
+        case upToDate(String)
+        case available(String)
+        case failed(String)
+    }
+
+    /// Checks if the last check is older than `every` (3 h); `done` runs on the main queue
+    /// with `pending` (also when no check was due).
     static func runIfDue(_ done: @escaping (String?) -> Void) {
         let d = UserDefaults.standard
-        if let last = d.object(forKey: checkedKey) as? Date, Date().timeIntervalSince(last) < every {
+        if let last = d.object(forKey: checkedKey) as? Date, Date().timeIntervalSince(last) >= 0,
+           Date().timeIntervalSince(last) < every {
             return done(pending)
         }
+        fetch { _ in done(pending) }
+    }
+
+    /// Menu "Controlla aggiornamenti": checks now, ignoring `every`, and always answers on the
+    /// main queue. A version the user had dismissed is announced again (they asked).
+    static func checkNow(_ done: @escaping (Outcome) -> Void) {
+        fetch { result in
+            switch result {
+            case .failure(let error):
+                done(.failed(error.localizedDescription))
+            case .success(let latest):
+                if let latest = latest, isNewer(latest, than: current) {
+                    UserDefaults.standard.removeObject(forKey: dismissedKey)
+                    done(.available(latest))
+                } else {
+                    done(.upToDate(current))
+                }
+            }
+        }
+    }
+
+    private struct HTTPStatus: LocalizedError {
+        let code: Int
+        var errorDescription: String? { "HTTP \(code)" }
+    }
+
+    /// One request to `releases/latest`; stores the result only after a complete response
+    /// (errors retry on the next foreground). `done` runs on the main queue.
+    private static func fetch(_ done: @escaping (Result<String?, Error>) -> Void) {
+        let d = UserDefaults.standard
         var request = URLRequest(url: latestAPI, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Hoppy-iOS/\(current)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { data, response, _ in
-            let ok = (response as? HTTPURLResponse)?.statusCode == 200
-            let latest = ok ? data.flatMap { UpdateCheck.parse($0) } : nil
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let latest = code == 200 ? data.flatMap { UpdateCheck.parse($0) } : nil
             DispatchQueue.main.async {
-                if ok {
-                    d.set(Date(), forKey: UpdateCheck.checkedKey)
-                    d.set(latest, forKey: UpdateCheck.latestKey)
+                guard code == 200 else {
+                    return done(.failure(error ?? HTTPStatus(code: code)))
                 }
-                done(UpdateCheck.pending)
+                d.set(Date(), forKey: UpdateCheck.checkedKey)
+                d.set(latest, forKey: UpdateCheck.latestKey)
+                done(.success(latest))
             }
         }.resume()
     }

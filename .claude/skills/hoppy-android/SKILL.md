@@ -41,7 +41,10 @@ Two modules in `apps/android/`:
   - `ui/SafeText.kt` (pure, + test) — labels without control/bidi chars, outgoing file
     names, which shared URIs may be read (`content:` of other apps only).
     Home "Send files" forwards picked URIs as `ACTION_SEND(_MULTIPLE)` + ClipData + grant.
-  - `update/Updater.kt` — update check (home start, ≤ 1/24 h, skipped on `-dev`) against
+  - `update/Updater.kt` — update check (home start/return, ≤ 1/3 h, skipped on `-dev`; *About*
+    dialog (`MainActivity.showAbout`, `layout/dialog_about.xml`: mascot, version + build,
+    author, GitHub link, font licences) → *Check for updates* = `Updater.checkNow`, always
+    answers) against
     GitHub `releases/latest`, "Updates" channel, home banner, download + SHA-256 check vs
     `SHA256SUMS.txt`, `PackageInstaller` session; `update/InstallReceiver.kt` handles the
     session status (user confirmation). Pure semver/JSON/checksum parsing in

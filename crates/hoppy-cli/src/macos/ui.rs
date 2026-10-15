@@ -719,21 +719,8 @@ pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
     let (view, live) = (view.clone(), live.clone());
     run_on_main(move |mtm| {
         let app = app(mtm);
-        let alert = NSAlert::new(mtm);
-        alert.setMessageText(&NSString::from_str(&view.title));
-        let info = if view.note.is_empty() {
-            view.text.clone()
-        } else {
-            format!("{}\n\n{}", view.text, view.note)
-        };
-        alert.setInformativeText(&NSString::from_str(&info));
-        for (_, title) in &view.buttons {
-            alert.addButtonWithTitle(&NSString::from_str(title));
-        }
+        let alert = dialog_alert(mtm, &view);
         let seq = ASK_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some(accessory) = accessory(mtm, &view) {
-            alert.setAccessoryView(Some(&accessory));
-        }
         // Seen even when macOS does not activate Hoppy (no click started this): on every
         // Space and over full-screen apps.
         alert.window().setCollectionBehavior(
@@ -751,6 +738,26 @@ pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
         let index = usize::try_from(answer - NSAlertFirstButtonReturn).ok()?;
         view.buttons.get(index).map(|b| b.0)
     })
+}
+
+/// The `NSAlert` for `view` (not shown): title, text + note, buttons in order, the emoji
+/// accessory. The icon is the app's own (Hoppy.icns in the bundle), NSAlert's default.
+fn dialog_alert(mtm: MainThreadMarker, view: &DialogView) -> Retained<NSAlert> {
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(&view.title));
+    let info = if view.note.is_empty() {
+        view.text.clone()
+    } else {
+        format!("{}\n\n{}", view.text, view.note)
+    };
+    alert.setInformativeText(&NSString::from_str(&info));
+    for (_, title) in &view.buttons {
+        alert.addButtonWithTitle(&NSString::from_str(title));
+    }
+    if let Some(accessory) = accessory(mtm, view) {
+        alert.setAccessoryView(Some(&accessory));
+    }
+    alert
 }
 
 /// Watches dialog `seq` from a worker: closes it on `live.close()` or after `timeout`.
@@ -1386,6 +1393,18 @@ pub fn smoke_test() -> i32 {
         ..Default::default()
     };
     assert!(accessory(mtm, &plain).is_none());
+
+    // About dialog (built, not run modally): 4 buttons, Close first (Return), no accessory.
+    let about = gui::about_dialog(gui::strings(), "9.9.9", false);
+    let alert = dialog_alert(mtm, &about);
+    assert_eq!(
+        alert.buttons().count(),
+        4,
+        "Close, Check, GitHub, Diagnostics"
+    );
+    assert!(alert.accessoryView().is_none());
+    assert!(alert.informativeText().to_string().contains(gui::REPO_URL));
+    println!("about alert OK");
 
     // Pasteboard → files (the Finder service path).
     let pboard = NSPasteboard::pasteboardWithUniqueName();

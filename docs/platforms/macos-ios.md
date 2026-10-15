@@ -83,7 +83,10 @@ in Applications.
 - **Single instance**: an exclusive lock on `tray.lock` next to `device.json`. A second
   launch asks the running one to show itself through Launch Services (`open -b
   app.hoppy.desktop` → `applicationShouldHandleReopen:` → "Hoppy is already running").
-- **Updates** (`crates/hoppy-cli/src/unix/selfupdate.rs`): a release counts only once
+- **Updates** (`crates/hoppy-cli/src/unix/selfupdate.rs`): the tray checks 30 s after the tray starts, then every 3 hours of wall-clock time (sleep included), a minute after waking from sleep (seen as a jump of the wall clock between the checker's one-minute ticks) and whenever the tray menu opens; wake-ups and menu opens check at most once every 10 minutes (any check counts, failed ones too: GitHub allows 60 unauthenticated calls per hour per IP);
+  a release found while the menu is open shows at the next click. *Informazioni… →
+  Controlla aggiornamenti* (release builds) checks at once and always answers
+  with a notification. A release counts only once
   `Hoppy-macos-universal.dmg` and `SHA256SUMS.txt` are attached. Installed as
   `/Applications/Hoppy.app` or `~/Applications/Hoppy.app` in a folder this user can write
   (probed at tray start): *Aggiorna a X…* downloads the .dmg of **that** release
@@ -149,7 +152,8 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
 3. **Menu bar**: bunny icon tinted correctly in light and dark menu bars and on a
    non-Retina display (2015 MacBook Air); left and right click open the menu at once under
    the icon; entries: header, Invia file…, Apri cartella ricevuti, ♪ Suono a fine invio,
-   Apri all'accesso, Dispositivi fidati…, Informazioni e diagnostica…, Esci; no Dock icon,
+   Apri all'accesso, Dispositivi fidati…, Informazioni… (NSAlert with the app icon: version, author, GitHub link; Chiudi /
+   Controlla aggiornamenti / Pagina GitHub / Diagnostica), Esci; no Dock icon,
    no app menu.
 4. **Receive**: phone → Mac: alert in front of other apps (also over a full-screen app and on
    another Space), Return = Rifiuta, Accetta saves to
@@ -179,7 +183,11 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
    notifications/Local Network may be asked again (new ad-hoc signature). A standard
    (non-admin) user with Hoppy in /Applications, or Hoppy run from Downloads: *Scarica
    Hoppy X…* opens the portal. Pull the network during the download → "Aggiornamento non
-   riuscito", app unchanged, no `.hoppy-*` folder left in /Applications.
+   riuscito", app unchanged, no `.hoppy-*` folder left in /Applications. *Informazioni… →
+   Controlla aggiornamenti*: "Hoppy è aggiornato (X)" / "Hoppy X è disponibile — clic su «Aggiorna a
+   X…»" / Wi-Fi off → "Non riesco a controllare gli aggiornamenti". Close the lid for
+   15+ min with an older version installed and a newer release out: about a minute after
+   waking, the notification appears (log: `update: … (Resumed)`).
 10. **Notifications off** in System Settings: no notification at all; turning them back on
     restores them.
 11. **Verification**: phone → Mac: the alert shows the 4 colour emoji with names (no digits,

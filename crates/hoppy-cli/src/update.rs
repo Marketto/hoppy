@@ -17,7 +17,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
@@ -57,9 +57,72 @@ pub const UPDATE_DIR_PREFIX: &str = "Hoppy-update-";
 /// cannot be deleted while it runs, so the tray never removes the folder right away).
 pub const STALE_UPDATE_DIR: Duration = Duration::from_secs(24 * 3600);
 
-/// First check this long after the tray starts (let login settle), then every `CHECK_EVERY`.
+/// First check this long after the tray starts (let login settle), then every `CHECK_EVERY`
+/// of wall-clock time (sleep included), plus the extra checks of [`Trigger`].
 pub const FIRST_CHECK: Duration = Duration::from_secs(30);
-pub const CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
+pub const CHECK_EVERY: Duration = Duration::from_secs(3 * 3600);
+/// Checks caused by opening the tray menu or by waking from sleep run at most this often
+/// (GitHub allows 60 unauthenticated API calls per hour per IP address).
+pub const RECHECK_MIN: Duration = Duration::from_secs(10 * 60);
+/// The checker thread wakes up this often to look at the wall clock.
+pub const CHECK_TICK: Duration = Duration::from_secs(60);
+/// Wall-clock time between two ticks beyond `CHECK_TICK` + this = the computer slept.
+pub const RESUME_GAP: Duration = Duration::from_secs(120);
+
+/// Why the tray wants to look for a new release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// `FIRST_CHECK` after start, then every `CHECK_EVERY`.
+    Scheduled,
+    /// The tray menu was opened.
+    MenuOpened,
+    /// The computer woke up from sleep (seen as a jump of the wall clock).
+    Resumed,
+    /// "Check for updates" (About dialog): always runs and always answers.
+    Manual,
+}
+
+/// Whether a check for `trigger` should run now, given when the last one started (`last`;
+/// failed ones count too, so an offline or rate-limited tray does not retry at every menu
+/// open). A clock set backwards counts as "long ago".
+pub fn check_due(trigger: Trigger, last: Option<SystemTime>, now: SystemTime) -> bool {
+    let min = match trigger {
+        Trigger::Manual => return true,
+        Trigger::Scheduled => CHECK_EVERY,
+        Trigger::MenuOpened | Trigger::Resumed => RECHECK_MIN,
+    };
+    last.is_none_or(|t| now.duration_since(t).is_ok_and(|d| d >= min) || now < t)
+}
+
+/// The checker thread's clock: called every `CHECK_TICK`, it says when to check. A resume
+/// from sleep is acted upon one tick later, once the network is back.
+#[derive(Debug, Default)]
+pub struct Cadence {
+    last_tick: Option<SystemTime>,
+    resumed: bool,
+}
+
+impl Cadence {
+    pub fn tick(&mut self, now: SystemTime, last_check: Option<SystemTime>) -> Option<Trigger> {
+        let slept = self.last_tick.is_some_and(|prev| {
+            now.duration_since(prev)
+                .is_ok_and(|d| d > CHECK_TICK + RESUME_GAP)
+        });
+        self.last_tick = Some(now);
+        if slept {
+            self.resumed = true;
+            return None;
+        }
+        if check_due(Trigger::Scheduled, last_check, now) {
+            self.resumed = false;
+            return Some(Trigger::Scheduled);
+        }
+        if std::mem::take(&mut self.resumed) && check_due(Trigger::Resumed, last_check, now) {
+            return Some(Trigger::Resumed);
+        }
+        None
+    }
+}
 
 const MAX_JSON: usize = 1 << 20;
 const MAX_SUMS: usize = 64 * 1024;
@@ -467,6 +530,83 @@ mod tests {
         assert!(!is_newer("0.2.0", "garbage"));
         assert!(is_dev_version("0.0.0-dev"));
         assert!(!is_dev_version("0.2.0"));
+    }
+
+    #[test]
+    fn check_throttle() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let min = |m: u64| t0 + Duration::from_secs(m * 60);
+        // Never checked: everything is due.
+        for trigger in [
+            Trigger::Scheduled,
+            Trigger::MenuOpened,
+            Trigger::Resumed,
+            Trigger::Manual,
+        ] {
+            assert!(check_due(trigger, None, t0), "{trigger:?}");
+        }
+        // Menu/resume: at most every 10 minutes.
+        assert!(!check_due(Trigger::MenuOpened, Some(t0), min(9)));
+        assert!(check_due(Trigger::MenuOpened, Some(t0), min(10)));
+        assert!(!check_due(Trigger::Resumed, Some(t0), min(9)));
+        assert!(check_due(Trigger::Resumed, Some(t0), min(11)));
+        // Scheduled: every 3 hours.
+        assert!(!check_due(Trigger::Scheduled, Some(t0), min(179)));
+        assert!(check_due(Trigger::Scheduled, Some(t0), min(180)));
+        // The user's button always checks.
+        assert!(check_due(Trigger::Manual, Some(t0), t0));
+        // Clock set backwards: treat the last check as long ago.
+        assert!(check_due(Trigger::MenuOpened, Some(min(60)), t0));
+        assert_eq!(CHECK_EVERY, Duration::from_secs(3 * 3600));
+        assert_eq!(RECHECK_MIN, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn cadence_checks_every_three_hours_and_after_sleep() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut c = Cadence::default();
+        // First tick (after FIRST_CHECK): check.
+        assert_eq!(c.tick(t0, None), Some(Trigger::Scheduled));
+        let last = Some(t0);
+        // Regular ticks: nothing until 3 hours have passed.
+        let mut s = 0;
+        while s + 60 < 3 * 3600 {
+            s += 60;
+            assert_eq!(c.tick(at(s), last), None, "{s}");
+        }
+        assert_eq!(c.tick(at(3 * 3600), last), Some(Trigger::Scheduled));
+
+        // Laptop sleeps 40 minutes, one hour after a check: the tick after the wake-up
+        // (network back) checks once.
+        let mut c = Cadence::default();
+        let last = Some(t0);
+        assert_eq!(c.tick(at(3600), last), None);
+        assert_eq!(c.tick(at(3600 + 40 * 60), last), None); // just woke up
+        assert_eq!(c.tick(at(3660 + 40 * 60), last), Some(Trigger::Resumed));
+        assert_eq!(c.tick(at(3720 + 40 * 60), last), None);
+
+        // Woke up 5 minutes after a check: throttled, and not retried later.
+        let mut c = Cadence::default();
+        let last = Some(t0);
+        assert_eq!(c.tick(at(60), last), None);
+        assert_eq!(c.tick(at(250), last), None); // > 3 min gap = sleep
+        assert_eq!(c.tick(at(300), last), None);
+        assert_eq!(c.tick(at(1200), last), None); // another sleep...
+        assert_eq!(c.tick(at(1260), last), Some(Trigger::Resumed)); // ...now 21 min later
+
+        // Slept past the 3-hour mark: one scheduled check, after the settle tick.
+        let mut c = Cadence::default();
+        assert_eq!(c.tick(at(60), last), None);
+        assert_eq!(c.tick(at(5 * 3600), last), None);
+        assert_eq!(c.tick(at(5 * 3600 + 60), last), Some(Trigger::Scheduled));
+        assert_eq!(c.tick(at(5 * 3600 + 120), Some(at(5 * 3600 + 60))), None);
+
+        // A slow tick (busy machine) is not a sleep.
+        let mut c = Cadence::default();
+        assert_eq!(c.tick(at(60), last), None);
+        assert_eq!(c.tick(at(60 + 150), last), None);
+        assert_eq!(c.tick(at(60 + 210), last), None);
     }
 
     #[test]

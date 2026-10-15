@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var preview: [URL] = []
     @State private var shareItems: [URL] = []
     @State private var editing: TextPrompt? = nil
+    @State private var showAbout = false
 
     private var palette: Palette { Palette.current(scheme) }
 
@@ -80,6 +81,7 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { !shareItems.isEmpty }, set: { if !$0 { shareItems = [] } })) {
             ActivityView(items: shareItems).ignoresSafeArea()
         }
+        .sheet(isPresented: $showAbout) { AboutSheet(palette: palette).environmentObject(model) }
         .sheet(item: $editing) { prompt in TextPromptSheet(prompt: prompt, palette: palette).environmentObject(model) }
         // Swiping the sheet away declines (model.decide ignores an offer already answered):
         // never auto-accept.
@@ -274,6 +276,9 @@ struct ContentView: View {
                 Label(L("open_received"), systemImage: "folder")
             }
             Toggle(L("sound"), isOn: $model.soundOn)
+            Button { showAbout = true } label: {
+                Label(L("about"), systemImage: "info.circle")
+            }
         } label: {
             Image(systemName: "ellipsis.circle").imageScale(.large)
         }
@@ -483,6 +488,91 @@ struct TextPromptSheet: View {
             dismiss()
         case .address:
             if model.addAddress(prompt.value) { dismiss() } else { invalid = true }
+        }
+    }
+}
+
+// MARK: - About: name, version (build), author, GitHub link, "Controlla aggiornamenti"
+
+struct AboutSheet: View {
+    static let repo = URL(string: "https://github.com/Marketto/hoppy")!
+
+    let palette: Palette
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var checking = false
+    @State private var status: String? = nil
+
+    private var build: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 10) {
+                    Image("Mascot")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 96, height: 96)
+                        .accessibilityHidden(true)
+                    Text("Hoppy")
+                        .font(.largeTitle.weight(.bold))
+                        .foregroundColor(palette.text)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(L("about_version", UpdateCheck.current, build))
+                        .foregroundColor(palette.text)
+                        .textSelection(.enabled)
+                    Text(L("about_author"))
+                        .foregroundColor(palette.text)
+                    Link(destination: Self.repo) {
+                        Text(Self.repo.absoluteString).underline()
+                    }
+                    .foregroundColor(palette.accent)
+                    .frame(minHeight: 44)
+                    Button(L("check_updates"), action: check)
+                        .buttonStyle(HoppyButtonStyle(palette: palette))
+                        .disabled(checking)
+                        .padding(.top, 8)
+                    if let status = status {
+                        Text(status)
+                            .foregroundColor(palette.text)
+                            .multilineTextAlignment(.center)
+                            .accessibilityAddTraits(.updatesFrequently)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: 480)
+                .frame(maxWidth: .infinity)
+            }
+            .background(palette.bg.ignoresSafeArea())
+            .navigationTitle(L("about"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button(L("done")) { dismiss() } }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    /// Always answers: a newer version closes the sheet and shows the home banner.
+    private func check() {
+        checking = true
+        status = L("update_checking")
+        model.checkForUpdates { outcome in
+            checking = false
+            switch outcome {
+            case .available:
+                status = nil
+                dismiss()
+            case .upToDate(let version):
+                status = L("update_up_to_date", version)
+            case .failed(let reason):
+                status = L("update_check_failed", reason)
+            }
+            if let status = status {
+                UIAccessibility.post(notification: .announcement, argument: status)
+            }
         }
     }
 }

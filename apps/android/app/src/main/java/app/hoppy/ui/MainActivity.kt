@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Paint
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +15,8 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.animation.OvershootInterpolator
 import android.widget.EditText
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -26,6 +29,7 @@ import app.hoppy.R
 import app.hoppy.audio.Music
 import app.hoppy.core.Peer
 import app.hoppy.databinding.ActivityMainBinding
+import app.hoppy.databinding.DialogAboutBinding
 import app.hoppy.security.Security
 import app.hoppy.service.ReceiveService
 import app.hoppy.ui.theme.HomeDecor
@@ -249,6 +253,7 @@ class MainActivity : ThemedActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.theme -> { chooseTheme(); true }
         R.id.rename -> { rename(); true }
+        R.id.about -> { showAbout(); true }
         R.id.music -> {
             item.isChecked = !item.isChecked
             Music.setEnabled(this, item.isChecked)
@@ -273,6 +278,75 @@ class MainActivity : ThemedActivity() {
             true
         }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    /**
+     * Menu "About": mascot, name, version (build), author, GitHub link, "Check for updates"
+     * (answers inside the dialog; a newer version closes it and shows the home banner) and
+     * the bundled font licences.
+     */
+    private fun showAbout() {
+        val about = DialogAboutBinding.inflate(layoutInflater)
+        about.aboutVersion.text = getString(R.string.about_version, Updater.currentVersion(this), Updater.currentBuild(this))
+        about.aboutLink.paintFlags = about.aboutLink.paintFlags or Paint.UNDERLINE_TEXT_FLAG
+        about.aboutLink.setOnClickListener {
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.about_repo_url)))) }
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setView(about.root)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+        fun status(text: String) {
+            about.aboutStatus.text = text
+            about.aboutStatus.isVisible = true
+        }
+        about.aboutCheck.setOnClickListener {
+            about.aboutCheck.isEnabled = false
+            status(getString(R.string.update_checking))
+            Updater.checkNow(this) { outcome ->
+                if (isFinishing || isDestroyed || !dialog.isShowing) return@checkNow
+                about.aboutCheck.isEnabled = true
+                when (outcome) {
+                    is Updater.Outcome.Available -> {
+                        dialog.dismiss()
+                        syncUpdate()
+                        b.updateBanner.announceForAccessibility(b.updateText.text)
+                    }
+                    is Updater.Outcome.UpToDate -> status(getString(R.string.update_up_to_date, outcome.version))
+                    Updater.Outcome.DevBuild -> status(getString(R.string.update_dev_build))
+                    is Updater.Outcome.Failed -> status(getString(R.string.update_check_failed, outcome.reason.take(200)))
+                }
+            }
+        }
+        about.aboutLicenses.setOnClickListener { showLicenses() }
+    }
+
+    /** OFL texts of the bundled fonts (assets/licenses/fonts, written by tools/fonts.py). */
+    private fun showLicenses() {
+        val app = applicationContext
+        thread(name = "hoppy-licenses") {
+            val text = runCatching {
+                val dir = "licenses/fonts"
+                app.assets.list(dir).orEmpty().sorted().joinToString("\n\n") { name ->
+                    "── ${name.removeSuffix(".txt")} ──\n" + app.assets.open("$dir/$name").bufferedReader().use { it.readText() }
+                }
+            }.getOrDefault("")
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val pad = (20 * resources.displayMetrics.density).toInt()
+                val body = TextView(this).apply {
+                    setText(text)
+                    setTextIsSelectable(true)
+                    textSize = 12f
+                    setPadding(pad, pad / 2, pad, 0)
+                }
+                MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.about_licenses)
+                    .setView(ScrollView(this).apply { addView(body) })
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show()
+            }
+        }
     }
 
     private fun chooseTheme() {

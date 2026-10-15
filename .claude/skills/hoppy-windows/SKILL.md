@@ -54,7 +54,9 @@ PoC UX (no console windows):
   `redact_paths`, core errors are logged via `error_kind`/`error_chain`, never `{e}`; IPs
   and device names allowed), `UiWatch` (handler > 200 ms
   logged, watchdog line > 2 s). Init only in `hoppyw` tray/send (not `firewall`: elevated
-  copy may be another user). Tray menu *About & diagnostics…* opens it in Notepad.
+  copy may be another user). Tray menu *About…* (`gui::about_dialog`, drawn by `ui::show_dialog`;
+  buttons Close / Check for updates / GitHub page / Diagnostics) → *Diagnostics* opens it in
+  Notepad.
 - `crates/hoppy-cli/src/verify.rs` — what the verification dialogs show (`DialogView`:
   text, `CodeView` = the 4 emoji + their names, buttons — the first is the default and the
   answer on close/timeout), `DialogLive` (close when the transfer ends). Sender code window:
@@ -69,7 +71,11 @@ PoC UX (no console windows):
   `download_fresh` (new `%TEMP%\Hoppy-update-<uuid>` folder via `create_dir`; `*.part`,
   hashed while written, renamed only if the SHA-256 matches; stale folders >1 day removed
   at tray start by `remove_stale_update_dirs`) over an
-  `Http` trait (fake in tests). `gui.rs` runs it on worker threads (30 s, then daily),
+  `Http` trait (fake in tests). `gui.rs` runs it on worker threads (30 s, then every 3 h of
+  wall-clock time via `update::Cadence` one-minute ticks, once after a wake-up from sleep =
+  wall-clock jump, and on each menu open; wake/menu throttled to 10 min by
+  `update::check_due`, `Updates::claim_check` = one check at a time; menu *Check for
+  updates* = `Trigger::Manual`, always answered by a balloon via `CheckAnswer`),
   shows the bold "Update to X…" item / balloon, runs the installer with `/UPDATE=1` and
   exits. Asset names are a contract with `release.yml` (docs/release.md).
 - `crates/hoppy-cli/src/firewall.rs` — firewall rules, cross-platform std code + Linux
@@ -188,7 +194,10 @@ the icon (check `hoppy log`: `delivery=notify`, no "waited" lines), right-click 
 Hoppy on 1 and 20 files (one menu), classic-menu task/toggle + Explorer restart, desktop
 shortcut drop/double-click, accept dialog, balloon click, Send to menu,
 send sound (silent until delivery, then the jingle once; "♪ Sound when delivered" toggle), installer music + checkbox, update flow
-(balloon → download % → silent install → tray back; portable → portal), firewall task
+(balloon → download % → silent install → tray back; portable → portal; *About…* dialog (4 buttons fit at 100/150/200 %, Enter = Close,
+GitHub page opens the browser, Diagnostics opens Notepad); *About… → Check for updates*
+balloon up to date / available / offline error; `hoppy log` shows `(MenuOpened)` checks at
+most every 10 min and one `(Resumed)` check ~1 min after waking from sleep), firewall task
 (UAC yes/no, rules in `wf.msc`), tray firewall/Public balloons + menu item, `hoppy firewall`,
 callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while the tray
 runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon;

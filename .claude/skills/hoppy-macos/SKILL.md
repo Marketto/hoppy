@@ -16,6 +16,7 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
 | Open at login (SMAppService 13+, LaunchAgent fallback), `hoppy install/uninstall`, first run | `crates/hoppy-cli/src/macos/login.rs` |
 | Pure helpers + Info.plist consistency test (run on Linux) | `crates/hoppy-cli/src/macos/mod.rs` |
 | curl update transport (shared with Linux) | `crates/hoppy-cli/src/unix/http.rs` |
+| Update check cadence (shared, all desktops) | `crates/hoppy-cli/src/update.rs` (`Cadence`, `check_due`: 30 s, every 3 h, after wake-up, on menu open with a 10-min throttle) + `gui.rs` (`request_update_check`; *About…* dialog `about_dialog` with *Check for updates*) |
 | Self-update (download .dmg, hdiutil/ditto/codesign/PlistBuddy, swap, relaunch) | `crates/hoppy-cli/src/unix/selfupdate.rs` |
 | Verification dialogs (`show_dialog`: NSAlert + accessory view with the 4 emoji and their names only; the smoke test checks its 8 labels) | `crates/hoppy-cli/src/macos/ui.rs`, model in `crates/hoppy-cli/src/verify.rs` |
 | Bundle metadata, Finder service, privacy texts | `apps/macos/Info.plist`, `apps/macos/it.lproj/`, `apps/macos/en.lproj/` |

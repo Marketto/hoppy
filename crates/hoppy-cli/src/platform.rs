@@ -1476,7 +1476,15 @@ pub mod win {
         let text_font = Font::new("Segoe UI", px(15), FW_NORMAL);
         let small_font = Font::new("Segoe UI", px(12), FW_NORMAL);
         let emoji_font = Font::new("Segoe UI Emoji", px(40), FW_NORMAL);
-        let (width, margin) = (px(480), px(18));
+        let button_w = |t: &str| (text_width(t, &text_font) + px(28)).max(px(90));
+        let (button_gap, margin) = (px(8), px(18));
+        // Wider than 480 px only when the buttons need it (About has four).
+        let buttons_w: i32 = view
+            .buttons
+            .iter()
+            .map(|(_, t)| button_w(t) + button_gap)
+            .sum();
+        let width = px(480).max(buttons_w - button_gap + 2 * margin);
         let inner = width - 2 * margin;
 
         let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
@@ -1559,7 +1567,6 @@ pub mod win {
         }
         // Buttons right-aligned in the view's order.
         let button_h = px(30);
-        let button_w = |t: &str| (text_width(t, &text_font) + px(28)).max(px(90));
         let mut x = width - margin;
         let mut first_button = null_mut();
         for (i, (_, text)) in view.buttons.iter().enumerate().rev() {
@@ -1582,7 +1589,7 @@ pub mod win {
             if i == 0 {
                 first_button = b;
             }
-            x -= px(8);
+            x -= button_gap;
         }
         let client_h = y + button_h + margin;
 

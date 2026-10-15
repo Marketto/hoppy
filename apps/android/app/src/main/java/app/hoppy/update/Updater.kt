@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import app.hoppy.HoppyApp
@@ -30,7 +32,8 @@ import kotlin.concurrent.thread
  * Update check + in-app updater for the APK published on GitHub Releases
  * (docs/platforms/android.md "Updates"). Pure parts are in [UpdateLogic].
  *
- * Flow: [maybeCheck] (home screen start, ≤ once per 24 h, silent on errors) →
+ * Flow: [maybeCheck] (home screen start/return, ≤ once per 3 h, silent on errors) or
+ * [checkNow] (About dialog "Check for updates", always answers) →
  * notification + home banner → user taps → [download] (SHA-256 against SHA256SUMS.txt) →
  * PackageInstaller session → [InstallReceiver] → system confirmation. The system verifies
  * that the new APK is signed with the same key as the installed app.
@@ -73,6 +76,10 @@ object Updater {
     fun currentVersion(ctx: Context): String =
         runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "0.0.0-dev"
 
+    /** versionCode of the installed app (the "build N" in About). */
+    fun currentBuild(ctx: Context): Long =
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode }.getOrDefault(0L)
+
     /** Newer version already known from a previous check (home banner), or null. */
     fun availableVersion(ctx: Context): String? {
         val current = currentVersion(ctx)
@@ -81,8 +88,9 @@ object Updater {
     }
 
     /**
-     * Checks GitHub at most once per 24 h on a background thread; errors are ignored and
-     * do not count as a check (the timestamp is stored only after a complete response).
+     * Checks GitHub at most once per [UpdateLogic.CHECK_INTERVAL_MS] (3 h) on a background
+     * thread; errors are ignored and do not count as a check (the timestamp is stored only
+     * after a complete response).
      */
     fun maybeCheck(ctx: Context) {
         val app = ctx.applicationContext
@@ -103,11 +111,45 @@ object Updater {
         }
     }
 
-    private fun check(app: Context, current: String) {
+    /** Answer of [checkNow], delivered on the main thread. */
+    sealed class Outcome {
+        /** No newer release: [version] is the installed one. */
+        data class UpToDate(val version: String) : Outcome()
+        /** [version] is newer: the home banner shows it (listeners were notified). */
+        data class Available(val version: String) : Outcome()
+        /** Local/CI build: never checks (it would always look outdated). */
+        object DevBuild : Outcome()
+        data class Failed(val reason: String) : Outcome()
+    }
+
+    /**
+     * About dialog "Check for updates": checks now, ignoring the 3 h interval, and always answers
+     * through [done] on the main thread. Never downloads (that still needs a tap on the banner).
+     */
+    fun checkNow(ctx: Context, done: (Outcome) -> Unit) {
+        val app = ctx.applicationContext
+        val main = Handler(Looper.getMainLooper())
+        val current = currentVersion(app)
+        if (UpdateLogic.isDevBuild(current)) return done(Outcome.DevBuild)
+        Prefs.updateToken(app) // created here, not concurrently from the check thread
+        thread(name = "hoppy-update-check-now", isDaemon = true) {
+            val outcome = try {
+                val latest = check(app, current)
+                if (latest != null && UpdateLogic.isNewer(latest, current)) Outcome.Available(latest)
+                else Outcome.UpToDate(current)
+            } catch (e: Exception) {
+                Outcome.Failed(e.message ?: e.javaClass.simpleName)
+            }
+            main.post { done(outcome) }
+        }
+    }
+
+    /** One request to `releases/latest`; returns the latest release version (or null). */
+    private fun check(app: Context, current: String): String? {
         val json = String(get(API_LATEST, current, json = true).use { readCapped(it, MAX_JSON) }, Charsets.UTF_8)
         // Only a complete response counts as a check: errors retry on the next start.
         Prefs.setUpdateCheckedAt(app, System.currentTimeMillis())
-        val latest = UpdateLogic.latestRelease(json) ?: return
+        val latest = UpdateLogic.latestRelease(json) ?: return null
         Prefs.setLatestRelease(app, latest.version, latest.tag)
         if (UpdateLogic.isNewer(latest.version, current)) {
             if (Prefs.updateNotified(app) != latest.version) {
@@ -116,6 +158,7 @@ object Updater {
             }
             changed()
         }
+        return latest.version
     }
 
     /** Intent for the "update available" notification tap (checked by [isUpdateIntent]). */

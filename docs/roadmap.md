@@ -45,8 +45,8 @@
   device test), desktop dialogs (4 emoji, "Coincide"),
   iOS UI (done: persistent key/trust per container, code + «Coincide»,
   KeyChanged alert; awaits the CI job `ios` and the manual plan); then switch plaintext off.
-- iPhone/iPad updates at zero cost: SideStore source `sidestore.json` on the portal + daily
-  in-app notice (ADR 0009 addendum).
+- iPhone/iPad updates at zero cost: SideStore source `sidestore.json` on the portal + in-app
+  notice (every 3 h + «Informazioni» → «Controlla aggiornamenti») (ADR 0009 addendum).
 - Resume via per-chunk hashes.
 - Single engine: Rust core on Android via UniFFI (ADR 0002); iOS already uses it (ADR 0009).
 - iPhone/iPad: Wi-Fi Aware (iOS 26) when no shared network.

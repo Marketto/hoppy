@@ -302,6 +302,15 @@ final class AppModel: ObservableObject {
         update = nil
     }
 
+    /// "Controlla aggiornamenti" in the About sheet: checks now; a newer version also shows
+    /// the home banner. `done` runs on the main queue and always gets an answer.
+    func checkForUpdates(_ done: @escaping (UpdateCheck.Outcome) -> Void) {
+        UpdateCheck.checkNow { [weak self] outcome in
+            if case .available(let version) = outcome { self?.update = version }
+            done(outcome)
+        }
+    }
+
     // MARK: events
 
     private func handle(_ event: HoppyEvent) {

@@ -17,7 +17,7 @@ UX, install (Sideloadly), limits, manual test plan: `docs/platforms/ios.md`. Dec
 | Unicast sweep (client behaviour, no wire change) | `crates/hoppy-core/src/discovery.rs` (`Sweep`, `sweep_targets`, `set_transfer_port`) |
 | Swift wrapper (`HoppyNode`, `HoppyEvent`, `HoppySecurity`/`HoppySas`/`HoppyPeerKey`) | `apps/ios/Shared/HoppyCore.swift` |
 | App: scene lifecycle, state, the one screen, offer sheet | `apps/ios/Hoppy/HoppyApp.swift`, `apps/ios/Hoppy/AppModel.swift`, `apps/ios/Hoppy/ContentView.swift` |
-| Update notice (`releases/latest`, daily) | `apps/ios/Hoppy/UpdateCheck.swift`; SideStore source `sidestore.json` from `tools/site.py` |
+| Update notice (`releases/latest`, ≤ 1/3 h on foreground + menu «Informazioni» sheet `AboutSheet` (version/build, author, GitHub link) with «Controlla aggiornamenti» = `checkNow`, always answers) | `apps/ios/Hoppy/UpdateCheck.swift`, `AboutSheet` in `ContentView.swift`; SideStore source `sidestore.json` from `tools/site.py` |
 | Share extension (self-contained sender, own identity) | `apps/ios/ShareExtension/ShareViewController.swift` |
 | Verification UI (4-emoji code, «Coincide» / «Più tardi», banners) shared by app + extension | `apps/ios/Shared/Verification.swift` |
 | Palettes (checked by `tools/contrast.py`), identity (id bound to the v1 key, `Identity.startNode`)/seeds/outbox, strings | `apps/ios/Shared/Theme.swift`, `apps/ios/Shared/Identity.swift`, `apps/ios/Shared/en.lproj/`, `apps/ios/Shared/it.lproj/` |

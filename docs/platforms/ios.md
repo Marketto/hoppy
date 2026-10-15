@@ -51,11 +51,17 @@ and install Hoppy from there. New releases then show up in SideStore's *Updates*
 - `version` is the tag without `v` and without a `-suffix`, the same value `build-ipa.sh` puts in
   `CFBundleShortVersionString` (SideStore refuses a download whose version differs).
 - **In-app notice** (`apps/ios/Hoppy/UpdateCheck.swift`): when the app comes to the foreground and
-  the last check is older than a day, it reads `releases/latest` (URLSession, no token); if the
+  the last check is older than 3 hours, it reads `releases/latest` (URLSession, no token); if the
   release carries `Hoppy-ios-unsigned.ipa` and is newer than the app, a banner says «Hoppy X
   disponibile — aggiorna da SideStore o reinstalla con Sideloadly» with a link to the portal;
   closing it hides that version. No download, no install from the app (impossible for a
-  sideloaded app).
+  sideloaded app). The menu item «Informazioni» / "About" opens a sheet
+  (`AboutSheet` in `ContentView.swift`): mascot, "Hoppy", «Versione X.Y.Z (build N)»
+  (`CFBundleShortVersionString` / `CFBundleVersion`), «di Marco Ricupero», a link to
+  https://github.com/Marketto/hoppy and «Controlla aggiornamenti» (`UpdateCheck.checkNow`),
+  which checks at once and always answers: «Hoppy è aggiornato (x.y.z)» / the error in the
+  sheet (also announced to VoiceOver), or, for a newer version, closes the sheet and shows the
+  update banner (also for a version closed earlier). Palette text/accent only (contrast-checked).
 
 ## How it works
 
@@ -223,6 +229,6 @@ Same Wi-Fi: the iPad, a Windows PC with Hoppy, an Android phone (and a Mac/Linux
     the next offer shows a new device. Sending to it before forgetting → «Non inviato: la chiave
     di sicurezza … è cambiata.» + the same alert.
 16. **Updates**: with an older build installed, open Hoppy → banner «Hoppy X disponibile…» with
-    the portal link (at most one check a day; ✕ hides that version). SideStore: add the source
+    the portal link (at most one automatic check every 3 h; ✕ hides that version; menu «Informazioni» → «Controlla aggiornamenti» checks at once and answers «Hoppy è aggiornato (x.y.z)» when current). SideStore: add the source
     from the portal, Hoppy appears with the latest version; publish a release → SideStore offers
     the update.
