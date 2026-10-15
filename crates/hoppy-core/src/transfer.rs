@@ -12,7 +12,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,7 @@ use crate::discovery::{
     CALLBACK_CONNECT_TIMEOUT, CALLBACK_RESEND, CALLBACK_WINDOW, CallbackRequest, Discovery, Peer,
     same_ip,
 };
+use crate::guard::{Guard, MAX_ABORTS_PER_IP};
 use crate::protocol::{
     self, CRYPTO_VERSION, CallbackHello, Decision, DeviceInfo, FileEntry, HASH_LEN, MAX_FILES,
     Offer, TransferResult, VERSION_V1,
@@ -45,6 +46,11 @@ const CALLBACK_HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// The receiver may be waiting for a human to press "Accept".
 const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// Sender: one wall-clock deadline for handshake + Decision (spec §7.3), so a man in the
+/// middle cannot keep the sender waiting while it grinds codes against the receiver.
+pub const SESSION_DEADLINE: Duration = Duration::from_secs(130);
+/// Receiver: handshake messages 1 and 3 and the first encrypted frame within this.
+pub const RECEIVER_HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Transition period (ADR 0010): v1 nodes still talk to v0 peers (old apps) without
 /// encryption, flagged in the UI. A later release sets this to `false` (then v0 peers are
@@ -74,6 +80,10 @@ pub struct Local {
     pub key: Arc<DeviceKey>,
     pub trust: Trust,
     pub policy: CryptoPolicy,
+    /// Aborted-handshake limits and warning rate limits (shared by all connections).
+    pub(crate) guard: Arc<Mutex<Guard>>,
+    /// [`SESSION_DEADLINE`]; shorter only in tests.
+    pub(crate) session_deadline: Duration,
 }
 
 impl Local {
@@ -83,7 +93,20 @@ impl Local {
             key: Arc::new(key),
             trust,
             policy: CryptoPolicy::default(),
+            guard: Arc::new(Mutex::new(Guard::default())),
+            session_deadline: SESSION_DEADLINE,
         }
+    }
+
+    /// Tests only: a shorter sender deadline than [`SESSION_DEADLINE`].
+    #[doc(hidden)]
+    pub fn with_session_deadline(mut self, deadline: Duration) -> Self {
+        self.session_deadline = deadline;
+        self
+    }
+
+    fn guard(&self) -> MutexGuard<'_, Guard> {
+        self.guard.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// A throw-away identity: fresh key, empty in-memory trust store (tests, tools).
@@ -128,6 +151,19 @@ pub enum Progress {
     /// Sender only, before the offer goes out: how the session is protected (encrypted or
     /// not, trust state, SAS to show while waiting for the receiver).
     Session(SessionInfo),
+    /// Sender only: something to tell the user that does not stop the transfer.
+    Warning(Warning),
+}
+
+/// Non-fatal security problems for the UI (spec §7.3, §7.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    /// Encrypted connections from this source (or from many sources) were abandoned right
+    /// after this device's half of the handshake, `recent` times in the last minute: someone
+    /// may be trying to guess the verification code. Further attempts are slowed down.
+    HandshakeAborts { recent: usize },
+    /// The list of known devices could not be saved (the device will look new next time).
+    TrustNotSaved(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +230,16 @@ pub fn confirm_qr(
         return Err(Error::Input("the code belongs to another device".into()));
     }
     let (stream, _) = connect(peer, discovery, true, &mut |_| {})?;
-    let (cipher, _) = match open_initiator(&stream, local, Some(&qr.id), Some(&qr.fingerprint)) {
+    let timing = Timing::new(IO_TIMEOUT, Some(Instant::now() + IO_TIMEOUT));
+    let mut timed = TimedStream::new(&stream, &timing)?;
+    let opened = open_initiator(
+        &stream,
+        &mut timed,
+        local,
+        Some(&qr.id),
+        Some(&qr.fingerprint),
+    );
+    let (cipher, _) = match opened {
         Ok(v) => v,
         Err(Handshake::PeerClosed) => {
             return Err(Error::Unencrypted(format!(
@@ -204,10 +249,9 @@ pub fn confirm_qr(
         }
         Err(Handshake::Failed(e)) => return Err(e),
     };
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     let mut writer = NoiseWriter::new(stream.try_clone()?, cipher.clone());
-    let mut reader = NoiseReader::new(BufReader::new(stream.try_clone()?), cipher);
+    let mut reader = NoiseReader::new(BufReader::new(timed), cipher);
     protocol::write_json(
         &mut writer,
         &VerifyRequest {
@@ -345,6 +389,62 @@ impl Read for DeadlineReader<'_> {
     }
 }
 
+/// Per-read timeout plus an optional overall deadline, shared between a session's readers
+/// and changeable while they live (the sender clears the deadline once the Decision is in).
+#[derive(Clone)]
+struct Timing(Arc<Mutex<(Duration, Option<Instant>)>>);
+
+impl Timing {
+    fn new(per_read: Duration, deadline: Option<Instant>) -> Self {
+        Self(Arc::new(Mutex::new((per_read, deadline))))
+    }
+
+    fn set(&self, per_read: Duration, deadline: Option<Instant>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = (per_read, deadline);
+    }
+
+    fn get(&self) -> (Duration, Option<Instant>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A socket reader that honours [`Timing`]: each read waits at most the per-read timeout
+/// and never past the deadline (trickled bytes cannot extend it).
+struct TimedStream {
+    stream: TcpStream,
+    timing: Timing,
+}
+
+impl TimedStream {
+    fn new(stream: &TcpStream, timing: &Timing) -> std::io::Result<Self> {
+        Ok(Self {
+            stream: stream.try_clone()?,
+            timing: timing.clone(),
+        })
+    }
+}
+
+impl Read for TimedStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let (per_read, deadline) = self.timing.get();
+        let wait = match deadline {
+            Some(d) => {
+                let left = d.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(std::io::Error::new(
+                        ErrorKind::TimedOut,
+                        "no answer in time",
+                    ));
+                }
+                per_read.min(left)
+            }
+            None => per_read,
+        };
+        self.stream.set_read_timeout(Some(wait))?;
+        self.stream.read(buf)
+    }
+}
+
 fn build_offer(me: &DeviceInfo, paths: &[PathBuf]) -> Result<Offer, Error> {
     if paths.is_empty() {
         return Err(Error::Input("no files to send".into()));
@@ -419,17 +519,18 @@ fn closed_by_peer(e: &std::io::Error) -> bool {
 }
 
 /// Initiator side of spec §7.3 on a fresh connection: `HOPY 0x01` + message 1, read
-/// message 2, check the responder (expected id; `expect_fp` for QR verification, else the
-/// trust store: a changed key aborts before we reveal anything), write message 3.
+/// message 2 (from `reader`, which bounds the time), check the responder (expected id;
+/// `expect_fp` for QR verification, else the trust store: a changed key aborts before we
+/// reveal anything), write message 3.
 fn open_initiator(
     stream: &TcpStream,
+    reader: &mut dyn Read,
     local: &Local,
     expected_id: Option<&str>,
     expect_fp: Option<&str>,
 ) -> Result<(Cipher, SessionInfo), Handshake> {
     let io = |e: std::io::Error| Handshake::Failed(e.into());
     stream.set_nodelay(true).map_err(io)?;
-    stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io)?;
     stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io)?;
     let mut init = Initiator::new(&local.key)?;
     let mut first = Vec::new();
@@ -439,7 +540,13 @@ fn open_initiator(
         Err(e) if closed_by_peer(&e) => return Err(Handshake::PeerClosed),
         other => other.map_err(io)?,
     }
-    let msg2 = match read_frame(&mut &*stream, MAX_HANDSHAKE_MESSAGE) {
+    let msg2 = match read_frame(reader, MAX_HANDSHAKE_MESSAGE) {
+        // An empty frame: a v1 receiver refusing for now (aborted-handshake limit, §7.3).
+        Ok(Some(m)) if m.is_empty() => {
+            return Err(Handshake::Failed(Error::Remote(
+                "busy: the receiver is limiting connections, try again in a minute".into(),
+            )));
+        }
         Ok(Some(m)) => m,
         Ok(None) => return Err(Handshake::PeerClosed),
         Err(e) if closed_by_peer(&e) => return Err(Handshake::PeerClosed),
@@ -472,6 +579,8 @@ fn open_initiator(
     let msg3 = init.write_msg3(&local.device)?;
     write_frame(&mut &*stream, &msg3).map_err(io)?;
     let cipher = init.finish()?;
+    let name_matches_known =
+        state == TrustState::New && local.trust.name_taken_by_other(&peer.id, &peer.name);
     Ok((
         cipher,
         SessionInfo {
@@ -479,6 +588,7 @@ fn open_initiator(
             peer: Some(peer),
             trust: Some(state),
             sas: Some(remote.sas),
+            name_matches_known,
         },
     ))
 }
@@ -493,58 +603,79 @@ fn send_session(
     paths: &[PathBuf],
     progress: &mut dyn FnMut(Progress),
 ) -> Result<SendOutcome, Error> {
-    let pinned = !peer.device.id.is_empty() && local.trust.get(&peer.device.id).is_some();
+    // A known id, or an address where a remembered device completed an encrypted transfer:
+    // that device speaks v1, plaintext would be a downgrade (spec §7.1).
+    let pinned = (!peer.device.id.is_empty() && local.trust.get(&peer.device.id).is_some())
+        || local.trust.encrypted_at(peer.addr);
     let advertised = match route {
         Route::Direct => peer.crypto,
         Route::Callback { crypto } => crypto.max(peer.crypto),
     };
     let expected = Some(peer.device.id.as_str());
-    match plan(advertised, pinned, local.policy) {
-        Plan::Plaintext => {
-            progress(Progress::Session(SessionInfo::plaintext()));
-            send_over(stream, None, local, offer, paths, progress)
+    let new_timing = || Timing::new(IO_TIMEOUT, Some(Instant::now() + local.session_deadline));
+    let plan = plan(advertised, pinned, local.policy);
+    let Plan::Encrypted { fallback } = plan else {
+        progress(Progress::Session(SessionInfo::plaintext()));
+        return send_over(
+            stream,
+            new_timing(),
+            None,
+            peer,
+            local,
+            offer,
+            paths,
+            progress,
+        );
+    };
+    let timing = new_timing();
+    let mut timed = TimedStream::new(&stream, &timing)?;
+    match open_initiator(&stream, &mut timed, local, expected, None) {
+        Ok((cipher, info)) => {
+            let peer_key = info.peer.clone();
+            progress(Progress::Session(info));
+            let secure = Some((cipher, peer_key));
+            send_over(stream, timing, secure, peer, local, offer, paths, progress)
         }
-        Plan::Encrypted { fallback } => match open_initiator(&stream, local, expected, None) {
-            Ok((cipher, info)) => {
-                let peer_key = info.peer.clone();
-                progress(Progress::Session(info));
-                send_over(
-                    stream,
-                    Some((cipher, peer_key)),
-                    local,
-                    offer,
-                    paths,
-                    progress,
-                )
+        Err(Handshake::PeerClosed) if fallback && matches!(route, Route::Direct) => {
+            drop(stream);
+            let stream = TcpStream::connect_timeout(&peer.addr, CONNECT_TIMEOUT)?;
+            progress(Progress::Session(SessionInfo::plaintext()));
+            send_over(
+                stream,
+                new_timing(),
+                None,
+                peer,
+                local,
+                offer,
+                paths,
+                progress,
+            )
+        }
+        Err(Handshake::PeerClosed) if advertised.unwrap_or(0) >= CRYPTO_VERSION => Err(
+            Error::Protocol("connection closed during the encrypted handshake".into()),
+        ),
+        Err(Handshake::PeerClosed) => Err(Error::Unencrypted(format!(
+            "{} cannot encrypt{}",
+            peer.device.name,
+            if pinned {
+                " although it did before: possible downgrade attack"
+            } else {
+                " (old Hoppy version?)"
             }
-            Err(Handshake::PeerClosed) if fallback && matches!(route, Route::Direct) => {
-                drop(stream);
-                let stream = TcpStream::connect_timeout(&peer.addr, CONNECT_TIMEOUT)?;
-                progress(Progress::Session(SessionInfo::plaintext()));
-                send_over(stream, None, local, offer, paths, progress)
-            }
-            Err(Handshake::PeerClosed) if advertised.unwrap_or(0) >= CRYPTO_VERSION => Err(
-                Error::Protocol("connection closed during the encrypted handshake".into()),
-            ),
-            Err(Handshake::PeerClosed) => Err(Error::Unencrypted(format!(
-                "{} cannot encrypt (old Hoppy version?){}",
-                peer.device.name,
-                if pinned {
-                    " although it did before: possible downgrade attack"
-                } else {
-                    ""
-                }
-            ))),
-            Err(Handshake::Failed(e)) => Err(e),
-        },
+        ))),
+        Err(Handshake::Failed(e)) => Err(e),
     }
 }
 
 /// Spec §3 from the sender's side, over an already-open connection (direct or callback),
 /// in plaintext (`secure` = None, writes the v0 hello first) or inside the v1 session.
+/// `timing` carries the session deadline (handshake + Decision, [`SESSION_DEADLINE`]).
+#[allow(clippy::too_many_arguments)]
 fn send_over(
     stream: TcpStream,
+    timing: Timing,
     secure: Option<(Cipher, Option<PeerKey>)>,
+    to: &Peer,
     local: &Local,
     offer: &Offer,
     paths: &[PathBuf],
@@ -553,22 +684,16 @@ fn send_over(
     let total = offer.total_size();
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    let timed = TimedStream::new(&stream, &timing)?;
     let (mut reader, mut writer, peer): (Box<dyn Read>, Box<dyn Write>, Option<PeerKey>) =
         match secure {
             None => {
                 let mut w = BufWriter::with_capacity(CHUNK, stream.try_clone()?);
                 protocol::write_hello(&mut w)?;
-                (
-                    Box::new(BufReader::new(stream.try_clone()?)),
-                    Box::new(w),
-                    None,
-                )
+                (Box::new(BufReader::new(timed)), Box::new(w), None)
             }
             Some((cipher, peer)) => (
-                Box::new(NoiseReader::new(
-                    BufReader::new(stream.try_clone()?),
-                    cipher.clone(),
-                )),
+                Box::new(NoiseReader::new(BufReader::new(timed), cipher.clone())),
                 Box::new(NoiseWriter::new(stream.try_clone()?, cipher)),
                 peer,
             ),
@@ -577,13 +702,18 @@ fn send_over(
     protocol::write_json(&mut writer, offer)?;
     writer.flush()?;
 
-    stream.set_read_timeout(Some(DECISION_TIMEOUT))?;
+    let (_, deadline) = timing.get();
+    timing.set(DECISION_TIMEOUT, deadline);
     let decision: Decision = protocol::read_json(&mut reader)?;
+    timing.set(IO_TIMEOUT, None);
     if !decision.accept {
         return Ok(SendOutcome::Declined(decision.reason));
     }
-    if let Some(peer) = &peer {
-        local.trust.pin(peer); // TOFU: remembered once a transfer was accepted
+    // TOFU: remembered once a transfer was accepted, with the address it was reached at.
+    if let Some(peer) = &peer
+        && let Err(e) = local.trust.pin_at(peer, Some(to.addr))
+    {
+        progress(Progress::Warning(Warning::TrustNotSaved(e.to_string())));
     }
 
     let mut done = 0u64;
@@ -618,7 +748,6 @@ fn send_over(
     }
     writer.flush()?;
 
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
     let result: TransferResult = protocol::read_json(&mut reader)?;
     if result.ok {
         Ok(SendOutcome::Delivered)
@@ -646,6 +775,13 @@ pub trait ReceiveHandler: Send + Sync {
     /// A device that scanned this device's QR code proved it (spec §7.7): it is now
     /// verified here too (show ✓, close the QR code).
     fn verified(&self, _from: SocketAddr, _peer: &PeerKey) {}
+    /// Something to tell the user (rate-limited by the core; spec §7.3, §7.5).
+    fn warning(&self, _from: SocketAddr, _warning: &Warning) {}
+    /// `true` if `decide` accepts without asking a person (`hoppy receive --yes`): such
+    /// transfers do not remember the sender's key (trust on first use needs a human yes).
+    fn auto_accepts(&self) -> bool {
+        false
+    }
 }
 
 /// Accepts connections forever, one thread each.
@@ -730,9 +866,21 @@ pub fn receive_one(
     let session = SessionInfo::plaintext();
     // A device whose key we hold speaks v1: plaintext from its id is a downgrade (or an
     // impersonation). Without the transition allowance, every v0 sender is refused.
-    if !local.policy.allow_plaintext || local.trust.get(&offer.sender.id).is_some() {
+    if !local.policy.allow_plaintext {
         reject(&mut writer, "encryption_required");
-        handler.blocked(from, &offer, &session, "encryption_required");
+        return None;
+    }
+    if local.trust.get(&offer.sender.id).is_some() {
+        // The specific reason stays local: an impostor learns nothing (spec §7.4).
+        reject(&mut writer, "declined");
+        report_blocked(
+            local,
+            handler,
+            from,
+            &offer,
+            &session,
+            "encryption_required",
+        );
         return None;
     }
     receive_offer(
@@ -752,23 +900,78 @@ fn reject(writer: &mut dyn Write, reason: &str) {
     let _ = writer.flush();
 }
 
-/// Responder side of spec §7.3, then the offer (or a verification, §7.7).
+/// `handler.blocked`, at most once a minute per sender id and reason.
+fn report_blocked(
+    local: &Local,
+    handler: &dyn ReceiveHandler,
+    from: SocketAddr,
+    offer: &Offer,
+    session: &SessionInfo,
+    reason: &str,
+) {
+    let key = format!("blocked:{}:{reason}", offer.sender.id);
+    if local.guard().should_warn(&key, Instant::now()) {
+        handler.blocked(from, offer, session, reason);
+    }
+}
+
+/// `handler.warning(HandshakeAborts)`, at most once a minute per source IP.
+fn report_aborts(local: &Local, handler: &dyn ReceiveHandler, from: SocketAddr, recent: usize) {
+    let key = format!("aborts:{}", from.ip().to_canonical());
+    if local.guard().should_warn(&key, Instant::now()) {
+        handler.warning(from, &Warning::HandshakeAborts { recent });
+    }
+}
+
+/// Responder side of spec §7.3, then the offer (or a verification, §7.7). Sessions that end
+/// after message 2 without a first frame count as aborted handshakes ([`Guard`]).
 fn receive_v1(
     stream: TcpStream,
-    mut raw: TcpStream,
+    raw: TcpStream,
     from: SocketAddr,
     dir: &Path,
     local: &Local,
     handler: &dyn ReceiveHandler,
 ) -> Option<Result<Vec<PathBuf>, Error>> {
+    let ip = from.ip().to_canonical();
+    let started = Instant::now();
+    let timing = Timing::new(IO_TIMEOUT, Some(started + RECEIVER_HANDSHAKE_DEADLINE));
+    let mut timed = TimedStream::new(&raw, &timing).ok()?;
+    let admitted = local.guard().admit(ip, started);
+    let msg1 = read_frame(&mut timed, MAX_HANDSHAKE_MESSAGE).ok()??;
+    if let Err(refused) = admitted {
+        // An empty frame instead of message 2: "busy, not now" (never read as a v0 close).
+        let _ = write_frame(&mut &stream, &[]);
+        report_aborts(local, handler, from, refused.recent);
+        return None;
+    }
     let mut resp = Responder::new(&local.key).ok()?;
-    let msg1 = read_frame(&mut raw, MAX_HANDSHAKE_MESSAGE).ok()??;
     resp.read_msg1(&msg1).ok()?;
     let msg2 = resp.write_msg2(&local.device).ok()?;
     write_frame(&mut &stream, &msg2).ok()?;
-    let msg3 = read_frame(&mut raw, MAX_HANDSHAKE_MESSAGE).ok()??;
-    let remote = resp.read_msg3(&msg3).ok()?;
-    let cipher = resp.finish().ok()?;
+
+    // From here on the sender knows this session's code: ending before the first frame is
+    // an aborted handshake.
+    let opened = (|| {
+        let msg3 = read_frame(&mut timed, MAX_HANDSHAKE_MESSAGE).ok()??;
+        let remote = resp.read_msg3(&msg3).ok()?;
+        let cipher = resp.finish().ok()?;
+        let mut reader: Box<dyn Read> = Box::new(NoiseReader::new(
+            BufReader::with_capacity(CHUNK, timed),
+            cipher.clone(),
+        ));
+        let first: serde_json::Value = protocol::read_json(&mut reader).ok()?;
+        Some((remote, cipher, reader, first))
+    })();
+    let Some((remote, cipher, mut reader, first)) = opened else {
+        let recent = local.guard().record_abort(ip, Instant::now());
+        if recent >= MAX_ABORTS_PER_IP {
+            report_aborts(local, handler, from, recent);
+        }
+        return None;
+    };
+    timing.set(IO_TIMEOUT, None);
+
     let peer = PeerKey::new(&remote.device, remote.fingerprint());
     let state = local.trust.state(&peer.id, &peer.fingerprint);
     let session = SessionInfo {
@@ -776,14 +979,11 @@ fn receive_v1(
         peer: Some(peer.clone()),
         trust: Some(state),
         sas: Some(remote.sas),
+        name_matches_known: state == TrustState::New
+            && local.trust.name_taken_by_other(&peer.id, &peer.name),
     };
-    let mut reader: Box<dyn Read> = Box::new(NoiseReader::new(
-        BufReader::with_capacity(CHUNK, raw),
-        cipher.clone(),
-    ));
     let mut writer: Box<dyn Write> = Box::new(NoiseWriter::new(stream, cipher));
 
-    let first: serde_json::Value = protocol::read_json(&mut reader).ok()?;
     if let Some(code) = first.get("verify") {
         let code = code.as_str().unwrap_or_default();
         let reply = answer_verify(code, &peer, state, local);
@@ -806,8 +1006,9 @@ fn receive_v1(
         return None;
     }
     if state == TrustState::KeyChanged {
-        reject(&mut writer, "key_changed");
-        handler.blocked(from, &offer, &session, "key_changed");
+        // The specific reason stays local: an impostor learns nothing (spec §7.4).
+        reject(&mut writer, "declined");
+        report_blocked(local, handler, from, &offer, &session, "key_changed");
         return None;
     }
     receive_offer(
@@ -866,8 +1067,12 @@ fn receive_offer(
         reject(writer, "declined");
         return None;
     }
-    if let Some(peer) = &session.peer {
-        local.trust.pin(peer); // TOFU: remembered once the user accepted
+    // TOFU: remembered once a person accepted (never on automatic accepts).
+    if let Some(peer) = &session.peer
+        && !handler.auto_accepts()
+        && let Err(e) = local.trust.pin(peer)
+    {
+        handler.warning(from, &Warning::TrustNotSaved(e.to_string()));
     }
     if let Err(e) = protocol::write_json(writer, &Decision::accept()).and_then(|()| {
         writer.flush()?;

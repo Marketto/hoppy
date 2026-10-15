@@ -6,6 +6,7 @@
 
 pub mod crypto;
 pub mod discovery;
+pub mod guard;
 pub mod protocol;
 pub mod sanitize;
 pub mod session;
@@ -16,7 +17,7 @@ pub use crypto::{DeviceKey, QrPayload, SAS_EMOJI, Sas, SasEmoji};
 pub use discovery::{CallbackRequest, Discovery, DiscoveryConfig, Peer, Sweep};
 pub use protocol::{DeviceInfo, Offer};
 pub use transfer::{
-    ALLOW_PLAINTEXT_DEFAULT, CryptoPolicy, Local, Progress, ReceiveHandler, SendOutcome,
+    ALLOW_PLAINTEXT_DEFAULT, CryptoPolicy, Local, Progress, ReceiveHandler, SendOutcome, Warning,
     accept_callbacks, confirm_qr, send_files, send_to_peer, send_via_callback,
 };
 pub use trust::{PeerKey, SessionInfo, Trust, TrustEntry, TrustState, TrustStore};
@@ -49,4 +50,7 @@ pub enum Error {
     /// known to encrypt answered without encryption (downgrade).
     #[error("not encrypted: {0}")]
     Unencrypted(String),
+    /// Data written by a newer Hoppy (e.g. a key file version this build does not know).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }

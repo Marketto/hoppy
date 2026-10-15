@@ -38,7 +38,8 @@ HoppyNode *hoppy_node_start(const char *config_json, hoppy_event_cb callback, vo
 /* Stops and frees the node; no callback runs after it returns. */
 void hoppy_node_stop(HoppyNode *node);
 
-/* JSON strings, free with hoppy_string_free. */
+/* JSON strings, free with hoppy_string_free. info: {"id","name","platform","udp_port",
+ * "tcp_port","fingerprint","trust_warning"}. */
 char *hoppy_node_info(const HoppyNode *node);
 char *hoppy_node_peers(const HoppyNode *node);
 

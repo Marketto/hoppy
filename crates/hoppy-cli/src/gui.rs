@@ -54,7 +54,7 @@ use hoppy_core::protocol::TRANSFER_PORT;
 use hoppy_core::transfer::serve;
 use hoppy_core::{
     Discovery, Error, Local, Offer, Peer, PeerKey, Progress, ReceiveHandler, SendOutcome,
-    SessionInfo, TrustState, accept_callbacks, send_to_peer,
+    SessionInfo, TrustState, Warning, accept_callbacks, send_to_peer,
 };
 
 use crate::firewall::{self, Verdict};
@@ -153,6 +153,10 @@ pub struct Strings {
     pub key_changed_text: &'static str,
     pub plain_refused_title: &'static str,
     pub verified_title: &'static str,
+    pub sec_name_clash: &'static str,
+    pub aborts_title: &'static str,
+    pub aborts_text: &'static str,
+    pub trust_problem: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -218,7 +222,7 @@ pub const IT: Strings = Strings {
     no_dialog_tool: "Per scegliere file e dispositivi Hoppy usa zenity: installalo con «sudo apt install zenity».",
     sec_code: "🔒 Cifrato · {state} · codice {emoji} ({digits}): controlla che sia uguale sull'altro dispositivo",
     sec_verified: "🔒 Cifrato · ✓ dispositivo verificato",
-    sec_plain: "⚠ Non cifrato: {name} usa una versione vecchia di Hoppy",
+    sec_plain: "⚠ Connessione non cifrata",
     sec_new: "nuovo dispositivo",
     sec_known: "dispositivo già visto",
     waiting_code: "In attesa che {name} accetti… codice {digits}",
@@ -227,6 +231,10 @@ pub const IT: Strings = Strings {
     key_changed_text: "Il trasferimento è stato bloccato. Se {name} è stato reinstallato, dimenticalo (hoppy trust forget) e riprova; altrimenti qualcuno potrebbe fingersi {name}.",
     plain_refused_title: "{name} ha provato a inviare senza cifratura: rifiutato",
     verified_title: "{name} è ora verificato ✓",
+    sec_name_clash: "⚠ Un dispositivo che conosci usa già questo nome: potrebbe essere qualcuno che si spaccia per lui",
+    aborts_title: "Connessioni interrotte sospette ({n})",
+    aborts_text: "Qualcuno su questa rete potrebbe provare a indovinare il codice di verifica: i tentativi vengono rallentati.",
+    trust_problem: "Elenco dei dispositivi conosciuti: {error}",
 };
 
 pub const EN: Strings = Strings {
@@ -292,7 +300,7 @@ pub const EN: Strings = Strings {
     no_dialog_tool: "Hoppy needs zenity to pick files and devices: install it with \"sudo apt install zenity\".",
     sec_code: "🔒 Encrypted · {state} · code {emoji} ({digits}): check it is the same on the other device",
     sec_verified: "🔒 Encrypted · ✓ verified device",
-    sec_plain: "⚠ Not encrypted: {name} runs an old Hoppy version",
+    sec_plain: "⚠ Unencrypted connection",
     sec_new: "new device",
     sec_known: "known device",
     waiting_code: "Waiting for {name} to accept… code {digits}",
@@ -301,6 +309,10 @@ pub const EN: Strings = Strings {
     key_changed_text: "The transfer was blocked. If {name} was reinstalled, forget it (hoppy trust forget) and try again; otherwise someone may be pretending to be {name}.",
     plain_refused_title: "{name} tried to send without encryption: refused",
     verified_title: "{name} is now verified ✓",
+    sec_name_clash: "⚠ A device you already know uses this name: someone may be pretending to be it",
+    aborts_title: "Suspicious interrupted connections ({n})",
+    aborts_text: "Someone on this network may be trying to guess the verification code: their attempts are being slowed down.",
+    trust_problem: "List of known devices: {error}",
 };
 
 pub fn strings() -> &'static Strings {
@@ -421,8 +433,8 @@ pub fn offer_body(s: &Strings, offer: &Offer, from: SocketAddr) -> String {
 // TODO(phase 2): real dialog: "Verify now" / "Later" for New/Known peers, the 4 emoji
 // with a "show as numbers" switch and "They match", a QR code when the sender is a phone,
 // and ✓ next to verified devices in the device menu.
-pub fn security_line(s: &Strings, session: &SessionInfo, sender_name: &str) -> String {
-    match (session.trust, &session.sas) {
+pub fn security_line(s: &Strings, session: &SessionInfo) -> String {
+    let line = match (session.trust, &session.sas) {
         (Some(TrustState::Verified), _) => s.sec_verified.to_owned(),
         (Some(trust), Some(sas)) => {
             let state = if trust == TrustState::New {
@@ -439,7 +451,12 @@ pub fn security_line(s: &Strings, session: &SessionInfo, sender_name: &str) -> S
                 ],
             )
         }
-        _ => fill(s.sec_plain, &[("name", sender_name)]),
+        _ => s.sec_plain.to_owned(),
+    };
+    if session.name_matches_known {
+        format!("{line}\n{}", s.sec_name_clash)
+    } else {
+        line
     }
 }
 
@@ -533,11 +550,10 @@ impl ReceiveHandler for GuiReceiver {
             diag::log(format!("receive: offer from {} declined (busy)", from.ip()));
             return false; // another offer is waiting for an answer
         };
-        let name = display_name(&offer.sender.name);
         let body = format!(
             "{}\n\n{}",
             offer_body(self.s, offer, from),
-            security_line(self.s, session, &name)
+            security_line(self.s, session)
         );
         let accepted = ui::message_box_yes_no(self.s.incoming_title, &body);
         diag::log(format!(
@@ -599,6 +615,35 @@ impl ReceiveHandler for GuiReceiver {
                 fill(self.s.plain_refused_title, &[("name", &name)]),
                 String::new(),
             )
+        };
+        lock(&self.notices).push_back(Notice {
+            title,
+            text,
+            error: true,
+            action: BalloonAction::Nothing,
+        });
+        self.waker.wake();
+    }
+
+    fn warning(&self, from: SocketAddr, warning: &Warning) {
+        let (title, text) = match warning {
+            Warning::HandshakeAborts { recent } => {
+                diag::log(format!(
+                    "receive: {recent} aborted handshakes from {}",
+                    from.ip()
+                ));
+                (
+                    fill(self.s.aborts_title, &[("n", &recent.to_string())]),
+                    self.s.aborts_text.to_owned(),
+                )
+            }
+            Warning::TrustNotSaved(e) => (
+                fill(
+                    self.s.trust_problem,
+                    &[("error", &display_text(e, SHOW_TEXT_MAX))],
+                ),
+                String::new(),
+            ),
         };
         lock(&self.notices).push_back(Notice {
             title,
@@ -925,6 +970,9 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     // Before the icon exists, so nothing is waiting on the UI thread yet.
     let identity = config::load_or_create()?;
     let local = config::local(&identity)?;
+    if let Some(w) = local.trust.take_warning() {
+        diag::log(format!("trust: {w}"));
+    }
     let me = local.device.clone();
     let dir = default_receive_dir()?;
     let listener = bind_receiver(TRANSFER_PORT)?;
@@ -1740,6 +1788,7 @@ fn spawn_send(
                 lock(&state).session = Some(session);
                 waker.wake();
             }
+            Progress::Warning(w) => diag::log(format!("send: warning {w:?}")),
             // Direct connect failed (firewalled receiver?): asking it to connect back.
             Progress::Fallback => {
                 diag::log("send: direct connection failed, trying a callback");
@@ -1822,6 +1871,8 @@ mod tests {
                 s.key_changed_text,
                 s.plain_refused_title,
                 s.verified_title,
+                s.aborts_title,
+                s.trust_problem,
             ]
         };
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
@@ -1918,24 +1969,24 @@ mod tests {
     #[test]
     fn security_lines() {
         let plain = SessionInfo::plaintext();
-        assert_eq!(
-            security_line(&EN, &plain, "Old phone"),
-            "⚠ Not encrypted: Old phone runs an old Hoppy version"
-        );
+        assert_eq!(security_line(&EN, &plain), "⚠ Unencrypted connection");
         let sas = hoppy_core::Sas::from_value(0);
         let mut session = SessionInfo {
             encrypted: true,
             peer: None,
             trust: Some(TrustState::New),
             sas: Some(sas),
+            name_matches_known: false,
         };
         assert_eq!(
-            security_line(&IT, &session, "x"),
+            security_line(&IT, &session),
             "🔒 Cifrato · nuovo dispositivo · codice 🐘🐘🐘🐘 (0000 0000): controlla che sia \
              uguale sull'altro dispositivo"
         );
         session.trust = Some(TrustState::Verified);
-        assert_eq!(security_line(&EN, &session, "x"), EN.sec_verified);
+        assert_eq!(security_line(&EN, &session), EN.sec_verified);
+        session.name_matches_known = true;
+        assert!(security_line(&EN, &session).ends_with(EN.sec_name_clash));
     }
 
     fn quiet_discovery(name: &str, transfer_port: u16, seed: Option<u16>) -> Discovery {

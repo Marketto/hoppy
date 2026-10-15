@@ -76,3 +76,28 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
   UI must make "Dimentica dispositivo" obvious in the warning.
 - ADR 0003's "no public release before v1 encryption" is met for v1 ↔ v1 only; remote/relay
   transports still wait until plaintext is switched off.
+
+## Hardening after security review (2026-10-15)
+- **Online code guessing.** The commit/reveal stops offline grinding, but the party sending
+  message 3 learns the code first: a man in the middle posing as the sender can abort and
+  retry against the receiver until its code matches the one fixed with the real sender. A
+  responder-side commitment does not help (the last revealer always learns first, and the
+  receiver only shows the code with an offer). Fix: receivers count sessions that end after
+  message 2 without a first frame — at most 5 per IP and 20 in total per minute, per-IP
+  backoff 60 s doubling to 1 h, refusal = empty frame `00 00` ("busy", never taken for a v0
+  node), user warning; senders keep one 130 s deadline for handshake + Decision and empty
+  transport messages are forbidden (they could stall a reader forever). Bound: ≤ 61 attempts
+  per intercepted send → P ≤ 61/2²⁴ ≈ 3.6 × 10⁻⁶, each failure visible. Trade-off: an active
+  attacker can make a receiver answer "busy" for a while.
+- Low-order X25519 keys and short handshake messages are rejected; handshake ids/names are
+  cleaned before use; `crypto` is parsed leniently.
+- Files: Windows keeps `device.json`, `identity.key` and `trust.json` in local AppData with an
+  owner-only ACL (roaming profiles would copy the key to a server and give two PCs one
+  identity); the key is created race-free and never overwritten if its version is unknown;
+  the trust store is merged under a lock file and a damaged one is set aside, not fatal; save
+  errors reach the user; the private key is wiped from memory on drop.
+- TOFU only on a person's accept (not `--yes`); New devices reusing a known name are flagged;
+  typed addresses where a remembered device encrypted never fall back to plaintext; the
+  specific reasons `key_changed` / plaintext-from-known stay local (wire: `declined`), and the
+  matching warnings are rate-limited.
+

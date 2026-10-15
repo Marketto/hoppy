@@ -26,6 +26,10 @@
 //!   — an offer declined without asking: warn the user (spec §7.5).
 //! - `verified`: `{"peer":{"id","name","platform","fingerprint"}}` — a device scanned our QR
 //!   code (spec §7.7): show ✓, close the QR code.
+//! - `handshake_aborts`: `{"from":"<ip>","recent":n}` — repeated interrupted encrypted
+//!   handshakes: someone may be trying to guess codes (spec §7.3); warn, rate-limited.
+//! - `trust_not_saved`: `{"error"}` — the trust store could not be written.
+//! - `send_warning`: `{"transfer","kind":"trust_not_saved","error"}` (sender side).
 //! - `receive_progress`: `{"done","total"}` (throttled).
 //! - `received`: `{"ok":true,"from","files":[path…]}` or `{"ok":false,"from","error"}`.
 //! - `send_session`: `{"transfer","security":SECURITY}` — before the offer goes out: show the
@@ -37,8 +41,10 @@
 //!   = this device marked the other verified, `remote` = the other device confirmed too.
 //!
 //! SECURITY (spec §7): `{"encrypted":false}` for an old (v0) peer — show "non cifrato" —
-//! else `{"encrypted":true,"trust":"new"|"known"|"verified","peer":PEER,"sas":{"value",
-//! "emoji":[4 indices],"text","digits","it":[4 names],"en":[4 names]}}` with
+//! else `{"encrypted":true,"trust":"new"|"known"|"verified","name_matches_known":bool,
+//! "peer":PEER,"sas":{"value","emoji":[4 indices],"text","digits","it":[4 names],
+//! "en":[4 names]}}` (`name_matches_known`: a New device using the name of a known one —
+//! warn, it may be an impostor), with
 //! PEER = `{"id","name","platform","fingerprint"}` (pass it back to
 //! `hoppy_node_trust_verify` after "They match", or to `hoppy_node_qr_scan` as the live peer).
 //! Keys: `key_file` / `trust_file` in the config (the app's private container); without them
@@ -61,7 +67,7 @@ use hoppy_core::transfer::receive_one;
 use hoppy_core::{
     DeviceInfo, DeviceKey, Discovery, DiscoveryConfig, Error, Local, Offer, Peer, PeerKey,
     Progress, ReceiveHandler, SendOutcome, SessionInfo, Sweep, Trust, TrustState, TrustStore,
-    accept_callbacks, confirm_qr, send_to_peer,
+    Warning, accept_callbacks, confirm_qr, send_to_peer,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -226,9 +232,14 @@ fn trust_name(t: TrustState) -> &'static str {
     }
 }
 
+/// Ids come from the network: cleaned like names before they reach the app.
+fn show_id(raw: &str) -> String {
+    display_text(raw, ID_MAX_BYTES)
+}
+
 fn peer_key_json(p: &PeerKey) -> Value {
     json!({
-        "id": p.id,
+        "id": show_id(&p.id),
         "name": show_name(&p.name),
         "platform": show_name(&p.platform),
         "fingerprint": p.fingerprint,
@@ -241,6 +252,7 @@ fn security_json(session: &SessionInfo) -> Value {
         (Some(peer), Some(trust), Some(sas)) if session.encrypted => json!({
             "encrypted": true,
             "trust": trust_name(trust),
+            "name_matches_known": session.name_matches_known,
             "peer": peer_key_json(peer),
             "sas": {
                 "value": sas.value, "emoji": sas.emoji, "text": sas.text, "digits": sas.digits,
@@ -342,12 +354,21 @@ impl ReceiveHandler for Handler {
         self.0.events.emit(json!({
             "type": "blocked",
             "from": {
-                "id": offer.sender.id,
+                "id": show_id(&offer.sender.id),
                 "name": show_name(&offer.sender.name),
                 "platform": show_name(&offer.sender.platform),
             },
             "reason": reason,
         }));
+    }
+
+    fn warning(&self, from: SocketAddr, warning: &Warning) {
+        self.0.events.emit(match warning {
+            Warning::HandshakeAborts { recent } => json!({
+                "type": "handshake_aborts", "from": from.ip().to_string(), "recent": recent,
+            }),
+            Warning::TrustNotSaved(e) => json!({ "type": "trust_not_saved", "error": e }),
+        });
     }
 
     fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
@@ -412,6 +433,9 @@ struct Receiver {
 /// A running Hoppy node (opaque to C).
 pub struct Node {
     local: Local,
+    /// A damaged trust store set aside at start (reported in `info`, not as an event: no
+    /// callback may run inside `hoppy_node_start`).
+    trust_warning: Mutex<Option<String>>,
     shared: Arc<Shared>,
     discovery: Arc<Discovery>,
     receive_dir: Option<PathBuf>,
@@ -504,8 +528,10 @@ impl Node {
                 Arc::new(Handler(shared.clone())),
             );
         }
+        let trust_warning = Mutex::new(local.trust.take_warning());
         let node = Node {
             local,
+            trust_warning,
             shared,
             discovery,
             receive_dir: cfg.receive_dir.clone(),
@@ -562,6 +588,7 @@ impl Node {
             "udp_port": self.discovery.local_port(),
             "tcp_port": self.discovery.transfer_port(),
             "fingerprint": self.local.fingerprint(),
+            "trust_warning": self.trust_warning.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         })
     }
 
@@ -583,7 +610,7 @@ impl Node {
             .iter()
             .map(|(id, e)| {
                 json!({
-                    "id": id, "name": show_name(&e.name), "fingerprint": e.fingerprint,
+                    "id": show_id(id), "name": show_name(&e.name), "fingerprint": e.fingerprint,
                     "first_seen": e.first_seen, "verified": e.verified,
                 })
             })
@@ -694,6 +721,12 @@ impl Node {
                     return done("unreachable", Some("device not found".into()));
                 };
                 let mut progress = |p: Progress| match p {
+                    Progress::Warning(Warning::TrustNotSaved(e)) => {
+                        shared.events.emit(json!({
+                            "type": "send_warning", "transfer": id,
+                            "kind": "trust_not_saved", "error": e,
+                        }));
+                    }
                     Progress::Session(session) => {
                         shared.events.emit(json!({
                             "type": "send_session", "transfer": id,

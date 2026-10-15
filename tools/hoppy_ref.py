@@ -17,6 +17,9 @@ Usage:
                                            --show-qr prints a QR payload (spec §7.7)
   hoppy_ref.py send HOST[:PORT] FILE...    send files; falls back to a callback if the
                                            TCP connect fails (--no-direct: callback only)
+  hoppy_ref.py abort-handshakes HOST:PORT N   play a code-guessing attacker (spec §7.3): N v1
+                                           handshakes abandoned after message 2; prints how
+                                           many were answered and how many refused ("busy")
   hoppy_ref.py vectors [--v1]              print the byte-level example of spec §5, or
                                            the deterministic v1 vectors as JSON
 Common options: --v0 behaves exactly like a v0 (old) node: no encryption, no `crypto`
@@ -217,6 +220,16 @@ MAX_NOISE_MESSAGE = 65535
 MAX_PLAINTEXT = MAX_NOISE_MESSAGE - 16
 MAX_HANDSHAKE_MESSAGE = 2048
 PROLOGUE = MAGIC + bytes([VERSION_V1])
+SESSION_DEADLINE = 130.0  # sender: handshake + Decision, one wall-clock deadline (§7.3)
+RECEIVER_HANDSHAKE_DEADLINE = 10.0  # receiver: messages 1, 3 and the first frame
+MAX_ABORTS_PER_IP = 5  # aborted handshakes per source IP in any 60 s (§7.3)
+MAX_ABORTS_TOTAL = 20  # ... from all sources together
+MAX_NAME_CHARS, MAX_PLATFORM_CHARS, MAX_ID_BYTES = 64, 16, 128
+
+
+def is_low_order(public: bytes) -> bool:
+    """Spec §7.3: a small-order X25519 point (any clamped scalar maps it to zero)."""
+    return len(public) != 32 or x25519(b"\x5a" * 32, public) == b"\x00" * 32
 
 
 def _noise_nonce(n: int) -> bytes:
@@ -289,6 +302,8 @@ class NoiseXX:
         return self.e_pub + self.enc_hash(payload)
 
     def read_msg1(self, msg: bytes) -> bytes:
+        if len(msg) < 32 or is_low_order(msg[:32]):
+            raise ValueError("bad handshake message 1")
         self.re = msg[:32]
         self.mix_hash(self.re)
         return self.dec_hash(msg[32:])
@@ -302,10 +317,14 @@ class NoiseXX:
         return self.e_pub + enc_s + self.enc_hash(payload)
 
     def read_msg2(self, msg: bytes) -> bytes:
+        if len(msg) < 32 + 48 + 16 or is_low_order(msg[:32]):
+            raise ValueError("bad handshake message 2")
         self.re = msg[:32]
         self.mix_hash(self.re)
         self.mix_key(x25519(self.e, self.re))
         self.rs = self.dec_hash(msg[32:80])
+        if is_low_order(self.rs):
+            raise ValueError("low-order static key")
         self.mix_key(x25519(self.e, self.rs))
         return self.dec_hash(msg[80:])
 
@@ -316,7 +335,11 @@ class NoiseXX:
         return enc_s + self.enc_hash(payload)
 
     def read_msg3(self, msg: bytes) -> bytes:
+        if len(msg) < 48 + 16:
+            raise ValueError("bad handshake message 3")
         self.rs = self.dec_hash(msg[:48])
+        if is_low_order(self.rs):
+            raise ValueError("low-order static key")
         self.mix_key(x25519(self.e, self.rs))
         return self.dec_hash(msg[48:])
 
@@ -403,6 +426,77 @@ def parse_qr(text: str) -> dict | None:
     return {"id": device_id, "fingerprint": fp, "code": code} if ok else None
 
 
+def write_private(path: Path, data: bytes, exclusive: bool = False) -> None:
+    """Atomic write: a unique temp file created 0600 before any byte is written, then rename
+    (or, with `exclusive`, a link that fails if `path` appeared meanwhile: then keep that)."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if exclusive:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+        else:
+            os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def hidden_char(c: str) -> bool:
+    """Characters stripped from network text before showing it (Rust `display_text`)."""
+    cat = unicodedata.category(c)
+    return cat in ("Cc", "Zl", "Zp") or (cat == "Cf" and c not in "\u200c\u200d")
+
+
+def display_text(raw: str, limit: int) -> str:
+    clean = "".join(c for c in raw if not hidden_char(c)).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "…"
+
+
+class HandshakeGuard:
+    """Spec §7.3: v1 sessions that end after message 2 without a first frame are aborted
+    handshakes; at most 5 per source IP and 20 in total per rolling minute, with a per-IP
+    backoff (60 s, doubling, ≤ 1 h). Same rules as Rust `guard.rs`."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.aborts: dict[str, list[float]] = {}
+        self.total: list[float] = []
+        self.strikes: dict[str, int] = {}
+        self.blocked_until: dict[str, float] = {}
+
+    def _prune(self, now: float) -> None:
+        self.total = [t for t in self.total if now - t < 60]
+        self.aborts = {ip: kept for ip, ts in self.aborts.items() if (kept := [t for t in ts if now - t < 60])}
+
+    def admit(self, ip: str, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            self._prune(now)
+            return (len(self.total) < MAX_ABORTS_TOTAL and self.blocked_until.get(ip, 0) <= now
+                    and len(self.aborts.get(ip, [])) < MAX_ABORTS_PER_IP)
+
+    def record_abort(self, ip: str, now: float | None = None) -> int:
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            self._prune(now)
+            self.total.append(now)
+            ts = self.aborts.setdefault(ip, [])
+            ts.append(now)
+            if len(ts) >= MAX_ABORTS_PER_IP:
+                self.strikes[ip] = self.strikes.get(ip, 0) + 1
+                self.blocked_until[ip] = now + min(60 * 2 ** min(self.strikes[ip] - 1, 6), 3600)
+            return len(ts)
+
+
 class Identity:
     """Device key (static X25519) + trust store + live QR codes; optionally persisted."""
 
@@ -412,23 +506,33 @@ class Identity:
         self.lock = threading.Lock()
         self.private = None
         if key_file and key_file.exists():
-            self.private = bytes.fromhex(json.loads(key_file.read_text())["x25519_private"])
+            data = json.loads(key_file.read_text())
+            if data.get("version") != 1:
+                raise ValueError(f"key file version {data.get('version')}: not overwriting it")
+            self.private = bytes.fromhex(data["x25519_private"])
         if self.private is None:
             self.private = os.urandom(32)
             if key_file:
-                key_file.write_text(json.dumps({"version": 1, "x25519_private": self.private.hex()}))
-                os.chmod(key_file, 0o600)
+                write_private(key_file, json.dumps({"version": 1, "x25519_private": self.private.hex()}).encode(),
+                              exclusive=True)
+                self.private = bytes.fromhex(json.loads(key_file.read_text())["x25519_private"])
         self.public = x25519_public(self.private)
         self.fingerprint = fingerprint(self.public)
         self.trust_file = trust_file
         self.peers: dict = {}
         if trust_file and trust_file.exists():
-            self.peers = json.loads(trust_file.read_text()).get("peers", {})
+            try:
+                self.peers = json.loads(trust_file.read_text()).get("peers", {})
+            except (ValueError, AttributeError):
+                trust_file.rename(trust_file.with_suffix(".json.bad"))  # damaged: set aside
+                print(f"warning: {trust_file} was damaged; set aside", file=sys.stderr)
         self.qr_codes: dict[str, float] = {}
+        self.guard = HandshakeGuard()
 
     def _save(self) -> None:
         if self.trust_file:
-            self.trust_file.write_text(json.dumps({"version": 1, "peers": self.peers}, indent=2, ensure_ascii=False))
+            write_private(self.trust_file, json.dumps({"version": 1, "peers": self.peers}, indent=2,
+                                                       ensure_ascii=False).encode())
 
     def state(self, peer_id: str, fp: str) -> str:
         with self.lock:
@@ -439,17 +543,30 @@ class Identity:
             return "key_changed"
         return "verified" if e["verified"] else "known"
 
-    def pin(self, peer: dict, verified: bool = False) -> None:
+    def pin(self, peer: dict, verified: bool = False, addr: str | None = None) -> None:
         with self.lock:
             e = self.peers.get(peer["id"])
             if e is None:
-                self.peers[peer["id"]] = {"fingerprint": peer["fingerprint"], "name": peer["name"],
-                                          "first_seen": int(time.time()), "verified": verified}
+                e = self.peers[peer["id"]] = {"fingerprint": peer["fingerprint"], "name": peer["name"],
+                                              "first_seen": int(time.time()), "verified": verified}
             elif e["fingerprint"] == peer["fingerprint"]:
                 e["name"], e["verified"] = peer["name"], e["verified"] or verified
             else:
                 return
+            if addr:
+                e["addr"] = addr
             self._save()
+
+    def encrypted_at(self, addr: str) -> bool:
+        """A remembered device completed an encrypted transfer at this `ip:port` (§7.1)."""
+        with self.lock:
+            return any(e.get("addr") == addr for e in self.peers.values())
+
+    def name_taken_by_other(self, peer_id: str, name: str) -> bool:
+        n = name.strip().lower()
+        with self.lock:
+            return bool(n) and any(i != peer_id and str(e.get("name", "")).strip().lower() == n
+                                   for i, e in self.peers.items())
 
     def begin_qr(self) -> str:
         code = os.urandom(16).hex()
@@ -475,24 +592,36 @@ def identity_payload(device: dict, nonce: bytes) -> bytes:
 
 def parse_identity(payload: bytes) -> tuple[dict, bytes]:
     p = json.loads(payload)
-    if not isinstance(p, dict) or not isinstance(p.get("id"), str) or not p["id"] or len(p["id"].encode()) > 128:
+    if not isinstance(p, dict):
         raise ValueError("bad handshake payload")
+    ident, name, platform = p.get("id"), p.get("name"), p.get("platform")
+    if (not isinstance(ident, str) or not ident or len(ident.encode()) > MAX_ID_BYTES
+            or display_text(ident, MAX_ID_BYTES) != ident):
+        raise ValueError("bad device id in handshake")
+    if not isinstance(name, str) or not isinstance(platform, str):
+        raise ValueError("bad device name in handshake")
     n = p.get("nonce")
     if not isinstance(n, str) or len(n) != 64 or any(c not in "0123456789abcdef" for c in n):
         raise ValueError("bad handshake nonce")
     nonce = bytes.fromhex(n)
-    return {"id": p["id"], "name": str(p.get("name", "")), "platform": str(p.get("platform", ""))}, nonce
+    return {"id": ident, "name": display_text(name, MAX_NAME_CHARS),
+            "platform": display_text(platform, MAX_PLATFORM_CHARS)}, nonce
 
 
-def read_frame(sock, max_len: int) -> bytes | None:
+def read_frame(sock, max_len: int, deadline: float | None = None) -> bytes | None:
     """`u16 length` + bytes; None on a clean EOF before the length."""
+    if deadline is not None:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("no answer in time")
+        sock.settimeout(left)
     first = sock.recv(1)
     if not first:
         return None
-    (n,) = struct.unpack(">H", first + read_exact(sock, 1))
+    (n,) = struct.unpack(">H", first + read_exact(sock, 1, deadline))
     if n > max_len:
         raise ValueError(f"Noise message of {n} bytes exceeds {max_len}")
-    return read_exact(sock, n)
+    return read_exact(sock, n, deadline)
 
 
 def frame(msg: bytes) -> bytes:
@@ -504,16 +633,19 @@ class NoiseSocket:
 
     def __init__(self, sock: socket.socket, send: CipherState, recv: CipherState) -> None:
         self.sock, self.tx, self.rx, self.buf = sock, send, recv, b""
+        self.deadline: float | None = None  # optional wall-clock limit for reads
 
     def sendall(self, data: bytes) -> None:
         for i in range(0, len(data), MAX_PLAINTEXT):
             self.sock.sendall(frame(self.tx.encrypt(b"", data[i:i + MAX_PLAINTEXT])))
 
     def recv(self, n: int) -> bytes:
-        while not self.buf:
-            msg = read_frame(self.sock, MAX_NOISE_MESSAGE)
+        if not self.buf:
+            msg = read_frame(self.sock, MAX_NOISE_MESSAGE, self.deadline)
             if msg is None:
                 return b""
+            if len(msg) <= 16:  # spec §7.2: empty transport messages are never sent
+                raise ValueError("empty or short Noise transport message")
             self.buf = self.rx.decrypt(b"", msg)
         out, self.buf = self.buf[:n], self.buf[n:]
         return out
@@ -530,18 +662,20 @@ class PeerClosed(Exception):
 
 
 def initiate(sock: socket.socket, ident: Identity, expected_id: str | None = None,
-             expect_fp: str | None = None) -> tuple[NoiseSocket, dict]:
+             expect_fp: str | None = None, deadline: float | None = None) -> tuple[NoiseSocket, dict]:
     """Initiator side of spec §7.3. Returns the encrypted stream and the session info."""
     hs = NoiseXX(True, ident.private)
     nonce = os.urandom(32)
     commit_payload = json.dumps({"commit": commit(nonce).hex()}, separators=(",", ":")).encode()
     try:
         sock.sendall(PROLOGUE + frame(hs.write_msg1(commit_payload)))
-        msg2 = read_frame(sock, MAX_HANDSHAKE_MESSAGE)
+        msg2 = read_frame(sock, MAX_HANDSHAKE_MESSAGE, deadline)
     except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, ConnectionError) as e:
         raise PeerClosed() from e
     if msg2 is None:
         raise PeerClosed()
+    if not msg2:
+        raise ValueError("busy: the receiver is limiting connections, try again in a minute")
     peer, r_nonce = parse_identity(hs.read_msg2(msg2))
     h2 = hs.h
     peer["fingerprint"] = fingerprint(hs.rs)
@@ -554,36 +688,64 @@ def initiate(sock: socket.socket, ident: Identity, expected_id: str | None = Non
         raise ValueError(f"the security key of {peer['name']} has changed: not sending")
     sock.sendall(frame(hs.write_msg3(identity_payload(ident.device, nonce))))
     tx, rx = hs.split()
-    info = {"encrypted": True, "peer": peer, "trust": state, "sas": sas_render(sas_value(h2, nonce, r_nonce))}
-    return NoiseSocket(sock, tx, rx), info
+    info = {"encrypted": True, "peer": peer, "trust": state, "sas": sas_render(sas_value(h2, nonce, r_nonce)),
+            "name_matches_known": state == "new" and ident.name_taken_by_other(peer["id"], peer["name"])}
+    stream = NoiseSocket(sock, tx, rx)
+    stream.deadline = deadline
+    return stream, info
 
 
-def respond(sock: socket.socket, ident: Identity) -> tuple[NoiseSocket, dict]:
-    """Responder side of spec §7.3, after the `HOPY 0x01` hello was read."""
+class Refused(Exception):
+    """The aborted-handshake limit refused this connection (spec §7.3)."""
+
+
+def respond(sock: socket.socket, ident: Identity) -> tuple[NoiseSocket, dict, dict]:
+    """Responder side of spec §7.3, after the `HOPY 0x01` hello was read, up to and including
+    the first encrypted frame (returned too). Sessions that end after message 2 without a
+    first frame are recorded as aborted handshakes."""
+    ip = sock.getpeername()[0]
+    deadline = time.monotonic() + RECEIVER_HANDSHAKE_DEADLINE
+    admitted = ident.guard.admit(ip)
     hs = NoiseXX(False, ident.private)
     nonce = os.urandom(32)
-    msg1 = read_frame(sock, MAX_HANDSHAKE_MESSAGE)
+    msg1 = read_frame(sock, MAX_HANDSHAKE_MESSAGE, deadline)
     if msg1 is None:
         raise ConnectionError("closed during the handshake")
-    their_commit = bytes.fromhex(json.loads(hs.read_msg1(msg1))["commit"])
+    if not admitted:
+        sock.sendall(frame(b""))  # "busy, not now"
+        raise Refused(f"too many interrupted handshakes from {ip}: someone may be guessing codes")
+    c = json.loads(hs.read_msg1(msg1)).get("commit")
+    if not isinstance(c, str) or len(c) != 64:
+        raise ValueError("bad commitment")
+    their_commit = bytes.fromhex(c)
     sock.sendall(frame(hs.write_msg2(identity_payload(ident.device, nonce))))
     h2 = hs.h
-    msg3 = read_frame(sock, MAX_HANDSHAKE_MESSAGE)
-    if msg3 is None:
-        raise ConnectionError("closed during the handshake")
-    peer, i_nonce = parse_identity(hs.read_msg3(msg3))
-    if not hmac.compare_digest(commit(i_nonce), their_commit):
-        raise ValueError("SAS commitment mismatch")
+    try:
+        msg3 = read_frame(sock, MAX_HANDSHAKE_MESSAGE, deadline)
+        if msg3 is None:
+            raise ConnectionError("closed during the handshake")
+        peer, i_nonce = parse_identity(hs.read_msg3(msg3))
+        if not hmac.compare_digest(commit(i_nonce), their_commit):
+            raise ValueError("SAS commitment mismatch")
+        tx, rx = hs.split()
+        stream = NoiseSocket(sock, tx, rx)
+        stream.deadline = deadline
+        first = read_json(stream)
+        stream.deadline = None
+    except (OSError, ValueError, KeyError):
+        if ident.guard.record_abort(ip) >= MAX_ABORTS_PER_IP:
+            print(f"warning: repeated interrupted handshakes from {ip}", file=sys.stderr)
+        raise
     peer["fingerprint"] = fingerprint(hs.rs)
-    tx, rx = hs.split()
-    info = {"encrypted": True, "peer": peer, "trust": ident.state(peer["id"], peer["fingerprint"]),
-            "sas": sas_render(sas_value(h2, i_nonce, nonce))}
-    return NoiseSocket(sock, tx, rx), info
+    state = ident.state(peer["id"], peer["fingerprint"])
+    info = {"encrypted": True, "peer": peer, "trust": state, "sas": sas_render(sas_value(h2, i_nonce, nonce)),
+            "name_matches_known": state == "new" and ident.name_taken_by_other(peer["id"], peer["name"])}
+    return stream, info, first
 
 
 def describe(info: dict) -> str:
     if not info.get("encrypted"):
-        return "NOT encrypted (v0 peer)"
+        return "NOT encrypted connection"
     sas = info["sas"]
     return f"encrypted · {info['trust']} · {sas['text']} ({sas['digits']}) · {info['peer']['fingerprint'][:8]}…"
 
@@ -654,37 +816,50 @@ def send_to(host: str, port: int, paths: list[Path], ident: Identity, peer_udp: 
 
 def send_session(s: socket.socket, paths: list[Path], ident: Identity, advertised: int | None,
                  peer_id: str | None, reconnect) -> dict:
-    """Spec §7.1: v1 when the peer advertised it, is pinned, or is unknown (then v0 if it
-    closes right after our hello and `reconnect` is possible); v0 for a known v0 peer."""
+    """Spec §7.1: v1 when the peer advertised it, is pinned (by id or by an address where a
+    remembered device encrypted), or is unknown (then v0 if it closes right after our hello
+    and `reconnect` is possible); v0 for a known v0 peer."""
     with s:
+        deadline = time.monotonic() + SESSION_DEADLINE
         if ident.v0:
-            return send_over(s, paths, ident.device, hello=True)
-        pinned = bool(peer_id) and peer_id in ident.peers
+            return send_over(s, paths, ident.device, hello=True, deadline=deadline)
+        host, port = s.getpeername()[:2]
+        addr = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"  # same form as Rust
+        pinned = (bool(peer_id) and peer_id in ident.peers) or ident.encrypted_at(addr)
         if advertised == 0 and not pinned and not ident.require_encryption:
-            print("sending NOT encrypted (v0 peer)", file=sys.stderr)
-            return {**send_over(s, paths, ident.device, hello=True), "encrypted": False}
+            print("sending: NOT encrypted connection", file=sys.stderr)
+            return {**send_over(s, paths, ident.device, hello=True, deadline=deadline), "encrypted": False}
         try:
-            stream, info = initiate(s, ident, peer_id)
+            stream, info = initiate(s, ident, peer_id, deadline=deadline)
         except PeerClosed:
-            if advertised is None and reconnect and not ident.require_encryption:
-                print("sending NOT encrypted (v0 peer)", file=sys.stderr)
+            if advertised is None and reconnect and not pinned and not ident.require_encryption:
+                print("sending: NOT encrypted connection", file=sys.stderr)
                 with reconnect() as s2:
                     s2.settimeout(10)
-                    return {**send_over(s2, paths, ident.device, hello=True), "encrypted": False}
-            raise ConnectionError("the receiver cannot encrypt (old Hoppy version?)")
+                    return {**send_over(s2, paths, ident.device, hello=True, deadline=time.monotonic() + SESSION_DEADLINE),
+                            "encrypted": False}
+            raise ConnectionError("the receiver did not answer the encrypted handshake"
+                                  + (" although it encrypted before" if pinned else ""))
         print(describe(info), file=sys.stderr)
-        result = send_over(stream, paths, ident.device, hello=False, on_accept=lambda: ident.pin(info["peer"]))
+        result = send_over(stream, paths, ident.device, hello=False, deadline=deadline,
+                           on_accept=lambda: ident.pin(info["peer"], addr=addr))
         return {**result, "encrypted": True, "sas": info["sas"]["digits"], "trust": info["trust"]}
 
 
-def send_over(s, paths: list[Path], sender: dict, hello: bool, on_accept=None) -> dict:
-    """Spec §3 after the hello, over a socket (v0) or a NoiseSocket (v1)."""
+def send_over(s, paths: list[Path], sender: dict, hello: bool, on_accept=None, deadline: float | None = None) -> dict:
+    """Spec §3 after the hello, over a socket (v0) or a NoiseSocket (v1). `deadline` bounds
+    the wait for the Decision (handshake + Decision, §7.3)."""
     files = [{"name": p.name, "size": p.stat().st_size} for p in paths]
     if hello:
         s.sendall(MAGIC + bytes([VERSION]))
     write_json(s, {"sender": sender, "files": files})
     s.settimeout(120)
-    decision = read_json(s)
+    if isinstance(s, NoiseSocket):
+        s.deadline = deadline
+        decision = read_json(s)
+        s.deadline = None
+    else:
+        decision = read_json(s, deadline=deadline)
     if not decision.get("accept"):
         return {"declined": decision.get("reason")}
     if on_accept:
@@ -700,6 +875,22 @@ def send_over(s, paths: list[Path], sender: dict, hello: bool, on_accept=None) -
     return read_json(s)
 
 
+def abort_handshakes(host: str, port: int, count: int) -> dict:
+    """Spec §7.3 test helper: handshakes abandoned right after message 2."""
+    served = refused = 0
+    for _ in range(count):
+        with socket.create_connection((host, port), timeout=10) as s:
+            hs = NoiseXX(True, os.urandom(32))
+            s.sendall(PROLOGUE + frame(hs.write_msg1(json.dumps({"commit": "00" * 32}).encode())))
+            msg2 = read_frame(s, MAX_HANDSHAKE_MESSAGE)
+            if msg2:
+                served += 1
+            elif msg2 == b"":
+                refused += 1
+        time.sleep(0.05)
+    return {"served": served, "refused": refused}
+
+
 def verify(host: str, port: int, payload: str, ident: Identity) -> dict:
     """Scanner side of spec §7.7: open a v1 session that must present the scanned key, then
     send the one-time code."""
@@ -708,11 +899,10 @@ def verify(host: str, port: int, payload: str, ident: Identity) -> dict:
         return {"ok": False, "error": "not a Hoppy verification code"}
     with socket.create_connection((host, port), timeout=10) as s:
         stream, info = initiate(s, ident, qr["id"], expect_fp=qr["fingerprint"])
+        # The scanned key matched the session's: verified here, before telling the other side.
+        ident.pin(info["peer"], verified=True)
         write_json(stream, {"verify": qr["code"]})
-        result = read_json(stream)
-        if result.get("ok"):
-            ident.pin(info["peer"], verified=True)
-        return result
+        return read_json(stream)
 
 
 # ---------------------------------------------------------------- callback (spec §6)
@@ -864,12 +1054,16 @@ def handle(conn: socket.socket, out: Path, ident: Identity, log=print) -> None:
         if hello[:4] != MAGIC:
             return
         if hello[4] == VERSION_V1 and not ident.v0:
-            stream, info = respond(conn, ident)
+            try:
+                stream, info, first = respond(conn, ident)
+            except Refused as e:
+                log(f"WARNING: {e}")
+                return
         elif hello[4] == VERSION:
             stream, info = conn, {"encrypted": False}
+            first = read_json(stream)
         else:
             return  # a v0 node closes on any other version (the sender then falls back)
-        first = read_json(stream)
         if "verify" in first:  # spec §7.7: only inside an encrypted session
             if not info["encrypted"]:
                 return
@@ -887,23 +1081,26 @@ def handle(conn: socket.socket, out: Path, ident: Identity, log=print) -> None:
         files = offer.get("files", [])
         sender = offer.get("sender") if isinstance(offer.get("sender"), dict) else {}
         names = [sanitize(f["name"]) for f in files]
-        if not info["encrypted"] and (ident.require_encryption or sender.get("id") in ident.peers):
+        if not info["encrypted"] and ident.require_encryption:
             write_json(stream, {"accept": False, "reason": "encryption_required"})
-            log(f"refused plaintext offer from {sender.get('name')}: encryption required")
+            return
+        if not info["encrypted"] and sender.get("id") in ident.peers:
+            write_json(stream, {"accept": False, "reason": "declined"})  # specific reason stays local
+            log(f"refused plaintext offer from {sender.get('name')}: that device encrypts")
             return
         if info["encrypted"] and sender.get("id") != info["peer"]["id"]:
             write_json(stream, {"accept": False, "reason": "invalid_offer"})
             return
         if info["encrypted"] and info["trust"] == "key_changed":
-            write_json(stream, {"accept": False, "reason": "key_changed"})
+            write_json(stream, {"accept": False, "reason": "declined"})  # specific reason stays local
             log(f"WARNING: the key of {info['peer']['name']} has changed: offer refused")
             return
         if not files or len(files) > MAX_FILES or None in names:
             write_json(stream, {"accept": False, "reason": "too_many_files" if len(files) > MAX_FILES else "invalid_offer"})
             return
         log(f"offer from {sender.get('name')}: {describe(info)}")
-        if info["encrypted"]:
-            ident.pin(info["peer"])
+        # This tool accepts automatically, so it never remembers keys on accept (TOFU needs a
+        # person's yes, spec §7.5); keys are remembered when it sends or verifies.
         write_json(stream, {"accept": True})
         out.mkdir(parents=True, exist_ok=True)
         failed = []
@@ -1183,6 +1380,85 @@ def v1_checks(want: dict) -> int:
             or len({r["en"] for r in want["sas_emoji"]}) != 64:
         bad += 1
         print("FAIL emoji table: 64 distinct emoji and names")
+    neg = want["negative"]
+    hs_v, keys = want["handshake"], want["keys"]
+
+    def fresh() -> tuple[NoiseXX, NoiseXX]:
+        i = NoiseXX(True, bytes.fromhex(keys["initiator"]["static_private"]),
+                    bytes.fromhex(keys["initiator"]["ephemeral_private"]))
+        r = NoiseXX(False, bytes.fromhex(keys["responder"]["static_private"]),
+                    bytes.fromhex(keys["responder"]["ephemeral_private"]))
+        r.read_msg1(i.write_msg1(hs_v["msg1_payload"].encode()))
+        return i, r
+
+    def rejects(label: str, fn) -> None:
+        nonlocal bad
+        try:
+            fn()
+        except ValueError:
+            return
+        bad += 1
+        print(f"FAIL accepted negative vector {label}")
+
+    def bad_commit() -> None:
+        i, r = fresh()
+        i.read_msg2(r.write_msg2(hs_v["msg2_payload"].encode()))
+        _, n = parse_identity(r.read_msg3(bytes.fromhex(neg["msg3_bad_commitment_hex"])))
+        their = bytes.fromhex(json.loads(hs_v["msg1_payload"])["commit"])
+        if not hmac.compare_digest(commit(n), their):
+            raise ValueError("SAS commitment mismatch")
+
+    def tampered3() -> None:
+        i, r = fresh()
+        i.read_msg2(r.write_msg2(hs_v["msg2_payload"].encode()))
+        r.read_msg3(bytes.fromhex(neg["msg3_tampered_hex"]))
+
+    def tampered2() -> None:
+        i, r = fresh()
+        r.write_msg2(hs_v["msg2_payload"].encode())
+        i.read_msg2(bytes.fromhex(neg["msg2_tampered_hex"]))
+
+    class Buf:
+        def __init__(self, b: bytes) -> None:
+            self.b = b
+
+        def recv(self, n: int) -> bytes:
+            out, self.b = self.b[:n], self.b[n:]
+            return out
+
+        def settimeout(self, t) -> None:
+            pass
+
+    rejects("msg1_low_order", lambda: NoiseXX(False, os.urandom(32)).read_msg1(bytes.fromhex(neg["msg1_low_order_hex"])))
+    rejects("msg2_tampered", tampered2)
+    rejects("msg3_tampered", tampered3)
+    rejects("msg3_bad_commitment", bad_commit)
+    rejects("frame_too_long", lambda: read_frame(Buf(bytes.fromhex(neg["handshake_frame_too_long_hex"]) + b"x" * 2049),
+                                                 MAX_HANDSHAKE_MESSAGE))
+    for name in ("transport_empty_hex", "transport_short_hex"):
+        ns = NoiseSocket(Buf(bytes.fromhex(neg[name])), CipherState(), CipherState(b"\x00" * 32))
+        rejects(name, lambda: ns.recv(1))
+    for pt in neg["low_order_points"]:
+        if not is_low_order(bytes.fromhex(pt)):
+            bad += 1
+            print(f"FAIL low-order point accepted {pt}")
+    if is_low_order(bytes.fromhex(keys["initiator"]["static_public"])):
+        bad += 1
+        print("FAIL a valid key was called low-order")
+    g = HandshakeGuard()
+    checks = [g.admit("a", 0)] + [g.record_abort("a", 0) > 0 for _ in range(MAX_ABORTS_PER_IP)]
+    checks += [not g.admit("a", 1), g.admit("b", 1), not g.admit("a", 59), g.admit("a", 61)]
+    for k in range(MAX_ABORTS_TOTAL):
+        g.record_abort(f"10.0.0.{k}", 100)
+    checks += [not g.admit("c", 100), g.admit("c", 161)]
+    if not all(checks):
+        bad += 1
+        print(f"FAIL handshake guard: {checks}")
+    if display_text("a\u202eb\u200d\x07 ", 10) != "ab\u200d":
+        bad += 1
+        print("FAIL display_text")
+    rejects("id with bidi", lambda: parse_identity(b'{"id":"x\\u202e","name":"n","platform":"p","nonce":"' + b"00" * 32 + b'"}'))
+    rejects("non-string name", lambda: parse_identity(b'{"id":"x","name":1,"platform":"p","nonce":"' + b"00" * 32 + b'"}'))
     qr = want["qr_example"]
     if parse_qr(qr["payload"]) != {"id": qr["id"], "fingerprint": qr["fingerprint"], "code": qr["code"]} \
             or any(parse_qr(x) is not None for x in qr["invalid"]):
@@ -1252,6 +1528,33 @@ def v1_vectors() -> dict:
         transport.append({"from": frm, "nonce": 0, "plaintext_hex": plain.hex(),
                           "message_hex": frame(cs.encrypt(b"", plain)).hex()})
     sas = sas_render(sas_value(h2, n_i, n_r))
+    # Negative cases: a responder/initiator in the state of the positive run must reject these.
+    other = NoiseXX(True, bytes.fromhex(ki["static_private"]), bytes.fromhex(ki["ephemeral_private"]))
+    other_r = NoiseXX(False, bytes.fromhex(kr["static_private"]), bytes.fromhex(kr["ephemeral_private"]))
+    other_r.read_msg1(other.write_msg1(p1))
+    other.read_msg2(other_r.write_msg2(p2))
+    bad_commit_msg3 = other.write_msg3(identity_payload(dev_i, _vec_secret("initiator other nonce")))
+    flip = lambda m, i: m[:i] + bytes([m[i] ^ 1]) + m[i + 1:]  # noqa: E731
+    p25519 = P25519.to_bytes(32, "little")
+    negative = {
+        "_comment": "Each must be rejected. msg2/msg3 cases: by the side that reads them, in the state of the "
+                    "positive handshake above (same keys and payloads). frame cases: by any reader.",
+        "msg1_low_order_hex": ("00" * 32) + p1.hex(),
+        "msg2_tampered_hex": flip(m2, len(m2) - 1).hex(),
+        "msg3_tampered_hex": flip(m3, 40).hex(),
+        "msg3_bad_commitment_hex": bad_commit_msg3.hex(),
+        "handshake_frame_too_long_hex": struct.pack(">H", MAX_HANDSHAKE_MESSAGE + 1).hex(),
+        "transport_empty_hex": frame(CipherState(_hkdf2(i.ck, b"")[0]).encrypt(b"", b"")).hex(),
+        "transport_short_hex": "000501020304 05".replace(" ", ""),
+        "low_order_points": [
+            "00" * 32, "01" + "00" * 31,
+            "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+            "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+            (int.from_bytes(p25519, "little") - 1).to_bytes(32, "little").hex(), p25519.hex(),
+            (int.from_bytes(p25519, "little") + 1).to_bytes(32, "little").hex(),
+        ],
+        "busy_reply_hex": "0000",
+    }
     code = "00112233445566778899aabbccddeeff"
     qr = qr_payload(dev_r["id"], kr["fingerprint"], code)
     hello_json = json.dumps({"id": dev_r["id"], "token": code, "crypto": 1}, separators=(",", ":"))
@@ -1286,6 +1589,7 @@ def v1_vectors() -> dict:
             "callback_hello_hex": (CALLBACK_MAGIC + b"\x00" + struct.pack(">I", len(hello_json))
                                    + hello_json.encode()).hex(),
         },
+        "negative": negative,
         "sas_emoji": [{"index": n, "emoji": e, "codepoints": f"U+{ord(e):04X}", "it": it, "en": en}
                       for n, (e, it, en) in enumerate(SAS_EMOJI)],
     }
@@ -1398,6 +1702,9 @@ def main() -> int:
     s.add_argument("--peer-udp", help="receiver discovery address HOST:PORT (default HOST:47470)")
     s.add_argument("--udp-port", type=int, default=0,
                    help="local discovery port for the callback; 47470 also catches the receiver's multicast announces")
+    ab = sub.add_parser("abort-handshakes", help="play a code-guessing attacker (spec §7.3)")
+    ab.add_argument("target")
+    ab.add_argument("count", type=int)
     v = sub.add_parser("verify", parents=[common], help="scan side of the QR verification (spec §7.7)")
     v.add_argument("target", help="HOST:PORT of the device that shows the code")
     v.add_argument("payload")
@@ -1412,6 +1719,10 @@ def main() -> int:
         for m in peers(a.wait, a.seed).values():
             crypto = "v1" if isinstance(m.get("crypto"), int) and m["crypto"] >= 1 else "v0"
             print(f"{m['name']:<24} {m['platform']:<8} {crypto} {m['ip']}:{m['port']}  {m['id']}")
+        return 0
+    if a.cmd == "abort-handshakes":
+        h, _, prt = a.target.rpartition(":")
+        print(json.dumps(abort_handshakes(h, int(prt), a.count)))
         return 0
     V0_MODE = a.v0
     ident = Identity(me(a.name), a.key, a.trust, v0=a.v0, require_encryption=a.require_encryption)

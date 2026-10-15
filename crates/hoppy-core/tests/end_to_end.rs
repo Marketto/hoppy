@@ -18,8 +18,8 @@ use hoppy_core::session::{
 use hoppy_core::transfer::{receive_one, serve};
 use hoppy_core::{
     DeviceInfo, DeviceKey, Discovery, DiscoveryConfig, Error, Local, Offer, Peer, PeerKey,
-    Progress, ReceiveHandler, SendOutcome, SessionInfo, Sweep, TrustState, accept_callbacks,
-    confirm_qr, send_files, send_to_peer,
+    Progress, ReceiveHandler, SendOutcome, SessionInfo, Sweep, TrustState, Warning,
+    accept_callbacks, confirm_qr, send_files, send_to_peer,
 };
 
 fn device(id: &str, name: &str) -> DeviceInfo {
@@ -36,21 +36,26 @@ fn local(id: &str, name: &str) -> Local {
 
 struct Recorder {
     accept: bool,
+    /// Pretend to be `hoppy receive --yes` (accepts without a person).
+    auto: bool,
     finished: Mutex<Vec<Result<Vec<PathBuf>, String>>>,
     /// The session of every offer that reached `decide`.
     sessions: Mutex<Vec<SessionInfo>>,
     blocked: Mutex<Vec<String>>,
     verified: Mutex<Vec<PeerKey>>,
+    warnings: Mutex<Vec<Warning>>,
 }
 
 impl Recorder {
     fn new(accept: bool) -> Self {
         Self {
             accept,
+            auto: false,
             finished: Mutex::new(Vec::new()),
             sessions: Mutex::new(Vec::new()),
             blocked: Mutex::new(Vec::new()),
             verified: Mutex::new(Vec::new()),
+            warnings: Mutex::new(Vec::new()),
         }
     }
 }
@@ -69,6 +74,12 @@ impl ReceiveHandler for Recorder {
     }
     fn verified(&self, _from: SocketAddr, peer: &PeerKey) {
         self.verified.lock().unwrap().push(peer.clone());
+    }
+    fn warning(&self, _from: SocketAddr, warning: &Warning) {
+        self.warnings.lock().unwrap().push(warning.clone());
+    }
+    fn auto_accepts(&self) -> bool {
+        self.auto
     }
 }
 
@@ -923,10 +934,12 @@ fn key_changed_blocks_the_sender() {
     let me = local("tx", "Sender");
     let (_src, path) = small_file("a.txt", b"x");
     // We remember another key for "rx" (e.g. the real device; now an impostor answers).
-    me.trust.pin(&PeerKey::new(
-        &r_local.device,
-        DeviceKey::generate().fingerprint(),
-    ));
+    me.trust
+        .pin(&PeerKey::new(
+            &r_local.device,
+            DeviceKey::generate().fingerprint(),
+        ))
+        .unwrap();
     let (outcome, session) = send_and_watch(&peer_at(&r_local, addr), &me, &path);
     assert!(matches!(outcome, Err(Error::KeyChanged(_))), "{outcome:?}");
     assert!(session.is_none(), "nothing shown as a session");
@@ -939,7 +952,8 @@ fn key_changed_blocks_the_sender() {
     // Through a man in the middle too, once the real receiver is remembered.
     let me = local("tx2", "Sender 2");
     me.trust
-        .pin(&PeerKey::new(&r_local.device, r_local.fingerprint()));
+        .pin(&PeerKey::new(&r_local.device, r_local.fingerprint()))
+        .unwrap();
     let mitm = start_mitm(addr, r_local.device.clone());
     let (outcome, _) = send_and_watch(&peer_at(&r_local, mitm), &me, &path);
     assert!(matches!(outcome, Err(Error::KeyChanged(_))), "{outcome:?}");
@@ -954,16 +968,20 @@ fn key_changed_blocks_the_sender() {
 #[test]
 fn key_changed_is_declined_by_the_receiver_with_a_warning() {
     let (addr, out, rec, r_local) = start_receiver_as(true, local("rx", "Receiver"));
-    r_local.trust.pin(&PeerKey::new(
-        &device("tx", "Sender"),
-        DeviceKey::generate().fingerprint(),
-    ));
+    r_local
+        .trust
+        .pin(&PeerKey::new(
+            &device("tx", "Sender"),
+            DeviceKey::generate().fingerprint(),
+        ))
+        .unwrap();
     let me = local("tx", "Sender");
     let (_src, path) = small_file("a.txt", b"x");
     let (outcome, _) = send_and_watch(&peer_at(&r_local, addr), &me, &path);
+    // The sender only hears "declined"; the receiver's user gets the specific warning.
     assert_eq!(
         outcome.unwrap(),
-        SendOutcome::Declined(Some("key_changed".into()))
+        SendOutcome::Declined(Some("declined".into()))
     );
     thread::sleep(Duration::from_millis(100));
     assert_eq!(*rec.blocked.lock().unwrap(), ["key_changed"]);
@@ -1022,10 +1040,12 @@ fn v0_receiver_gets_plaintext_flagged() {
         addr,
         crypto: Some(0),
     };
-    me.trust.pin(&PeerKey::new(
-        &pinned.device,
-        DeviceKey::generate().fingerprint(),
-    ));
+    me.trust
+        .pin(&PeerKey::new(
+            &pinned.device,
+            DeviceKey::generate().fingerprint(),
+        ))
+        .unwrap();
     let (outcome, _) = send_and_watch(&pinned, &me, &path);
     assert!(matches!(outcome, Err(Error::Unencrypted(_))), "{outcome:?}");
 }
@@ -1036,7 +1056,8 @@ fn plaintext_from_a_known_device_is_refused() {
     let (addr, _out, rec, r_local) = start_receiver_as(true, local("rx", "Receiver"));
     r_local
         .trust
-        .pin(&PeerKey::new(&device("tx", "S"), "SOMEKEY".into()));
+        .pin(&PeerKey::new(&device("tx", "S"), "SOMEKEY".into()))
+        .unwrap();
     let mut s = TcpStream::connect(addr).unwrap();
     protocol::write_hello(&mut s).unwrap();
     let offer = Offer {
@@ -1048,7 +1069,11 @@ fn plaintext_from_a_known_device_is_refused() {
     };
     protocol::write_json(&mut s, &offer).unwrap();
     let d: Decision = protocol::read_json(&mut s).unwrap();
-    assert_eq!(d, Decision::reject("encryption_required"));
+    assert_eq!(
+        d,
+        Decision::reject("declined"),
+        "the specific reason stays local"
+    );
     thread::sleep(Duration::from_millis(100));
     assert_eq!(*rec.blocked.lock().unwrap(), ["encryption_required"]);
 }
@@ -1146,4 +1171,175 @@ fn qr_verification_marks_both_sides() {
     let err = confirm_qr(&peer_at(&desktop, fake_addr), &phone, None, &qr2);
     assert!(matches!(err, Err(Error::VerificationFailed(_))), "{err:?}");
     assert!(fake_rec.verified.lock().unwrap().is_empty());
+}
+
+// ------------------------------------------------------------------ v1 hardening
+
+/// Plays a man in the middle that grinds codes: completes handshake message 2 with the
+/// receiver and walks away. Returns `Some(msg2)` or `None` if refused ("busy" frame).
+fn abort_after_msg2(addr: SocketAddr) -> Option<Vec<u8>> {
+    let key = DeviceKey::generate();
+    let mut s = TcpStream::connect(addr).unwrap();
+    let mut init = Initiator::new(&key).unwrap();
+    protocol::write_hello_v1(&mut s).unwrap();
+    write_frame(&mut s, &init.write_msg1().unwrap()).unwrap();
+    let msg2 = read_frame(&mut s, MAX_HANDSHAKE_MESSAGE).unwrap().unwrap();
+    (!msg2.is_empty()).then_some(msg2) // and close without message 3
+}
+
+/// Spec §7.3: handshakes abandoned after message 2 are capped per source IP; the receiver
+/// warns its user and answers "busy" (never something a sender could take for a v0 node).
+#[test]
+fn aborted_handshakes_are_limited_and_reported() {
+    let (addr, _out, rec, r_local) = start_receiver_as(true, local("rx", "Receiver"));
+    for i in 0..hoppy_core::guard::MAX_ABORTS_PER_IP {
+        assert!(abort_after_msg2(addr).is_some(), "attempt {i} served");
+        thread::sleep(Duration::from_millis(30)); // let the receiver record the abort
+    }
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        abort_after_msg2(addr).is_none(),
+        "refused with a busy frame"
+    );
+    let warned = rec.warnings.lock().unwrap().clone();
+    assert!(
+        matches!(warned.first(), Some(Warning::HandshakeAborts { recent }) if *recent >= 5),
+        "{warned:?}"
+    );
+    assert_eq!(warned.len(), 1, "warnings are rate-limited");
+    // A real sender from the same address now gets a clear "busy", not a plaintext fallback.
+    let (_src, path) = small_file("a.txt", b"x");
+    let err = send_files(
+        addr,
+        &local("tx", "S"),
+        std::slice::from_ref(&path),
+        &mut |_| {},
+    );
+    assert!(
+        matches!(&err, Err(Error::Remote(m)) if m.starts_with("busy")),
+        "{err:?}"
+    );
+    let err = send_and_watch(&peer_at(&r_local, addr), &local("tx", "S"), &path).0;
+    assert!(
+        matches!(&err, Err(Error::Remote(m)) if m.starts_with("busy")),
+        "{err:?}"
+    );
+}
+
+/// A fake receiver that completes the handshake, then misbehaves while the sender waits for
+/// the Decision: `trickle` = one valid byte at a time (each would reset a per-read timeout),
+/// else an empty transport message.
+fn stalling_receiver(trickle: bool) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        let key = DeviceKey::generate();
+        let mut r = &s;
+        let mut hello = [0u8; 5];
+        r.read_exact(&mut hello).unwrap();
+        let mut resp = Responder::new(&key).unwrap();
+        resp.read_msg1(&read_frame(&mut r, MAX_HANDSHAKE_MESSAGE).unwrap().unwrap())
+            .unwrap();
+        write_frame(&mut r, &resp.write_msg2(&device("rx", "R")).unwrap()).unwrap();
+        resp.read_msg3(&read_frame(&mut r, MAX_HANDSHAKE_MESSAGE).unwrap().unwrap())
+            .unwrap();
+        let cipher = resp.finish().unwrap();
+        if trickle {
+            let mut w = NoiseWriter::new(s.try_clone().unwrap(), cipher);
+            for b in b"\0\0\0\x0f{\"accept\":true}".iter().cycle() {
+                if w.write_all(&[*b]).and_then(|()| w.flush()).is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        } else {
+            let empty = cipher.seal(0, b"").unwrap();
+            let _ = write_frame(&mut r, &empty);
+            thread::sleep(Duration::from_secs(5));
+        }
+    });
+    addr
+}
+
+#[test]
+fn sender_deadline_and_empty_messages() {
+    let (_src, path) = small_file("a.txt", b"x");
+    let me = local("tx", "S").with_session_deadline(Duration::from_secs(1));
+    let t0 = std::time::Instant::now();
+    let err = send_files(
+        stalling_receiver(true),
+        &me,
+        std::slice::from_ref(&path),
+        &mut |_| {},
+    );
+    assert!(err.is_err(), "{err:?}");
+    assert!(
+        t0.elapsed() < Duration::from_secs(4),
+        "trickled bytes cannot extend the deadline: {:?}",
+        t0.elapsed()
+    );
+    let t0 = std::time::Instant::now();
+    let err = send_files(
+        stalling_receiver(false),
+        &local("tx", "S"),
+        &[path],
+        &mut |_| {},
+    );
+    assert!(
+        matches!(&err, Err(Error::Io(e)) if e.to_string().contains("empty")),
+        "{err:?}"
+    );
+    assert!(t0.elapsed() < Duration::from_secs(3), "rejected at once");
+}
+
+/// A new id using the name of a remembered device is flagged; an automatic accept
+/// (`--yes`) does not remember the key; a typed address where a device encrypted before
+/// never falls back to plaintext.
+#[test]
+fn name_collision_auto_accept_and_address_memory() {
+    let r_local = local("rx", "Receiver");
+    r_local
+        .trust
+        .pin(&PeerKey::new(&device("old-id", "Sender"), "OLDKEY".into()))
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let rec = Arc::new(Recorder {
+        auto: true,
+        ..Recorder::new(true)
+    });
+    let handler: Arc<dyn ReceiveHandler> = rec.clone();
+    let (dir, r2) = (out.path().to_path_buf(), r_local.clone());
+    thread::spawn(move || serve(listener, dir, r2, handler));
+
+    let me = local("tx", "Sender");
+    let (_src, path) = small_file("a.txt", b"x");
+    let (outcome, _) = send_and_watch(&Peer::at(addr), &me, &path);
+    assert_eq!(outcome.unwrap(), SendOutcome::Delivered);
+    wait_finished(&rec).unwrap();
+    assert!(rec.sessions.lock().unwrap()[0].name_matches_known);
+    assert_eq!(r_local.trust.get("tx"), None, "auto-accept never pins");
+    // The sender pinned the receiver together with the address it typed.
+    let entry = me.trust.get("rx").unwrap();
+    assert_eq!(entry.addr.as_deref(), Some(addr.to_string().as_str()));
+
+    // Later an "old app" answers at that same address: refused instead of plaintext.
+    let v0 = TcpListener::bind("127.0.0.1:0").unwrap();
+    let v0_addr = v0.local_addr().unwrap();
+    thread::spawn(move || {
+        for s in v0.incoming() {
+            let mut hello = [0u8; 5];
+            let _ = s.unwrap().read_exact(&mut hello); // and close, like a v0 node
+        }
+    });
+    me.trust
+        .pin_at(
+            &PeerKey::new(&device("rx", "R"), entry.fingerprint.clone()),
+            Some(v0_addr),
+        )
+        .unwrap();
+    let err = send_files(v0_addr, &me, &[path], &mut |_| {});
+    assert!(matches!(err, Err(Error::Unencrypted(_))), "{err:?}");
 }

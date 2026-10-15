@@ -22,7 +22,7 @@ use hoppy::{
 use hoppy_core::protocol::{DISCOVERY_PORT, TRANSFER_PORT};
 use hoppy_core::{
     DeviceInfo, Discovery, Error, Local, Offer, Peer, PeerKey, Progress, QrPayload, ReceiveHandler,
-    SendOutcome, SessionInfo, TrustState, confirm_qr, send_to_peer, send_via_callback,
+    SendOutcome, SessionInfo, TrustState, Warning, confirm_qr, send_to_peer, send_via_callback,
 };
 
 #[derive(Parser)]
@@ -200,7 +200,7 @@ fn run(cli: Cli) -> Result<()> {
             no_direct,
             ..
         } => cmd_send(
-            &config::local(&identity)?,
+            &loaded_local(&identity)?,
             &seeds,
             files,
             to,
@@ -214,7 +214,7 @@ fn run(cli: Cli) -> Result<()> {
             udp_port,
             show_qr,
         } => cmd_receive(
-            &config::local(&identity)?,
+            &loaded_local(&identity)?,
             &seeds,
             dir,
             yes,
@@ -222,7 +222,7 @@ fn run(cli: Cli) -> Result<()> {
             udp_port,
             show_qr,
         ),
-        Command::Trust { action } => cmd_trust(&config::local(&identity)?, &seeds, action),
+        Command::Trust { action } => cmd_trust(&loaded_local(&identity)?, &seeds, action),
         Command::Peers { wait } => {
             let discovery = start_discovery(&me, 0, &seeds)?;
             let peers = discovery.wait_for_peers(usize::MAX, Duration::from_secs(wait));
@@ -265,6 +265,13 @@ fn run(cli: Cli) -> Result<()> {
             unreachable!("handled above")
         }
     }
+}
+
+/// `config::local` plus a printed warning if the trust store had to be set aside.
+fn loaded_local(identity: &config::Identity) -> Result<Local> {
+    let local = config::local(identity)?;
+    print_trust_warning(&local);
+    Ok(local)
 }
 
 fn cmd_log(lines: usize) -> Result<()> {
@@ -457,6 +464,7 @@ fn cmd_send(
                 target.device.name
             ),
             Progress::Session(session) => println!("  {}", security_line(session)),
+            Progress::Warning(w) => println!("  {}", warning_line(w)),
             _ => {}
         }
         bar.update(&p);
@@ -496,7 +504,7 @@ fn cmd_send(
 /// One line about a session's protection, for the sender's and the receiver's terminal.
 fn security_line(session: &SessionInfo) -> String {
     let (Some(trust), Some(sas)) = (session.trust, session.sas.as_ref()) else {
-        return "⚠ NOT encrypted: the other device runs an old Hoppy version".into();
+        return "⚠ NOT encrypted connection".into();
     };
     let state = match trust {
         TrustState::New => "new device: compare the code on both screens",
@@ -504,12 +512,37 @@ fn security_line(session: &SessionInfo) -> String {
         TrustState::Verified => "✓ verified device",
         TrustState::KeyChanged => "⚠ KEY CHANGED",
     };
-    format!(
+    let mut line = format!(
         "🔒 encrypted · {state} · code {} ({}) · {}",
         sas.text,
         sas.digits,
         sas.words(false).join(" ")
-    )
+    );
+    if session.name_matches_known {
+        line.push_str(
+            "\n⚠ a device you already know uses this name: it may be pretending to be it",
+        );
+    }
+    line
+}
+
+/// One line for a non-fatal security warning (spec §7.3, §7.5).
+fn warning_line(w: &Warning) -> String {
+    match w {
+        Warning::HandshakeAborts { recent } => format!(
+            "⚠ {recent} encrypted connections were broken off right after the handshake: \
+             someone on this network may be trying to guess the verification code \
+             (they are being slowed down)"
+        ),
+        Warning::TrustNotSaved(e) => format!("⚠ the list of known devices was not saved: {e}"),
+    }
+}
+
+/// Prints (once) a problem with the trust store found at startup.
+fn print_trust_warning(local: &Local) {
+    if let Some(w) = local.trust.take_warning() {
+        eprintln!("⚠ {w}");
+    }
 }
 
 fn pick_peer(discovery: &Discovery, wanted: Option<&str>, wait: Duration) -> Result<Peer> {
@@ -803,6 +836,14 @@ impl ReceiveHandler for CliReceiver {
                 from.ip()
             );
         }
+    }
+
+    fn warning(&self, from: SocketAddr, warning: &Warning) {
+        println!("\n{} ({})", warning_line(warning), from.ip());
+    }
+
+    fn auto_accepts(&self) -> bool {
+        self.auto_accept // `--yes`: accepted without a person, so keys are not remembered
     }
 
     fn verified(&self, _from: SocketAddr, peer: &PeerKey) {

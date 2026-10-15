@@ -16,6 +16,7 @@ snow = { version = "0.10", default-features = false, features = ["default-resolv
 socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2.0.21"
 uuid = { version = "1.28.0", features = ["v4"] }
+zeroize = "1"
 
 [dev-dependencies]
 sha2 = "0.11.1"

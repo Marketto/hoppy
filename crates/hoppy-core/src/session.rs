@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use snow::{HandshakeState, StatelessTransportState};
 
 use crate::Error;
-use crate::crypto::{self, DeviceKey, MAX_ID_BYTES, Sas, hex, unhex32};
+use crate::crypto::{self, DeviceKey, MAX_ID_BYTES, Sas, hex, is_low_order, unhex32};
 use crate::protocol::{DeviceInfo, MAGIC, VERSION_V1};
+use crate::sanitize::display_text;
 
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_SHA256";
 /// Largest Noise message (spec, and the u16 length prefix).
@@ -26,6 +27,12 @@ pub const MAX_PLAINTEXT: usize = MAX_NOISE_MESSAGE - TAG_LEN;
 pub const MAX_HANDSHAKE_MESSAGE: usize = 2048;
 /// Largest handshake payload (JSON) a v1 implementation writes.
 pub const MAX_HANDSHAKE_PAYLOAD: usize = 1024;
+/// Device names / platforms learned in a handshake are cut to this many characters.
+pub const MAX_NAME_CHARS: usize = 64;
+pub const MAX_PLATFORM_CHARS: usize = 16;
+const DH_LEN: usize = 32;
+const MIN_MSG2: usize = DH_LEN + DH_LEN + TAG_LEN + TAG_LEN;
+const MIN_MSG3: usize = DH_LEN + TAG_LEN + TAG_LEN;
 
 /// Noise prologue: the 5 hello bytes, so a changed hello breaks the handshake.
 pub fn prologue() -> [u8; 5] {
@@ -110,27 +117,39 @@ fn identity_payload(me: &DeviceInfo, nonce: &[u8; 32]) -> Result<Vec<u8>, Error>
     Ok(body)
 }
 
+/// Parses a message 2/3 payload. The id must be 1–128 bytes without control or bidi
+/// characters (it is stored and shown); name and platform are cleaned and cut.
 fn parse_identity(payload: &[u8]) -> Result<(DeviceInfo, [u8; 32]), Error> {
     let p: IdentityPayload = serde_json::from_slice(payload)
         .map_err(|e| Error::Protocol(format!("handshake payload: {e}")))?;
     let nonce = unhex32(&p.nonce).ok_or_else(|| Error::Protocol("bad handshake nonce".into()))?;
-    if p.id.is_empty() || p.id.len() > MAX_ID_BYTES {
+    if p.id.is_empty() || p.id.len() > MAX_ID_BYTES || display_text(&p.id, MAX_ID_BYTES) != p.id {
         return Err(Error::Protocol("bad device id in handshake".into()));
     }
     Ok((
         DeviceInfo {
             id: p.id,
-            name: p.name,
-            platform: p.platform,
+            name: display_text(&p.name, MAX_NAME_CHARS),
+            platform: display_text(&p.platform, MAX_PLATFORM_CHARS),
         },
         nonce,
     ))
 }
 
+fn reject_low_order(public: &[u8]) -> Result<(), Error> {
+    if is_low_order(public) {
+        return Err(Error::Crypto("low-order public key".into()));
+    }
+    Ok(())
+}
+
 fn remote_static(hs: &HandshakeState) -> Result<[u8; 32], Error> {
-    hs.get_remote_static()
+    let key = hs
+        .get_remote_static()
         .and_then(|k| <[u8; 32]>::try_from(k).ok())
-        .ok_or_else(|| Error::Crypto("no remote static key".into()))
+        .ok_or_else(|| Error::Crypto("no remote static key".into()))?;
+    reject_low_order(&key)?;
+    Ok(key)
 }
 
 /// Initiator (the sender, also on callback connections) of the v1 handshake.
@@ -141,11 +160,20 @@ pub struct Initiator {
 
 impl Initiator {
     pub fn new(key: &DeviceKey) -> Result<Self, Error> {
-        Self::with(key, None, random_nonce())
+        Self::build(key, None, random_nonce())
     }
 
     /// Fixed ephemeral key and nonce: test vectors only.
-    pub fn with(
+    #[cfg(test)]
+    pub(crate) fn with(
+        key: &DeviceKey,
+        ephemeral: Option<&[u8; 32]>,
+        nonce: [u8; 32],
+    ) -> Result<Self, Error> {
+        Self::build(key, ephemeral, nonce)
+    }
+
+    fn build(
         key: &DeviceKey,
         ephemeral: Option<&[u8; 32]>,
         nonce: [u8; 32],
@@ -174,6 +202,10 @@ impl Initiator {
 
     /// `<- e, ee, s, es` + the responder's identity and nonce. Fixes the SAS.
     pub fn read_msg2(&mut self, msg: &[u8]) -> Result<Remote, Error> {
+        if msg.len() < MIN_MSG2 {
+            return Err(Error::Crypto("handshake message 2 too short".into()));
+        }
+        reject_low_order(&msg[..DH_LEN])?;
         let mut payload = vec![0u8; MAX_HANDSHAKE_MESSAGE];
         let n = self.hs.read_message(msg, &mut payload).map_err(snow_err)?;
         let (device, responder_nonce) = parse_identity(&payload[..n])?;
@@ -218,11 +250,20 @@ pub struct Responder {
 
 impl Responder {
     pub fn new(key: &DeviceKey) -> Result<Self, Error> {
-        Self::with(key, None, random_nonce())
+        Self::build(key, None, random_nonce())
     }
 
     /// Fixed ephemeral key and nonce: test vectors only.
-    pub fn with(
+    #[cfg(test)]
+    pub(crate) fn with(
+        key: &DeviceKey,
+        ephemeral: Option<&[u8; 32]>,
+        nonce: [u8; 32],
+    ) -> Result<Self, Error> {
+        Self::build(key, ephemeral, nonce)
+    }
+
+    fn build(
         key: &DeviceKey,
         ephemeral: Option<&[u8; 32]>,
         nonce: [u8; 32],
@@ -240,6 +281,10 @@ impl Responder {
     }
 
     pub fn read_msg1(&mut self, msg: &[u8]) -> Result<(), Error> {
+        if msg.len() < DH_LEN {
+            return Err(Error::Crypto("handshake message 1 too short".into()));
+        }
+        reject_low_order(&msg[..DH_LEN])?;
         let mut payload = vec![0u8; MAX_HANDSHAKE_MESSAGE];
         let n = self.hs.read_message(msg, &mut payload).map_err(snow_err)?;
         let p: CommitPayload = serde_json::from_slice(&payload[..n])
@@ -263,6 +308,9 @@ impl Responder {
 
     /// Reads the initiator's identity and checks its nonce against the commitment.
     pub fn read_msg3(&mut self, msg: &[u8]) -> Result<Remote, Error> {
+        if msg.len() < MIN_MSG3 {
+            return Err(Error::Crypto("handshake message 3 too short".into()));
+        }
         let mut payload = vec![0u8; MAX_HANDSHAKE_MESSAGE];
         let n = self.hs.read_message(msg, &mut payload).map_err(snow_err)?;
         let (device, initiator_nonce) = parse_identity(&payload[..n])?;
@@ -316,7 +364,7 @@ impl Cipher {
 }
 
 /// Writes one framed Noise message: `u16 length` + bytes.
-pub fn write_frame<W: Write>(w: &mut W, msg: &[u8]) -> io::Result<()> {
+pub fn write_frame<W: Write + ?Sized>(w: &mut W, msg: &[u8]) -> io::Result<()> {
     let len = u16::try_from(msg.len()).map_err(|_| io::Error::from(ErrorKind::InvalidInput))?;
     let mut buf = Vec::with_capacity(2 + msg.len());
     buf.extend_from_slice(&len.to_be_bytes());
@@ -326,7 +374,7 @@ pub fn write_frame<W: Write>(w: &mut W, msg: &[u8]) -> io::Result<()> {
 
 /// Reads one framed Noise message of at most `max` bytes. `Ok(None)` on a clean EOF before
 /// the first length byte.
-pub fn read_frame<R: Read>(r: &mut R, max: usize) -> io::Result<Option<Vec<u8>>> {
+pub fn read_frame<R: Read + ?Sized>(r: &mut R, max: usize) -> io::Result<Option<Vec<u8>>> {
     let mut len = [0u8; 2];
     let first = loop {
         match r.read(&mut len[..1]) {
@@ -402,7 +450,8 @@ impl<W: Write> Write for NoiseWriter<W> {
 }
 
 /// The reading half of an encrypted stream. A message that fails authentication (tampered,
-/// replayed, reordered, truncated) is an `InvalidData` error; the session must end.
+/// replayed, reordered, truncated) or is empty (spec §7.2: senders never send one, so an
+/// empty message can only stall the reader) is an `InvalidData` error; the session must end.
 pub struct NoiseReader<R: Read> {
     inner: R,
     cipher: Cipher,
@@ -428,14 +477,14 @@ impl<R: Read> Read for NoiseReader<R> {
         if out.is_empty() {
             return Ok(0);
         }
-        while self.pos == self.buf.len() {
+        if self.pos == self.buf.len() {
             let Some(msg) = read_frame(&mut self.inner, MAX_NOISE_MESSAGE)? else {
                 return Ok(0);
             };
-            if msg.len() < TAG_LEN {
+            if msg.len() <= TAG_LEN {
                 return Err(io::Error::new(
                     ErrorKind::InvalidData,
-                    "short Noise message",
+                    "empty or short Noise transport message",
                 ));
             }
             self.buf = self.cipher.open(self.nonce, &msg).map_err(|_| {
@@ -533,6 +582,83 @@ mod tests {
             assert!(rx.open(nonce, &tampered).is_err());
             assert!(rx.open(nonce + 1, &sealed).is_err(), "wrong counter");
         }
+    }
+
+    /// Initiator and responder in the state of the vector handshake after message 1.
+    fn vector_pair(v: &serde_json::Value) -> (Initiator, Responder, DeviceKey, DeviceKey) {
+        let (ki, kr) = (&v["keys"]["initiator"], &v["keys"]["responder"]);
+        let i_key = DeviceKey::from_secret(b32(&ki["static_private"]));
+        let r_key = DeviceKey::from_secret(b32(&kr["static_private"]));
+        let (ie, re) = (b32(&ki["ephemeral_private"]), b32(&kr["ephemeral_private"]));
+        let mut i = Initiator::with(&i_key, Some(&ie), b32(&ki["sas_nonce"])).unwrap();
+        let mut r = Responder::with(&r_key, Some(&re), b32(&kr["sas_nonce"])).unwrap();
+        r.read_msg1(&i.write_msg1().unwrap()).unwrap();
+        (i, r, i_key, r_key)
+    }
+
+    #[test]
+    fn negative_vectors_are_rejected() {
+        let v = v1();
+        let neg = &v["negative"];
+        let bytes = |k: &str| crypto::unhex(neg[k].as_str().unwrap()).unwrap();
+        let resp_dev = dev(&v["keys"]["responder"]["device"]);
+
+        let mut fresh = Responder::new(&DeviceKey::generate()).unwrap();
+        assert!(fresh.read_msg1(&bytes("msg1_low_order_hex")).is_err());
+
+        let (mut i, mut r, _, _) = vector_pair(&v);
+        r.write_msg2(&resp_dev).unwrap();
+        assert!(i.read_msg2(&bytes("msg2_tampered_hex")).is_err());
+
+        for case in ["msg3_tampered_hex", "msg3_bad_commitment_hex"] {
+            let (mut i, mut r, _, _) = vector_pair(&v);
+            i.read_msg2(&r.write_msg2(&resp_dev).unwrap()).unwrap();
+            assert!(r.read_msg3(&bytes(case)).is_err(), "{case}");
+        }
+
+        let mut long = bytes("handshake_frame_too_long_hex");
+        long.extend(vec![0u8; 3000]);
+        assert!(read_frame(&mut long.as_slice(), MAX_HANDSHAKE_MESSAGE).is_err());
+
+        // Transport: the responder of the completed vector handshake.
+        let (mut i, mut r, _, _) = vector_pair(&v);
+        i.read_msg2(&r.write_msg2(&resp_dev).unwrap()).unwrap();
+        r.read_msg3(
+            &i.write_msg3(&dev(&v["keys"]["initiator"]["device"]))
+                .unwrap(),
+        )
+        .unwrap();
+        let cr = r.finish().unwrap();
+        for case in ["transport_empty_hex", "transport_short_hex"] {
+            let wire = bytes(case);
+            let mut out = [0u8; 8];
+            assert!(
+                NoiseReader::new(wire.as_slice(), cr.clone())
+                    .read(&mut out)
+                    .is_err(),
+                "{case}"
+            );
+        }
+        assert_eq!(bytes("busy_reply_hex"), [0, 0]);
+    }
+
+    #[test]
+    fn handshake_names_are_cleaned_and_ids_checked() {
+        let nonce = "00".repeat(32);
+        let ok = format!(
+            r#"{{"id":"x","name":"Ev\u202eil\u0007 {}","platform":"pla\u200btform-too-long-x","nonce":"{nonce}"}}"#,
+            "n".repeat(100)
+        );
+        let (d, _) = parse_identity(ok.as_bytes()).unwrap();
+        assert_eq!(d.name.chars().count(), MAX_NAME_CHARS);
+        assert!(d.name.starts_with("Evil "));
+        assert_eq!(d.platform.chars().count(), MAX_PLATFORM_CHARS);
+        for bad_id in [r#""x\u202e""#, r#"" x""#, r#""""#, r#"1"#] {
+            let text = format!(r#"{{"id":{bad_id},"name":"n","platform":"p","nonce":"{nonce}"}}"#);
+            assert!(parse_identity(text.as_bytes()).is_err(), "{bad_id}");
+        }
+        let text = format!(r#"{{"id":"x","name":1,"platform":"p","nonce":"{nonce}"}}"#);
+        assert!(parse_identity(text.as_bytes()).is_err(), "non-string name");
     }
 
     #[test]

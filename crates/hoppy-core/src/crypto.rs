@@ -13,6 +13,7 @@ use std::path::Path;
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::Error;
 
@@ -30,11 +31,17 @@ const SAS_LABEL: &[u8] = b"hoppy-sas-v1";
 pub(crate) const COMMIT_LABEL: &[u8] = b"hoppy-commit-v1";
 
 /// The device's long-term X25519 key pair (its identity in v1). Generated once on first run
-/// and stored privately by the platform ([`DeviceKey::load_or_create`] on desktops).
-#[derive(Clone)]
+/// and stored privately by the platform ([`DeviceKey::load_or_create`] on desktops). Not
+/// `Clone` (share it through an `Arc`); the private key is wiped from memory on drop.
 pub struct DeviceKey {
     secret: [u8; 32],
     public: [u8; 32],
+}
+
+impl Drop for DeviceKey {
+    fn drop(&mut self) {
+        self.secret.zeroize();
+    }
 }
 
 impl std::fmt::Debug for DeviceKey {
@@ -79,33 +86,52 @@ impl DeviceKey {
         fingerprint(&self.public)
     }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(&KeyFile {
+    /// The key file content (holds the private key: wiped when dropped).
+    pub fn to_json(&self) -> Zeroizing<String> {
+        let mut file = KeyFile {
             version: 1,
             x25519_private: hex(&self.secret),
-        })
-        .expect("key file always serializes")
+        };
+        let text =
+            Zeroizing::new(serde_json::to_string(&file).expect("key file always serializes"));
+        file.x25519_private.zeroize();
+        text
     }
 
+    /// Parses a key file. A file of another `version` is an error (a newer app wrote it:
+    /// never overwrite it).
     pub fn from_json(text: &str) -> Result<Self, Error> {
-        let file: KeyFile =
+        let mut file: KeyFile =
             serde_json::from_str(text).map_err(|e| Error::Input(format!("key file: {e}")))?;
-        let bytes = unhex(&file.x25519_private)
-            .filter(|b| b.len() == 32 && file.version == 1)
-            .ok_or_else(|| Error::Input("key file: invalid private key".into()))?;
+        if file.version != 1 {
+            file.x25519_private.zeroize();
+            return Err(Error::Unsupported(format!(
+                "key file version {} (this app knows 1): update Hoppy",
+                file.version
+            )));
+        }
+        let bytes = Zeroizing::new(unhex(&file.x25519_private).unwrap_or_default());
+        file.x25519_private.zeroize();
+        if bytes.len() != 32 {
+            return Err(Error::Input("key file: invalid private key".into()));
+        }
         let mut secret = [0u8; 32];
         secret.copy_from_slice(&bytes);
-        Ok(Self::from_secret(secret))
+        let key = Self::from_secret(secret);
+        secret.zeroize();
+        Ok(key)
     }
 
-    /// Loads the key from `path`, or creates it (file readable by the owner only on Unix;
-    /// on Windows the per-user config folder is already private). A file that cannot be
-    /// read as a key is kept as `<path>.bad` and replaced: peers will then see a changed
-    /// key and must re-trust this device (better than not starting at all).
+    /// Loads the key from `path`, or creates it (owner-only on Unix; the caller restricts it
+    /// on Windows). Two processes starting at once end up with the same key: the file is
+    /// published with an exclusive link, and the loser loads the winner's key. A file that
+    /// is not JSON is kept as `<path>.bad` and replaced (peers then see a changed key);
+    /// a key file of an unknown version is an error.
     pub fn load_or_create(path: &Path) -> Result<Self, Error> {
-        match fs::read_to_string(path) {
+        match fs::read_to_string(path).map(Zeroizing::new) {
             Ok(text) => match Self::from_json(&text) {
                 Ok(key) => return Ok(key),
+                Err(e @ Error::Unsupported(_)) => return Err(e),
                 Err(_) => {
                     let _ = fs::rename(path, path.with_extension("bad"));
                 }
@@ -114,35 +140,92 @@ impl DeviceKey {
             Err(e) => return Err(e.into()),
         }
         let key = Self::generate();
-        write_private(path, key.to_json().as_bytes())?;
-        Ok(key)
+        let tmp = temp_path(path);
+        write_owner_only(&tmp, key.to_json().as_bytes())?;
+        // hard_link fails if `path` exists: never replaces a key another process just wrote.
+        let linked = fs::hard_link(&tmp, path);
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(key),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let text = Zeroizing::new(fs::read_to_string(path)?);
+                Self::from_json(&text)
+            }
+            // File systems without hard links: exclusive create.
+            Err(_) => {
+                let mut opts = owner_only_options();
+                opts.create_new(true);
+                match opts.open(path) {
+                    Ok(mut f) => {
+                        f.write_all(key.to_json().as_bytes())?;
+                        f.sync_all()?;
+                        Ok(key)
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let text = Zeroizing::new(fs::read_to_string(path)?);
+                        Self::from_json(&text)
+                    }
+                    Err(e) => Err(e.into()),
+                }
+            }
+        }
     }
 }
 
-/// Writes `data` atomically (temp file + rename), owner-only permissions on Unix.
-pub fn write_private(path: &Path, data: &[u8]) -> Result<(), Error> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
+/// A temp file next to `path`, unique per process and call (no two writers share one).
+fn temp_path(path: &Path) -> std::path::PathBuf {
+    let mut r = [0u8; 8];
+    getrandom::fill(&mut r).expect("OS random number generator unavailable");
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), hex(&r)))
+}
+
+fn owner_only_options() -> OpenOptions {
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut file = opts.open(&tmp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    opts
+}
+
+/// Creates `path` (must not exist) owner-only and writes `data`.
+fn write_owner_only(path: &Path, data: &[u8]) -> Result<(), Error> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
     }
+    let mut opts = owner_only_options();
+    opts.create_new(true);
+    let mut file = opts.open(path)?;
     file.write_all(data)?;
     file.sync_all()?;
-    drop(file);
-    fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Writes `data` atomically (unique temp file created owner-only on Unix, then rename).
+pub fn write_private(path: &Path, data: &[u8]) -> Result<(), Error> {
+    let tmp = temp_path(path);
+    if let Err(e) = write_owner_only(&tmp, data).and_then(|()| Ok(fs::rename(&tmp, path)?)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `true` for an X25519 public key of small order (spec §7.3): multiplying by any clamped
+/// scalar (a multiple of the cofactor 8) gives the all-zero point. Such keys would make a
+/// Diffie-Hellman output predictable; v1 handshakes reject them.
+pub fn is_low_order(public: &[u8]) -> bool {
+    let Ok(bytes) = <[u8; 32]>::try_from(public) else {
+        return true;
+    };
+    // Any fixed scalar works; clamping makes it a multiple of 8.
+    MontgomeryPoint(bytes).mul_clamped([0x5a; 32]).to_bytes() == [0u8; 32]
 }
 
 /// Spec §7.5: unpadded RFC 4648 base32 (upper case) of SHA-256(static public key), 52 chars.
@@ -449,6 +532,7 @@ mod tests {
             assert!(is_fingerprint(&key.fingerprint()));
             let back = DeviceKey::from_json(&key.to_json()).unwrap();
             assert_eq!(back.public(), key.public());
+            assert!(!is_low_order(&key.public()));
         }
         assert_eq!(base32(b""), "");
         assert_eq!(base32(b"f"), "MY");
@@ -498,6 +582,51 @@ mod tests {
         let c = DeviceKey::load_or_create(&path).unwrap();
         assert_ne!(c.public(), a.public());
         assert!(path.with_extension("bad").exists());
-        assert!(DeviceKey::from_json(r#"{"version":2,"x25519_private":"00"}"#).is_err());
+        // A newer key file is never overwritten.
+        fs::write(&path, r#"{"version":2,"x25519_private":"00"}"#).unwrap();
+        assert!(matches!(
+            DeviceKey::load_or_create(&path),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(fs::read_to_string(&path).unwrap().contains("\"version\":2"));
+        let leftovers = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0, "no temp files left");
+    }
+
+    #[test]
+    fn concurrent_creation_yields_one_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.key");
+        let keys: Vec<[u8; 32]> = (0..8)
+            .map(|_| {
+                let p = path.clone();
+                std::thread::spawn(move || DeviceKey::load_or_create(&p).unwrap().public())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        assert!(
+            keys.windows(2).all(|w| w[0] == w[1]),
+            "everyone got the same key"
+        );
+    }
+
+    #[test]
+    fn low_order_points_are_rejected() {
+        for p in v1()["negative"]["low_order_points"].as_array().unwrap() {
+            let b = unhex(p.as_str().unwrap()).unwrap();
+            assert!(is_low_order(&b), "{p}");
+        }
+        assert!(is_low_order(&[1u8; 31]), "wrong length");
     }
 }

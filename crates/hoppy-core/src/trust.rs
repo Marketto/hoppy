@@ -1,14 +1,17 @@
 //! Trust on first use (spec §7.5) and device verification (§7.6–7.7).
 //!
-//! [`TrustStore`] is pure data (`id → fingerprint, name, first_seen, verified`), saved as
-//! JSON by the platform. [`Trust`] wraps it for a running node: thread-safe, optionally
-//! backed by a file (re-read before every change so two processes of the same user — tray
-//! and "Send to" — do not undo each other), plus the one-time codes of QR codes on screen.
+//! [`TrustStore`] is pure data (`id → fingerprint, name, first_seen, verified, addr`), saved
+//! as JSON by the platform. [`Trust`] wraps it for a running node: thread-safe, optionally
+//! backed by a file that every change re-reads, merges and rewrites under a lock file, so two
+//! processes of the same user (tray and "Send to") do not undo each other, plus the one-time
+//! codes of QR codes on screen.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +24,10 @@ use crate::protocol::DeviceInfo;
 pub const QR_CODE_TTL: Duration = Duration::from_secs(600);
 /// QR codes remembered at once (older ones are dropped).
 const MAX_QR_CODES: usize = 4;
+/// A lock file older than this belongs to a crashed process and is removed.
+const STALE_LOCK: Duration = Duration::from_secs(10);
+/// How long a change waits for another process's lock.
+const LOCK_WAIT: Duration = Duration::from_secs(3);
 
 /// What the UI shows about the other device of a session (spec §7.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +75,9 @@ pub struct SessionInfo {
     pub trust: Option<TrustState>,
     /// Same value on both screens of an honest session.
     pub sas: Option<crypto::Sas>,
+    /// A New device that uses the name of a device already remembered under another id:
+    /// show a warning ("another device calls itself X"), it may be an impostor.
+    pub name_matches_known: bool,
 }
 
 impl SessionInfo {
@@ -77,6 +87,7 @@ impl SessionInfo {
             peer: None,
             trust: None,
             sas: None,
+            name_matches_known: false,
         }
     }
 }
@@ -89,6 +100,10 @@ pub struct TrustEntry {
     /// Unix seconds.
     pub first_seen: u64,
     pub verified: bool,
+    /// Transfer address (`ip:port`) where this device last completed an encrypted transfer
+    /// to it: a typed address never falls back to plaintext there (spec §7.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
 }
 
 /// The persisted trust store: `{"version":1,"peers":{"<id>":{…TrustEntry}}}`.
@@ -133,6 +148,11 @@ impl TrustStore {
     /// a different key (that is [`Self::retrust`], an explicit user action). Returns whether
     /// anything changed.
     pub fn pin(&mut self, peer: &PeerKey, now: u64) -> bool {
+        self.pin_at(peer, None, now)
+    }
+
+    /// [`Self::pin`], also remembering the transfer address it was reached at.
+    pub fn pin_at(&mut self, peer: &PeerKey, addr: Option<String>, now: u64) -> bool {
         match self.peers.get_mut(&peer.id) {
             None => {
                 self.peers.insert(
@@ -142,16 +162,40 @@ impl TrustStore {
                         name: peer.name.clone(),
                         first_seen: now,
                         verified: false,
+                        addr,
                     },
                 );
                 true
             }
-            Some(e) if e.fingerprint == peer.fingerprint && e.name != peer.name => {
-                e.name = peer.name.clone();
-                true
+            Some(e) if e.fingerprint == peer.fingerprint => {
+                let mut changed = false;
+                if e.name != peer.name {
+                    e.name = peer.name.clone();
+                    changed = true;
+                }
+                if addr.is_some() && e.addr != addr {
+                    e.addr = addr;
+                    changed = true;
+                }
+                changed
             }
             Some(_) => false,
         }
+    }
+
+    /// Some remembered device completed an encrypted transfer at `addr` (`ip:port`).
+    pub fn encrypted_at(&self, addr: &str) -> bool {
+        self.peers.values().any(|e| e.addr.as_deref() == Some(addr))
+    }
+
+    /// Another remembered id already uses this name (case-insensitive, trimmed).
+    pub fn name_taken_by_other(&self, id: &str, name: &str) -> bool {
+        let n = name.trim().to_lowercase();
+        !n.is_empty()
+            && self
+                .peers
+                .iter()
+                .any(|(other, e)| other != id && e.name.trim().to_lowercase() == n)
     }
 
     /// Marks `peer`'s key verified (pinning it on first contact). Fails with
@@ -189,16 +233,92 @@ struct Inner {
     store: TrustStore,
     path: Option<PathBuf>,
     qr_codes: Vec<(String, Instant)>,
+    /// Something the user should hear about (corrupt file set aside, …), taken once.
+    warning: Option<String>,
+}
+
+/// Reads the store file: `Ok(None)` if missing; a file that is not a store is renamed to
+/// `<path>.bad` and reported (the caller starts from what it has).
+fn read_store(path: &Path) -> Result<(Option<TrustStore>, Option<String>), Error> {
+    match fs::read_to_string(path) {
+        Ok(text) => match TrustStore::from_json(&text) {
+            Ok(store) => Ok((Some(store), None)),
+            Err(e) => {
+                let bad = path.with_extension("json.bad");
+                let _ = fs::rename(path, &bad);
+                Ok((
+                    None,
+                    Some(format!(
+                        "the list of known devices was damaged ({e}); it was set aside as {}",
+                        bad.display()
+                    )),
+                ))
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((None, None)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// An exclusive lock file next to the store, removed on drop.
+struct FileLock(PathBuf);
+
+impl FileLock {
+    fn acquire(store: &Path) -> Result<Self, Error> {
+        let name = store
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let path = store.with_file_name(format!("{name}.lock"));
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let start = Instant::now();
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Self(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > STALE_LOCK);
+                    if stale {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                    if start.elapsed() > LOCK_WAIT {
+                        return Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "the list of known devices is locked by another Hoppy process",
+                        )));
+                    }
+                    thread::sleep(Duration::from_millis(15));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 impl Inner {
-    /// Picks up changes another process wrote (unreadable files are ignored: we keep ours).
+    /// Picks up changes another process wrote (a damaged file is set aside: we keep ours).
     fn reload(&mut self) {
-        if let Some(path) = &self.path
-            && let Ok(text) = fs::read_to_string(path)
-            && let Ok(store) = TrustStore::from_json(&text)
+        if let Some(path) = self.path.clone()
+            && let Ok((store, warning)) = read_store(&path)
         {
-            self.store = store;
+            if let Some(store) = store {
+                self.store = store;
+            }
+            if warning.is_some() {
+                self.warning = warning;
+            }
         }
     }
 
@@ -230,33 +350,42 @@ impl Trust {
                 store,
                 path: None,
                 qr_codes: Vec::new(),
+                warning: None,
             })),
         }
     }
 
-    /// Backed by a JSON file (created on the first change, owner-only on Unix).
+    /// Backed by a JSON file (created on the first change, owner-only on Unix). A damaged
+    /// file does not stop the app: it is set aside as `<path>.bad`, the store starts empty
+    /// and [`Self::take_warning`] says so.
     pub fn open(path: &Path) -> Result<Self, Error> {
-        let store = match fs::read_to_string(path) {
-            Ok(text) => TrustStore::from_json(&text)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => TrustStore::new(),
-            Err(e) => return Err(e.into()),
-        };
+        let (store, warning) = read_store(path)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
-                store,
+                store: store.unwrap_or_else(TrustStore::new),
                 path: Some(path.to_path_buf()),
                 qr_codes: Vec::new(),
+                warning,
             })),
         })
+    }
+
+    /// A problem worth telling the user about (e.g. a damaged file set aside), once.
+    pub fn take_warning(&self) -> Option<String> {
+        self.lock().warning.take()
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Runs `f` on the freshly re-read store and saves it if `f` says it changed.
+    /// Under the file lock: re-reads the store, runs `f`, saves if `f` says it changed.
     fn update<T>(&self, f: impl FnOnce(&mut TrustStore) -> (T, bool)) -> Result<T, Error> {
         let mut inner = self.lock();
+        let _file_lock = match &inner.path {
+            Some(path) => Some(FileLock::acquire(path)?),
+            None => None,
+        };
         inner.reload();
         let (out, changed) = f(&mut inner.store);
         if changed {
@@ -279,9 +408,27 @@ impl Trust {
         self.snapshot().peers.get(id).cloned()
     }
 
-    /// TOFU pin after an accepted transfer (errors saving are ignored: best effort).
-    pub fn pin(&self, peer: &PeerKey) {
-        let _ = self.update(|s| ((), s.pin(peer, unix_now())));
+    /// TOFU pin after an accepted transfer. An error means it could not be saved: tell the
+    /// user (the device will look new next time).
+    pub fn pin(&self, peer: &PeerKey) -> Result<(), Error> {
+        self.pin_at(peer, None)
+    }
+
+    /// [`Self::pin`] plus the transfer address the device was reached at (sender side).
+    pub fn pin_at(&self, peer: &PeerKey, addr: Option<SocketAddr>) -> Result<(), Error> {
+        let addr = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()).to_string());
+        self.update(|s| ((), s.pin_at(peer, addr, unix_now())))
+    }
+
+    /// A remembered device completed an encrypted transfer at this address before.
+    pub fn encrypted_at(&self, addr: SocketAddr) -> bool {
+        let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port()).to_string();
+        self.snapshot().encrypted_at(&addr)
+    }
+
+    /// See [`TrustStore::name_taken_by_other`].
+    pub fn name_taken_by_other(&self, id: &str, name: &str) -> bool {
+        self.snapshot().name_taken_by_other(id, name)
     }
 
     /// "Coincide" / "They match" after comparing the SAS, or a QR scan that matched.
@@ -440,7 +587,7 @@ mod tests {
         let path = dir.path().join("trust.json");
         let one = Trust::open(&path).unwrap();
         let two = Trust::open(&path).unwrap();
-        one.pin(&peer("a", "FP"));
+        one.pin(&peer("a", "FP")).unwrap();
         assert_eq!(
             two.state("a", "FP"),
             TrustState::Known,
@@ -450,8 +597,56 @@ mod tests {
         assert_eq!(one.state("a", "FP"), TrustState::Verified);
         assert!(one.forget("a").unwrap());
         assert_eq!(two.state("a", "FP"), TrustState::New);
+
+        // Concurrent writers from several handles: nobody's change is lost.
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let t = Trust::open(&path).unwrap();
+                thread::spawn(move || t.pin(&peer(&format!("p{i}"), "FP")).unwrap())
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(one.snapshot().peers.len(), 8);
+        assert!(!path.with_file_name("trust.json.lock").exists());
+
+        // A damaged file is set aside, not fatal.
         fs::write(&path, "not json").unwrap();
-        assert!(Trust::open(&path).is_err());
+        let t = Trust::open(&path).unwrap();
+        assert!(t.snapshot().peers.is_empty());
+        assert!(t.take_warning().unwrap().contains("damaged"));
+        assert!(t.take_warning().is_none());
+        assert!(path.with_extension("json.bad").exists());
+        t.pin(&peer("a", "FP")).unwrap();
+        assert_eq!(
+            Trust::open(&path).unwrap().state("a", "FP"),
+            TrustState::Known
+        );
+        // A stale lock (crashed process) does not block.
+        fs::write(path.with_file_name("trust.json.lock"), "").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(path.with_file_name("trust.json.lock"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        t.pin(&peer("b", "FP")).unwrap();
+    }
+
+    #[test]
+    fn addresses_and_name_collisions() {
+        let t = Trust::in_memory(TrustStore::new());
+        let addr: SocketAddr = "192.168.1.5:47471".parse().unwrap();
+        assert!(!t.encrypted_at(addr));
+        t.pin_at(&peer("a", "FP"), Some(addr)).unwrap();
+        assert!(t.encrypted_at(addr));
+        assert!(t.encrypted_at("[::ffff:192.168.1.5]:47471".parse().unwrap()));
+        assert!(!t.encrypted_at("192.168.1.5:47472".parse().unwrap()));
+        assert!(t.name_taken_by_other("b", " NAME-A "));
+        assert!(!t.name_taken_by_other("a", "name-a"), "its own name");
+        assert!(!t.name_taken_by_other("b", "other"));
     }
 
     #[test]

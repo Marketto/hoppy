@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::Error;
 
@@ -131,7 +131,12 @@ pub struct DiscoveryMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
     /// v1 nodes: `1` = speaks the encrypted session (spec §7.1). Absent on v0 nodes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Parsed leniently: a value of another type never makes the datagram invalid.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_crypto"
+    )]
     pub crypto: Option<u8>,
 }
 
@@ -188,6 +193,13 @@ impl DiscoveryMessage {
     }
 }
 
+/// `crypto` (spec §7.1): a non-negative integer (capped at 255); anything else counts as
+/// absent instead of rejecting the whole message (a future version may send more).
+fn lenient_crypto<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_u64().map(|n| n.min(255) as u8))
+}
+
 /// Spec §6: exactly 32 lowercase hex characters.
 pub fn is_valid_token(token: &str) -> bool {
     token.len() == TOKEN_HEX_LEN
@@ -218,8 +230,12 @@ pub struct CallbackHello {
     /// Id of the receiver that is connecting back.
     pub id: String,
     pub token: String,
-    /// v1 receivers: `1` (spec §7.1). Absent from v0 receivers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// v1 receivers: `1` (spec §7.1). Absent from v0 receivers. Parsed leniently.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_crypto"
+    )]
     pub crypto: Option<u8>,
 }
 
@@ -374,6 +390,22 @@ mod tests {
             .is_none()
         );
         assert!(DiscoveryMessage::decode(b"garbage").is_none());
+        // `crypto` of an unexpected type or size never hides the peer.
+        for (raw, want) in [
+            (r#""crypto":"1""#, None),
+            (r#""crypto":-1"#, None),
+            (r#""crypto":1.5"#, None),
+            (r#""crypto":null"#, None),
+            (r#""crypto":{"v":2}"#, None),
+            (r#""crypto":300"#, Some(255)),
+            (r#""crypto":2"#, Some(2)),
+        ] {
+            let text = format!(
+                r#"{{"hoppy":0,"type":"announce","id":"x","name":"n","platform":"linux","port":1,{raw}}}"#
+            );
+            let msg = DiscoveryMessage::decode(text.as_bytes()).expect(raw);
+            assert_eq!(msg.crypto, want, "{raw}");
+        }
     }
 
     fn vectors() -> serde_json::Value {
