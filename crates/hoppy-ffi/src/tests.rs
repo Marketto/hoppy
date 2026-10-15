@@ -353,3 +353,49 @@ fn header_matches_exports() {
     );
     assert_eq!(exported.len(), 10, "{exported:?}");
 }
+
+/// The Swift simulator test's flow (apps/ios/Tests/HoppyCoreTests.swift): the "iPad" sweeps
+/// the receiver (no seeds) and also receives; the receiver (sweep off, no multicast) turns
+/// receiving off and must tell the iPad `bye` by unicast.
+#[test]
+fn receiver_off_says_bye_to_sweeping_ipad() {
+    let (rx_dir, tx_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (rx_events, tx_events) = (Events::default(), Events::default());
+    let rx = start(
+        json!({"id": "rx-3", "name": "Receiver", "platform": "linux", "receive_dir": rx_dir.path(),
+               "udp_port": 0, "tcp_port": 0, "receive": true, "sweep": "off"}),
+        &rx_events,
+    );
+    let rx_udp = take(unsafe { hoppy_node_info(rx) })["udp_port"]
+        .as_u64()
+        .unwrap();
+    let tx = start(
+        json!({"id": "tx-3", "name": "iPad", "udp_port": 0, "tcp_port": 0,
+               "receive_dir": tx_dir.path(), "receive": true,
+               "sweep": [format!("127.0.0.1:{rx_udp}")]}),
+        &tx_events,
+    );
+    tx_events.wait("peer", |v| {
+        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| !p.is_empty())
+    });
+    // Same steps as the Swift test before the bye: one accepted and one declined send.
+    let src = tempfile::tempdir().unwrap();
+    let file = src.path().join("a.txt");
+    fs::write(&file, b"hello hoppy").unwrap();
+    for accept in [true, false] {
+        let seen = rx_events.count();
+        let id = send(tx, "rx-3", std::slice::from_ref(&file));
+        let offer = rx_events.wait_after(seen, "offer", |v| v["type"] == "offer");
+        assert!(unsafe { hoppy_node_decide(rx, offer["offer"].as_u64().unwrap(), accept) });
+        tx_events.wait("done", |v| v["type"] == "send_done" && v["transfer"] == id);
+    }
+    let mark = tx_events.count();
+    assert_eq!(unsafe { hoppy_node_set_receiving(rx, false) }, 0);
+    tx_events.wait_after(mark, "bye", |v| {
+        v["type"] == "peers" && v["peers"].as_array().is_some_and(|p| p.is_empty())
+    });
+    unsafe {
+        hoppy_node_stop(tx);
+        hoppy_node_stop(rx);
+    }
+}

@@ -136,10 +136,17 @@ final class HoppyCoreTests: XCTestCase {
 
         // Receiving off: the sender's list empties (bye).
         let mark = txEvents.all.count
+        let before = tx.peers.map { "\($0.name)@\($0.addr)" }
         XCTAssertEqual(rx.setReceiving(false), 0)
-        _ = txEvents.wait("bye", after: mark) { e -> Bool? in
+        let gone = txEvents.wait("bye", after: mark) { e -> Bool? in
             if case let .peers(list) = e, list.isEmpty { return true }
             return nil
+        }
+        if gone == nil {
+            // Diagnostics for CI (logs are only read through annotations).
+            XCTFail("bye: tx peers before \(before), now \(tx.peers.map { "\($0.name)@\($0.addr)" }); "
+                    + "rx info \(String(describing: rx.info)); events after mark: "
+                    + "\(txEvents.all.dropFirst(mark).map { "\($0)" }.prefix(5))")
         }
     }
 }
