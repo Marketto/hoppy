@@ -64,8 +64,10 @@ assets/music/          Generated desktop music (WAV) + manifest
 8. **Original art only.** Mascots must not resemble existing characters or brands; music
    must not quote or imitate existing tunes (game, anime, pop).
 9. **Public repo: never commit sensitive data** — credentials, tokens, keystores, `.env`,
-   personal names/e-mails, IPs or paths of real machines. Commit as
-   `Marketto <Marketto@users.noreply.github.com>`. `python3 tools/dev.py secrets` (part of
+   personal e-mails, IPs or paths of real machines, names of anyone other than the author.
+   The author is credited as **Marco Ricupero** (LICENSE, Cargo `authors`, installer
+   publisher, .deb maintainer, portal footer); commit as
+   `Marco Ricupero <Marketto@users.noreply.github.com>`, never with a personal e-mail. `python3 tools/dev.py secrets` (part of
    `check` and CI) must pass before every commit; signing keys come from CI secrets only.
 10. **Accessible by default (WCAG 2.2 AA).** Text contrast ≥ 4.5:1 (large text 3:1) in every
     theme and in light/dark on the portal; pastels are decoration only. Enforced by

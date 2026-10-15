@@ -17,7 +17,7 @@
 AppId={{6F3C2B1A-8D4E-4B7A-9C55-48F0A1D3E7B2}
 AppName=Hoppy
 AppVersion={#AppVersion}
-AppPublisher=The Hoppy contributors
+AppPublisher=Marco Ricupero
 AppPublisherURL=https://github.com/Marketto/hoppy
 AppSupportURL=https://github.com/Marketto/hoppy/issues
 DefaultDirName={localappdata}\Programs\Hoppy
