@@ -9,6 +9,10 @@ check`); the real build and simulator tests run in CI (job `ios` in .github/work
 - project.yml: every source path exists; iOS 15 everywhere.
 - Every `hoppy_*` C function the Swift code calls is declared in crates/hoppy-ffi/include/hoppy.h.
 - Generated assets exist: an opaque 1024 px app icon, the mascot image sets.
+- Protocol v1 (ADR 0010): every node of the app and the Share extension starts through
+  `Identity.startNode` (persistent key_file/trust_file in Application Support, never in
+  Documents); the camera (QR scan) is used by the app only, with NSCameraUsageDescription;
+  the update check asks for the release asset the release workflow publishes.
 """
 from __future__ import annotations
 
@@ -101,11 +105,17 @@ def main() -> int:
     app = load(IOS / "Hoppy" / "Info.plist")
     ext = load(IOS / "ShareExtension" / "Info.plist")
     for key in ("NSLocalNetworkUsageDescription", "UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace",
-                "CFBundleDocumentTypes", "UILaunchScreen"):
+                "CFBundleDocumentTypes", "UILaunchScreen", "NSCameraUsageDescription"):
         if key not in app:
             bad.append(f"apps/ios/Hoppy/Info.plist: missing {key}")
     if "NSLocalNetworkUsageDescription" not in ext:
         bad.append("apps/ios/ShareExtension/Info.plist: missing NSLocalNetworkUsageDescription")
+    for key in ("NSLocalNetworkUsageDescription", "NSCameraUsageDescription"):
+        for lang in LANGS:
+            if key in app and key not in tables["Hoppy/InfoPlist"][lang]:
+                bad.append(f"apps/ios/Hoppy/{lang}.lproj/InfoPlist.strings: missing {key}")
+    if "NSCameraUsageDescription" in ext:
+        bad.append("apps/ios/ShareExtension/Info.plist: app extensions cannot use the camera")
     nsext = ext.get("NSExtension", {})
     if nsext.get("NSExtensionPointIdentifier") != "com.apple.share-services" or \
             nsext.get("NSExtensionPrincipalClass") != "$(PRODUCT_MODULE_NAME).ShareViewController":
@@ -139,6 +149,30 @@ def main() -> int:
         for fn in set(re.findall(r"\b(hoppy_[a-z_]+)\s*\(", f.read_text(encoding="utf-8"))):
             if fn not in declared:
                 bad.append(f"{f.relative_to(ROOT)}: {fn} is not declared in hoppy.h")
+
+    # 4b. Protocol v1 identity, camera, updates (ADR 0010)
+    identity = (IOS / "Shared" / "Identity.swift").read_text(encoding="utf-8")
+    for needle in (".key_file = keyFile.path", ".trust_file = trustFile.path", ".applicationSupportDirectory", "isExcludedFromBackup"):
+        if needle not in identity:
+            bad.append(f"apps/ios/Shared/Identity.swift: {needle!r} missing (persistent v1 identity)")
+    for folder in ("Hoppy", "ShareExtension"):
+        for f in (IOS / folder).glob("*.swift"):
+            text = f.read_text(encoding="utf-8")
+            if "HoppyNode(config:" in text:
+                bad.append(f"{f.relative_to(ROOT)}: start nodes with Identity.startNode (persistent key), not HoppyNode(config:)")
+            if "Identity.startNode" in text and folder == "ShareExtension" and "shareExtensionName" not in text:
+                bad.append(f"{f.relative_to(ROOT)}: the Share extension must use Identity.shareExtensionName")
+    for f in [*(IOS / "ShareExtension").glob("*.swift"), *(IOS / "Shared").glob("*.swift")]:
+        if "AVCapture" in f.read_text(encoding="utf-8"):
+            bad.append(f"{f.relative_to(ROOT)}: no camera code in the Share extension or Shared (extensions cannot use it)")
+    if not any("hoppy_node_qr_scan" in f.read_text(encoding="utf-8") for f in swift) or \
+            not any("AVCaptureMetadataOutput" in f.read_text(encoding="utf-8") for f in (IOS / "Hoppy").glob("*.swift")):
+        bad.append("apps/ios/Hoppy: the QR scanner (AVCaptureMetadataOutput → hoppy_node_qr_scan) is missing")
+    update = IOS / "Hoppy" / "UpdateCheck.swift"
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    if not update.exists() or 'asset = "Hoppy-ios-unsigned.ipa"' not in update.read_text(encoding="utf-8") \
+            or "Hoppy-ios-unsigned.ipa" not in release:
+        bad.append("apps/ios/Hoppy/UpdateCheck.swift: must look for the release asset Hoppy-ios-unsigned.ipa")
 
     # 5. Generated assets (tools/gen_icons.py --ios)
     icon = IOS / "Hoppy" / "Assets.xcassets" / "AppIcon.appiconset" / "AppIcon-1024.png"

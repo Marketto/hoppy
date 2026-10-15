@@ -45,6 +45,12 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    packaging {
+        resources {
+            // BouncyCastle (via :core) ships OSGi/multi-release metadata the APK does not need.
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
 }
 
 kotlin {
@@ -60,6 +66,8 @@ dependencies {
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.recyclerview)
     implementation(libs.material)
+    // In-app QR scanner + QR rendering for device verification (docs/protocol.md §7.7).
+    implementation(libs.zxing.android.embedded)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)

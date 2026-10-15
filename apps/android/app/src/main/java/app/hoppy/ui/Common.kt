@@ -1,5 +1,6 @@
 package app.hoppy.ui
 
+import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.Drawable
@@ -24,12 +25,14 @@ import app.hoppy.R
 import app.hoppy.core.Peer
 import app.hoppy.core.Source
 import app.hoppy.databinding.ItemPeerBinding
+import app.hoppy.security.Security
 import app.hoppy.ui.theme.HoppyTheme
 import app.hoppy.ui.theme.HostAware
 import app.hoppy.ui.theme.ThemeFonts
 import java.io.File
 import java.io.InputStream
 import java.util.UUID
+import kotlin.concurrent.thread
 
 /**
  * Applies the user's [HoppyTheme] before any view is created, sets the system bar
@@ -168,6 +171,15 @@ class UriSource private constructor(
     }
 }
 
+/** Loads the trust data of the device badges off the main thread (reads `trust.json`). */
+fun refreshTrustBadges(activity: Activity, adapter: PeerAdapter) {
+    val app = activity.applicationContext
+    thread(name = "hoppy-trust-badges") {
+        val ids = runCatching { Security.trustedIds(app) }.getOrDefault(emptyMap())
+        activity.runOnUiThread { adapter.trusted = ids }
+    }
+}
+
 class PeerAdapter(private val onClick: (Peer) -> Unit) :
     ListAdapter<Peer, PeerAdapter.Holder>(object : DiffUtil.ItemCallback<Peer>() {
         override fun areItemsTheSame(a: Peer, b: Peer) = a.device.id == b.device.id
@@ -176,6 +188,18 @@ class PeerAdapter(private val onClick: (Peer) -> Unit) :
 
     var enabled = true
         set(value) {
+            field = value
+            notifyItemRangeChanged(0, itemCount)
+        }
+
+    /**
+     * Remembered devices (id → verified), for the badges: 🔒 encrypted, ✓ verified,
+     * "⚠ not encrypted" for old (v0) apps (docs/protocol.md §7.1). A remembered id always
+     * gets 🔒: the session will be encrypted even if its announce lost the `crypto` field.
+     */
+    var trusted: Map<String, Boolean> = emptyMap()
+        set(value) {
+            if (field == value) return
             field = value
             notifyItemRangeChanged(0, itemCount)
         }
@@ -218,7 +242,15 @@ class PeerAdapter(private val onClick: (Peer) -> Unit) :
         val name = SafeText.label(peer.device.name)
         h.b.initial.text = name.take(1).uppercase()
         h.b.name.text = name
-        h.b.platform.text = Format.platform(ctx, peer.device.platform)
+        val platform = Format.platform(ctx, peer.device.platform)
+        val verified = trusted[peer.device.id]
+        val (badge, spoken) = when {
+            verified == true -> R.string.peer_secure_verified to R.string.peer_secure_verified_cd
+            peer.encrypts || verified != null -> R.string.peer_secure to R.string.peer_secure_cd
+            else -> R.string.peer_plain to R.string.peer_plain_cd
+        }
+        h.b.platform.text = ctx.getString(badge, platform)
+        h.b.platform.contentDescription = ctx.getString(spoken, platform)
         val highlighted = peer.device.id == highlightId
         h.b.root.foreground = if (highlighted) h.emphasised else h.ripple
         ViewCompat.setStateDescription(h.b.root, if (highlighted) ctx.getString(R.string.peer_selected) else null)

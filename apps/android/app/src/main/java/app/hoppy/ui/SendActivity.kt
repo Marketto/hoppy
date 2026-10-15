@@ -7,17 +7,28 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.core.content.IntentCompat
 import androidx.core.view.isVisible
 import app.hoppy.Node
 import app.hoppy.Prefs
 import app.hoppy.R
 import app.hoppy.audio.Music
+import app.hoppy.core.KeyChangedException
 import app.hoppy.core.Peer
+import app.hoppy.core.PeerKey
 import app.hoppy.core.PeerUnreachableException
+import app.hoppy.core.ReceiverBusyException
+import app.hoppy.core.SendListener
 import app.hoppy.core.SendOutcome
+import app.hoppy.core.SessionInfo
 import app.hoppy.core.TransferClient
+import app.hoppy.core.TrustState
+import app.hoppy.core.UnencryptedException
+import app.hoppy.core.Warning
 import app.hoppy.databinding.ActivitySendBinding
+import app.hoppy.security.Security
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import app.hoppy.ui.theme.ButtonFx
 import app.hoppy.ui.theme.Motion
 import app.hoppy.ui.theme.ThemeFonts
@@ -36,6 +47,11 @@ import kotlin.concurrent.thread
  * it). Preselection is honoured only for recent targets (devices already sent to) or for
  * our own home screen ([intent] carries a per-process token). After
  * [PRESELECT_TIMEOUT_MS] without it the normal list is left to the user.
+ * Every session to a v1 device is encrypted (docs/protocol.md §7): the line under the status
+ * says so ("⚠ not encrypted" for old apps); for a New/Known device the code (4 emoji, "123"
+ * for digits) shows over the list while waiting for the receiver, with "They match" /
+ * "Verify with QR" / "Show my QR" / "Later". A changed key blocks the send with a dialog
+ * offering "Forget device".
  * PoC limitation: the transfer runs in this screen (see docs/roadmap.md).
  */
 class SendActivity : ThemedActivity() {
@@ -48,6 +64,19 @@ class SendActivity : ThemedActivity() {
     private var lookingFor = false
     private val givingUp = Runnable { givePreselectUp() }
     @Volatile private var sending = false
+    private lateinit var panel: VerifyPanel
+    /** The session on screen (its key is the "live" one for a QR scan, spec §7.7). */
+    private var liveSession: SessionInfo? = null
+    /** Delivered while the code was still on screen: close once the user is done with it. */
+    private var delivered = false
+
+    private val scanner = QrScanner(
+        this,
+        onResult = { payload ->
+            QrScanner.verify(this, payload, liveSession?.peer) { ok, message -> onVerifyResult(ok, message) }
+        },
+        onUnavailable = { Toast.makeText(this, R.string.verify_no_camera, Toast.LENGTH_LONG).show() },
+    )
 
     private val peersListener: (List<Peer>) -> Unit = { peers -> runOnUiThread { showPeers(peers) } }
 
@@ -62,6 +91,17 @@ class SendActivity : ThemedActivity() {
         if (savedInstanceState == null) preselect(intent)
         ThemeFonts.applyDisplay(b.delivered, b.sendToHeader)
         ThemeFonts.applyBodyBold(b.summary)
+        panel = VerifyPanel(
+            b.verify,
+            object : VerifyPanel.Actions {
+                override fun onMatch(peer: PeerKey) {
+                    VerifyPanel.markVerified(this@SendActivity, peer) { ok, message -> onVerifyResult(ok, message) }
+                }
+                override fun onScan() = scanner.start()
+                override fun onShowMine() = startActivity(QrActivity.showIntent(this@SendActivity))
+                override fun onLater() = hideVerify()
+            },
+        )
 
         val uris = incomingUris(this, intent)
         // Files shared but all refused: send nothing rather than the caption text.
@@ -148,7 +188,8 @@ class SendActivity : ThemedActivity() {
     private fun showPeers(peers: List<Peer>) {
         val target = preselected?.let { id -> peers.firstOrNull { it.device.id == id } }
         adapter.submitList(if (target == null) peers else listOf(target) + (peers - target))
-        b.empty.isVisible = peers.isEmpty() && !sending
+        b.empty.isVisible = peers.isEmpty() && !sending && !b.verifyScroll.isVisible
+        refreshTrustBadges(this, adapter)
         if (target != null && lookingFor) {
             lookingFor = false
             if (!sending) b.status.isVisible = false
@@ -181,33 +222,50 @@ class SendActivity : ThemedActivity() {
         b.progress.isVisible = true
         b.status.isVisible = true
         b.status.text = getString(R.string.waiting_accept, SafeText.label(peer.device.name))
-        val me = Prefs.device(this)
+        b.security.isVisible = false
+        liveSession = null
+        val app = applicationContext
         // Keep the discovery node (UDP 47470) alive for the callback even if this screen stops.
-        Node.acquire(applicationContext)
+        Node.acquire(app)
         val node = Node.node()
         var lastUi = 0L
-        thread(name = "hoppy-send") {
-            val result = try {
-                runCatching {
-                    // Direct TCP failed, asking the peer to connect back (spec §6): say so.
-                    val onFallback = {
-                        runOnUiThread {
-                            if (sending) b.status.text = getString(R.string.send_trying_callback, SafeText.label(peer.device.name))
-                        }
-                    }
-                    TransferClient.sendToPeer(peer, me, list, node, onFallback) { done, total ->
-                        val now = System.currentTimeMillis()
-                        if (now - lastUi > 150 || done == total) {
-                            lastUi = now
-                            val pct = if (total == 0L) 100 else (done * 100 / total).toInt()
-                            runOnUiThread {
-                                b.progress.isIndeterminate = false
-                                b.progress.setProgressCompat(pct, true)
-                                b.status.text = getString(R.string.sending_progress, SafeText.label(peer.device.name), pct)
-                            }
-                        }
+        val listener = object : SendListener {
+            // Direct TCP failed, asking the peer to connect back (spec §6): say so.
+            override fun onFallback() {
+                runOnUiThread {
+                    if (sending) b.status.text = getString(R.string.send_trying_callback, SafeText.label(peer.device.name))
+                }
+            }
+
+            override fun onSession(info: SessionInfo) {
+                runOnUiThread { showSession(peer, info) }
+            }
+
+            override fun onProgress(done: Long, total: Long) {
+                val now = System.currentTimeMillis()
+                if (now - lastUi > 150 || done == total) {
+                    lastUi = now
+                    val pct = if (total == 0L) 100 else (done * 100 / total).toInt()
+                    runOnUiThread {
+                        b.progress.isIndeterminate = false
+                        b.progress.setProgressCompat(pct, true)
+                        b.status.text = getString(R.string.sending_progress, SafeText.label(peer.device.name), pct)
                     }
                 }
+            }
+
+            override fun onWarning(warning: Warning) {
+                if (warning is Warning.TrustNotSaved) {
+                    runOnUiThread {
+                        Toast.makeText(app, getString(R.string.trust_not_saved, SafeText.label(warning.message, 200)), Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+        thread(name = "hoppy-send") {
+            val result = try {
+                // Reads the key / trust store on first use: off the main thread.
+                runCatching { TransferClient.sendToPeer(peer, Security.local(app), list, node, listener) }
             } finally {
                 Node.release()
             }
@@ -228,21 +286,90 @@ class SendActivity : ThemedActivity() {
             b.mascot.celebrate()
             b.delivered.isVisible = true
             if (Motion.enabled()) ButtonFx.popIn(b.delivered).start()
-            b.root.postDelayed({ if (!isFinishing) finish() }, 1800)
+            delivered = true
+            // Leave the code on screen until the user answers it ("Later" or ✓ closes).
+            if (!verifyPending()) b.root.postDelayed({ if (!isFinishing) finish() }, 1800)
             return
         }
+        hideVerify()
         sending = false
         adapter.enabled = true
         adapter.highlightId = null
         b.progress.isVisible = false
         val error = result.exceptionOrNull()
         if (error != null) Log.w(TAG, "send to ${peer.address.hostAddress}:${peer.port} failed", error)
+        val name = SafeText.label(peer.device.name)
         b.status.text = when {
-            outcome is SendOutcome.Declined -> getString(R.string.declined, SafeText.label(peer.device.name))
+            outcome is SendOutcome.Declined -> getString(R.string.declined, name)
+            error is KeyChangedException -> {
+                showKeyChanged(name, error.peer)
+                getString(R.string.key_changed_title)
+            }
+            // "Busy": the receiver is limiting aborted handshakes (spec §7.3): never plaintext.
+            error is ReceiverBusyException -> getString(R.string.send_busy, name)
+            error is UnencryptedException -> getString(R.string.send_downgrade, name)
             // Usually the PC firewall or another network: say what to do, keep details in logcat.
             isUnreachable(error) -> getString(R.string.send_unreachable, SafeText.label(peer.device.name))
             else -> getString(R.string.send_failed, error?.message ?: "?")
         }
+    }
+
+    /** How the session is protected (before the offer goes out): line + code for unverified devices. */
+    private fun showSession(peer: Peer, info: SessionInfo) {
+        liveSession = info
+        b.security.isVisible = true
+        when {
+            !info.encrypted -> b.security.text = getString(R.string.send_not_encrypted, SafeText.label(peer.device.name))
+            info.trust == TrustState.VERIFIED -> b.security.text = getString(R.string.send_encrypted_verified)
+            else -> {
+                b.security.text = getString(R.string.send_encrypted)
+                if (info.sas != null && info.peer != null) {
+                    b.peers.isVisible = false
+                    b.empty.isVisible = false
+                    b.verifyScroll.isVisible = true
+                    panel.show(info)
+                }
+            }
+        }
+    }
+
+    private fun verifyPending(): Boolean = b.verifyScroll.isVisible && b.verify.verifyActions.isVisible
+
+    private fun hideVerify() {
+        b.verifyScroll.isVisible = false
+        b.peers.isVisible = true
+        if (delivered && !isFinishing) finish()
+    }
+
+    private fun onVerifyResult(ok: Boolean, message: String) {
+        if (!ok) {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            return
+        }
+        panel.showDone(message)
+        b.security.text = getString(R.string.send_encrypted_verified)
+        refreshTrustBadges(this, adapter)
+        if (delivered) b.root.postDelayed({ if (!isFinishing) finish() }, 1800)
+    }
+
+    /** The receiver's key is not the remembered one: nothing was sent (spec §7.5). */
+    private fun showKeyChanged(name: String, peer: PeerKey) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.key_changed_title)
+            .setMessage(getString(R.string.key_changed_message, name))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.forget_device) { _, _ ->
+                val app = applicationContext
+                thread(name = "hoppy-forget") {
+                    runCatching { Security.trust(app).forget(peer.id) }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        b.status.text = getString(R.string.forgotten, name)
+                        refreshTrustBadges(this, adapter)
+                    }
+                }
+            }
+            .show()
     }
 
     /** Connection never opened: connect timeout / refused / no route (not a mid-transfer timeout). */

@@ -129,6 +129,68 @@ pub fn set_login_item(on: bool) -> Result<()> {
     }
 }
 
+/// This copy can install updates itself: Windows when installed by Hoppy-Setup
+/// (`%LOCALAPPDATA%\Programs\Hoppy`), macOS for `/Applications/Hoppy.app` (or
+/// `~/Applications`) in a folder this user can write, Linux when running from the .deb.
+/// Others only get the portal link. May touch the disk: call it before the event loop.
+pub fn can_self_update() -> bool {
+    #[cfg(windows)]
+    {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.to_string_lossy().into_owned()));
+        let local = std::env::var_os("LOCALAPPDATA").map(|l| l.to_string_lossy().into_owned());
+        matches!((exe_dir, local), (Some(dir), Some(local)) if crate::update::is_setup_install(&dir, &local))
+    }
+    #[cfg(not(windows))]
+    {
+        crate::unix::selfupdate::target().is_some()
+    }
+}
+
+/// Worker thread: downloads `release`'s package for this platform into a fresh private
+/// temporary folder and checks it against `SHA256SUMS.txt`. Windows: returns the installer
+/// to run. macOS/Linux: also installs it (`installing` is called when that starts).
+pub fn fetch_update(
+    http: &dyn crate::update::Http,
+    release: &crate::update::Release,
+    progress: &mut dyn FnMut(u64),
+    installing: &mut dyn FnMut(),
+) -> Result<crate::update::UpdateReady> {
+    let temp = std::env::temp_dir();
+    #[cfg(windows)]
+    {
+        let _ = installing;
+        crate::update::download_fresh(http, release, &temp, progress)
+            .map(crate::update::UpdateReady::RunInstaller)
+    }
+    #[cfg(not(windows))]
+    {
+        crate::unix::selfupdate::fetch_and_install(http, release, &temp, progress, installing)
+    }
+}
+
+/// macOS/Linux, after `fetch_update` installed a new version: starts it once this process
+/// has exited (the caller exits right after).
+pub fn relaunch_after_exit() -> Result<()> {
+    #[cfg(windows)]
+    {
+        anyhow::bail!("the Windows installer restarts Hoppy itself")
+    }
+    #[cfg(not(windows))]
+    {
+        crate::unix::selfupdate::relaunch_after_exit()
+    }
+}
+
+/// Tray start (worker): removes what an interrupted update left next to the Mac app
+/// (Windows and Linux keep everything in the temporary folder, cleaned by
+/// `update::remove_stale_update_dirs`).
+pub fn remove_update_leftovers() {
+    #[cfg(not(windows))]
+    crate::unix::selfupdate::remove_app_leftovers();
+}
+
 /// Label of the Explorer verb (`HKCU\Software\Classes\*\shell\Hoppy`), in the UI language
 /// at install time.
 pub fn verb_label() -> &'static str {
@@ -414,9 +476,16 @@ pub mod win {
     use anyhow::{Context, Result, bail};
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS,
-        GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WAIT_OBJECT_0, WPARAM,
+        GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
     };
     use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+    use windows_sys::Win32::Graphics::Gdi::{
+        BLACK_BRUSH, BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_BTNFACE,
+        CreateFontW, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_NOPREFIX, DT_SINGLELINE,
+        DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FW_NORMAL, FW_SEMIBOLD, FillRect, GetDC,
+        GetDeviceCaps, GetStockObject, GetSysColorBrush, HFONT, InvalidateRect, LOGPIXELSY,
+        OUT_DEFAULT_PRECIS, PAINTSTRUCT, ReleaseDC, SelectObject, WHITE_BRUSH,
+    };
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     use windows_sys::Win32::Networking::WinHttp::{
         INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
@@ -442,12 +511,21 @@ pub mod win {
         CommDlgExtendedError, FNERR_BUFFERTOOSMALL, GetOpenFileNameW, OFN_ALLOWMULTISELECT,
         OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::Shell::{
         NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND,
         NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT,
         NOTIFYICON_VERSION_4, NOTIFYICONDATAW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC,
         SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, Shell_NotifyIconW, ShellExecuteExW,
         ShellExecuteW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AdjustWindowRectEx, BN_CLICKED, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, DC_HASDEFID, DM_GETDEFID,
+        HMENU, HWND_TOPMOST, IDC_ARROW, IDCANCEL, IsDialogMessageW, LoadCursorW, PostQuitMessage,
+        SPI_GETWORKAREA, SW_SHOW, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow,
+        SystemParametersInfoW, WM_CLOSE, WM_COMMAND, WM_PAINT, WM_SETFONT, WS_CAPTION, WS_CHILD,
+        WS_EX_APPWINDOW, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
+        WS_VISIBLE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -471,6 +549,7 @@ pub mod win {
         verb_label,
     };
     use crate::diag;
+    use crate::verify::{DialogLive, DialogView, QrMatrix};
 
     // The only sound `hoppyw send` plays (on delivery). 'static, so the buffer outlives the
     // asynchronous SND_MEMORY playback.
@@ -1208,6 +1287,518 @@ pub mod win {
         Ok(parse_multiselect(&buf, |w| {
             PathBuf::from(OsString::from_wide(w))
         }))
+    }
+
+    // ------------------------------------------------------------ verification dialog
+    //
+    // A small window of our own (MessageBox cannot show large emoji, a toggle or a QR
+    // code): static texts, the 4 emoji in "Segoe UI Emoji" (GDI draws them in one colour,
+    // so each has its name under it), the same code as digits behind a "123" button, the QR
+    // code painted module by module, push buttons. It runs its own message loop on the
+    // calling thread (a worker: never the tray thread), with IsDialogMessageW for Tab, Enter
+    // (= the first, default button) and Esc (= closed = the default answer).
+
+    const DIALOG_CLASS: &str = "HoppyDialog";
+    const DIALOG_TIMER: usize = 1;
+    /// Control ids: buttons `CTL_BUTTON + index`, the code toggle `CTL_TOGGLE`.
+    const CTL_BUTTON: usize = 100;
+    const CTL_TOGGLE: usize = 90;
+    /// Not exported without the SystemServices feature.
+    const SS_CENTER: u32 = 0x1;
+    const SS_NOPREFIX: u32 = 0x80;
+
+    thread_local! {
+        /// The last button (or Enter/Esc) of this thread's dialog, set by `dialog_wndproc`.
+        static DLG_COMMAND: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+        /// The QR code `dialog_wndproc` paints: modules, left, top, pixels per module.
+        static DLG_QR: RefCell<Option<(QrMatrix, i32, i32, i32)>> = const { RefCell::new(None) };
+    }
+
+    unsafe extern "system" fn dialog_wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            // Buttons, and IsDialogMessageW's Enter (default id) / Esc (IDCANCEL).
+            WM_COMMAND if (wparam >> 16) & 0xffff == BN_CLICKED as usize => {
+                DLG_COMMAND.with(|c| c.set(Some(wparam & 0xffff)));
+                0
+            }
+            WM_CLOSE => {
+                DLG_COMMAND.with(|c| c.set(Some(IDCANCEL as usize)));
+                0
+            }
+            // Enter = the first button, never "Accept".
+            DM_GETDEFID => ((DC_HASDEFID as LRESULT) << 16) | CTL_BUTTON as LRESULT,
+            WM_PAINT => {
+                paint_qr(hwnd);
+                0
+            }
+            // SAFETY: forwards the unmodified arguments Windows passed to us.
+            _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
+    }
+
+    /// Paints the QR code (black on white whatever the theme, quiet zone included).
+    fn paint_qr(hwnd: HWND) {
+        let mut ps = PAINTSTRUCT::default();
+        // SAFETY: our live window, in its WM_PAINT; EndPaint below balances BeginPaint.
+        let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+        DLG_QR.with(|qr| {
+            let Some((m, left, top, px)) =
+                qr.borrow().as_ref().map(|q| (q.0.clone(), q.1, q.2, q.3))
+            else {
+                return;
+            };
+            let n = m.full_width();
+            let side = n as i32 * px;
+            // SAFETY: stock brushes are never deleted; the DC is valid during WM_PAINT.
+            unsafe {
+                let (white, black) = (GetStockObject(WHITE_BRUSH), GetStockObject(BLACK_BRUSH));
+                let all = RECT {
+                    left,
+                    top,
+                    right: left + side,
+                    bottom: top + side,
+                };
+                FillRect(hdc, &all, white);
+                for y in 0..n {
+                    for x in 0..n {
+                        if m.is_dark(x, y) {
+                            let (l, t) = (left + x as i32 * px, top + y as i32 * px);
+                            let r = RECT {
+                                left: l,
+                                top: t,
+                                right: l + px,
+                                bottom: t + px,
+                            };
+                            FillRect(hdc, &r, black);
+                        }
+                    }
+                }
+            }
+        });
+        // SAFETY: balances BeginPaint above.
+        unsafe { EndPaint(hwnd, &ps) };
+    }
+
+    /// A GDI font, deleted on drop.
+    struct Font(HFONT);
+
+    impl Font {
+        fn new(face: &str, height: i32, weight: u32) -> Font {
+            let face = wide(face);
+            // SAFETY: plain values; the face name is NUL-terminated and alive for the call.
+            Font(unsafe {
+                CreateFontW(
+                    -height,
+                    0,
+                    0,
+                    0,
+                    weight as i32,
+                    0,
+                    0,
+                    0,
+                    u32::from(DEFAULT_CHARSET),
+                    u32::from(OUT_DEFAULT_PRECIS),
+                    u32::from(CLIP_DEFAULT_PRECIS),
+                    u32::from(CLEARTYPE_QUALITY),
+                    u32::from(DEFAULT_PITCH),
+                    face.as_ptr(),
+                )
+            })
+        }
+    }
+
+    impl Drop for Font {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: created by CreateFontW, deleted once, after the window is gone.
+                unsafe { DeleteObject(self.0) };
+            }
+        }
+    }
+
+    /// Height of `text` wrapped to `width` pixels in `font` (+2: static controls wrap a
+    /// hair differently from DT_CALCRECT).
+    fn text_height(text: &str, font: &Font, width: i32) -> i32 {
+        text_rect(text, font, width, DT_WORDBREAK).bottom + 2
+    }
+
+    fn text_width(text: &str, font: &Font) -> i32 {
+        text_rect(text, font, 10_000, DT_SINGLELINE).right
+    }
+
+    fn text_rect(text: &str, font: &Font, width: i32, flags: u32) -> RECT {
+        let w = wide(text);
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: 0,
+        };
+        // SAFETY: screen DC released below; the old font is selected back before release.
+        unsafe {
+            let hdc = GetDC(null_mut());
+            let old = SelectObject(hdc, font.0);
+            DrawTextW(
+                hdc,
+                w.as_ptr(),
+                -1,
+                &mut r,
+                DT_CALCRECT | DT_NOPREFIX | flags,
+            );
+            SelectObject(hdc, old);
+            ReleaseDC(null_mut(), hdc);
+        }
+        r
+    }
+
+    /// Creates a child control (`STATIC` / `BUTTON`) with `font`.
+    #[allow(clippy::too_many_arguments)]
+    fn child(
+        parent: HWND,
+        class: &str,
+        text: &str,
+        style: u32,
+        id: usize,
+        (x, y, w, h): (i32, i32, i32, i32),
+        font: &Font,
+    ) -> HWND {
+        let (class, text) = (wide(class), wide(text));
+        // SAFETY: null = this module; strings alive for the call; the parent is our window.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                text.as_ptr(),
+                WS_CHILD | WS_VISIBLE | style,
+                x,
+                y,
+                w,
+                h,
+                parent,
+                id as HMENU,
+                GetModuleHandleW(null()),
+                null(),
+            )
+        };
+        // SAFETY: a live control (or null, which SendMessageW tolerates); the font
+        // outlives the window.
+        unsafe { SendMessageW(hwnd, WM_SETFONT, font.0 as WPARAM, 0) };
+        hwnd
+    }
+
+    fn set_text(hwnd: HWND, text: &str) {
+        let text = wide(text);
+        // SAFETY: NUL-terminated buffer alive for the call; the control copies it.
+        unsafe { SetWindowTextW(hwnd, text.as_ptr()) };
+    }
+
+    fn show(hwnd: HWND, visible: bool) {
+        // SAFETY: plain call on our own control.
+        unsafe { ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE }) };
+    }
+
+    /// The accept question: the verification dialog (Decline is the default button).
+    pub fn ask_offer(view: &DialogView, live: &DialogLive) -> Option<u32> {
+        show_dialog(view, live)
+    }
+
+    /// Shows `view` and waits for a button; `None` = closed (Esc, ×), timed out or closed
+    /// through `live` (the caller uses the default). Worker threads only.
+    pub fn show_dialog(view: &DialogView, live: &DialogLive) -> Option<u32> {
+        // SAFETY: null = this executable's module.
+        let hinstance: HINSTANCE = unsafe { GetModuleHandleW(null()) };
+        let class = wide(DIALOG_CLASS);
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(dialog_wndproc),
+            hInstance: hinstance,
+            lpszClassName: class.as_ptr(),
+            // SAFETY: shared system cursor/brush; neither is ever destroyed.
+            hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
+            // SAFETY: as above.
+            hbrBackground: unsafe { GetSysColorBrush(COLOR_BTNFACE) },
+            ..Default::default()
+        };
+        // SAFETY: `wc` and the class name are alive for the call; registering twice in one
+        // process fails harmlessly and the first registration is used.
+        unsafe { RegisterClassExW(&wc) };
+
+        // Layout in pixels at the screen's DPI (the process is system-DPI aware).
+        // SAFETY: screen DC, released right away.
+        let dpi = unsafe {
+            let hdc = GetDC(null_mut());
+            let dpi = GetDeviceCaps(hdc, LOGPIXELSY as _);
+            ReleaseDC(null_mut(), hdc);
+            if dpi > 0 { dpi } else { 96 }
+        };
+        let px = |v: i32| v * dpi / 96;
+        let text_font = Font::new("Segoe UI", px(15), FW_NORMAL);
+        let small_font = Font::new("Segoe UI", px(12), FW_NORMAL);
+        let emoji_font = Font::new("Segoe UI Emoji", px(40), FW_NORMAL);
+        let digits_font = Font::new("Segoe UI", px(34), FW_SEMIBOLD);
+        let (width, margin) = (px(480), px(18));
+        let inner = width - 2 * margin;
+
+        let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+        let ex_style = WS_EX_TOPMOST | WS_EX_DLGMODALFRAME | WS_EX_APPWINDOW;
+        let title = wide(&view.title);
+        // Created hidden and empty, sized once the controls are laid out.
+        // SAFETY: class registered above; strings alive for the call.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                ex_style,
+                class.as_ptr(),
+                title.as_ptr(),
+                style,
+                0,
+                0,
+                0,
+                0,
+                null_mut(),
+                null_mut(),
+                hinstance,
+                null(),
+            )
+        };
+        if hwnd.is_null() {
+            diag::log("dialog: CreateWindowExW failed");
+            return None;
+        }
+        let label = SS_NOPREFIX; // '&' in device names is not an accelerator
+        let mut y = margin;
+        let h = text_height(&view.text, &text_font, inner);
+        child(
+            hwnd,
+            "STATIC",
+            &view.text,
+            label,
+            0,
+            (margin, y, inner, h),
+            &text_font,
+        );
+        y += h + px(10);
+        if !view.note.is_empty() {
+            let h = text_height(&view.note, &text_font, inner);
+            child(
+                hwnd,
+                "STATIC",
+                &view.note,
+                label,
+                0,
+                (margin, y, inner, h),
+                &text_font,
+            );
+            y += h + px(10);
+        }
+        let mut code_controls = Vec::new();
+        let mut digits = null_mut();
+        if let Some(code) = &view.code {
+            let cell = inner / 4;
+            let (emoji_h, names_h) = (px(56), px(34));
+            for i in 0..4 {
+                let x = margin + cell * i as i32;
+                let center = label | SS_CENTER;
+                code_controls.push(child(
+                    hwnd,
+                    "STATIC",
+                    code.emoji[i],
+                    center,
+                    0,
+                    (x, y, cell, emoji_h),
+                    &emoji_font,
+                ));
+                code_controls.push(child(
+                    hwnd,
+                    "STATIC",
+                    code.names[i],
+                    center,
+                    0,
+                    (x, y + emoji_h, cell, names_h),
+                    &small_font,
+                ));
+            }
+            digits = child(
+                hwnd,
+                "STATIC",
+                &code.digits,
+                label | SS_CENTER,
+                0,
+                (margin, y + px(14), inner, emoji_h),
+                &digits_font,
+            );
+            show(digits, false);
+            y += emoji_h + names_h + px(10);
+        }
+        let mut caption = null_mut();
+        if let Some(qr) = &view.qr {
+            let module = px(4).max(3);
+            let side = qr.matrix.full_width() as i32 * module;
+            DLG_QR.with(|q| {
+                *q.borrow_mut() = Some((qr.matrix.clone(), (width - side) / 2, y, module));
+            });
+            y += side + px(6);
+            let h = text_height(&qr.caption, &text_font, inner).max(text_height(
+                &qr.verified,
+                &text_font,
+                inner,
+            ));
+            caption = child(
+                hwnd,
+                "STATIC",
+                &qr.caption,
+                label | SS_CENTER,
+                0,
+                (margin, y, inner, h),
+                &text_font,
+            );
+            y += h + px(10);
+        }
+        // Buttons right-aligned in the view's order; the code toggle on the left.
+        let button_h = px(30);
+        let button_w = |t: &str| (text_width(t, &text_font) + px(28)).max(px(90));
+        let mut x = width - margin;
+        let mut first_button = null_mut();
+        for (i, (_, text)) in view.buttons.iter().enumerate().rev() {
+            let w = button_w(text);
+            x -= w;
+            let kind = if i == 0 {
+                BS_DEFPUSHBUTTON
+            } else {
+                BS_PUSHBUTTON
+            } as u32;
+            let b = child(
+                hwnd,
+                "BUTTON",
+                text,
+                WS_TABSTOP | kind,
+                CTL_BUTTON + i,
+                (x, y, w, button_h),
+                &text_font,
+            );
+            if i == 0 {
+                first_button = b;
+            }
+            x -= px(8);
+        }
+        let toggle = view.code.as_ref().map(|code| {
+            let w = button_w(&code.to_emoji).max(button_w(&code.to_digits));
+            child(
+                hwnd,
+                "BUTTON",
+                &code.to_digits,
+                WS_TABSTOP | BS_PUSHBUTTON as u32,
+                CTL_TOGGLE,
+                (margin, y, w, button_h),
+                &text_font,
+            )
+        });
+        let client_h = y + button_h + margin;
+
+        // Size and centre on the work area, then show.
+        let mut frame = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: client_h,
+        };
+        let mut work = RECT::default();
+        // SAFETY: valid out-pointers; our live window.
+        unsafe {
+            AdjustWindowRectEx(&mut frame, style, 0, ex_style);
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, (&raw mut work).cast(), 0);
+            let (w, h) = (frame.right - frame.left, frame.bottom - frame.top);
+            let left = work.left + ((work.right - work.left) - w).max(0) / 2;
+            let top = work.top + ((work.bottom - work.top) - h).max(0) / 2;
+            SetWindowPos(hwnd, HWND_TOPMOST, left, top, w, h, 0);
+            ShowWindow(hwnd, SW_SHOWNORMAL);
+            SetForegroundWindow(hwnd);
+            SetFocus(first_button);
+            SetTimer(
+                hwnd,
+                DIALOG_TIMER,
+                crate::verify::LIVE_POLL.as_millis() as u32,
+                None,
+            );
+        }
+
+        let deadline = view.timeout.map(|t| Instant::now() + t);
+        let mut showing_digits = false;
+        let mut verified_shown = false;
+        DLG_COMMAND.with(|c| c.set(None));
+        let answer = loop {
+            if let Some(id) = DLG_COMMAND.with(std::cell::Cell::take) {
+                match id {
+                    CTL_TOGGLE => {
+                        showing_digits = !showing_digits;
+                        for &c in &code_controls {
+                            show(c, !showing_digits);
+                        }
+                        show(digits, showing_digits);
+                        if let (Some(t), Some(code)) = (toggle, &view.code) {
+                            set_text(
+                                t,
+                                if showing_digits {
+                                    &code.to_emoji
+                                } else {
+                                    &code.to_digits
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                    id if id >= CTL_BUTTON => {
+                        break view.buttons.get(id - CTL_BUTTON).map(|b| b.0);
+                    }
+                    _ => break None, // Esc, the close box
+                }
+            }
+            if live.closed() || deadline.is_some_and(|d| Instant::now() >= d) {
+                break None;
+            }
+            if !verified_shown
+                && live.verified()
+                && let Some(qr) = &view.qr
+            {
+                verified_shown = true;
+                DLG_QR.with(|q| q.borrow_mut().take());
+                set_text(caption, &qr.verified);
+                // SAFETY: our live window; repaints (and erases) the QR code's area.
+                unsafe { InvalidateRect(hwnd, null(), 1) };
+            }
+            let mut msg = MSG::default();
+            // SAFETY: valid out-pointer; null hwnd = every message of this thread (the
+            // timer above makes this return at least every LIVE_POLL).
+            let got = unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) };
+            if got == 0 {
+                // WM_QUIT: hand it on to whoever runs the outer loop.
+                // SAFETY: plain call.
+                unsafe { PostQuitMessage(msg.wParam as i32) };
+                break None;
+            }
+            if got < 0 {
+                break None;
+            }
+            // SAFETY: `msg` was filled in by GetMessageW; our window is alive.
+            unsafe {
+                if IsDialogMessageW(hwnd, &msg) == 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        };
+        // SAFETY: our own window and timer, destroyed once; the fonts drop after this.
+        unsafe {
+            KillTimer(hwnd, DIALOG_TIMER);
+            DestroyWindow(hwnd);
+        }
+        DLG_QR.with(|q| q.borrow_mut().take());
+        DLG_COMMAND.with(|c| c.set(None));
+        answer
     }
 
     // ------------------------------------------------------------ `hoppyw send` collector

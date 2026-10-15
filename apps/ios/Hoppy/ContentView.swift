@@ -1,4 +1,5 @@
-// The one screen: mascot on top, "Pronto a ricevere", nearby devices, "Invia file".
+// The one screen: mascot on top, "Pronto a ricevere", nearby devices, "Invia file"; the
+// incoming-offer sheet with the verification code (spec §7), QR scan/show, KeyChanged alert.
 import PhotosUI
 import QuickLook
 import SwiftUI
@@ -25,6 +26,16 @@ struct ContentView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 18) {
+                    if let text = model.banner {
+                        BannerView(text: text, palette: palette, onClose: { model.banner = nil })
+                    }
+                    if let version = model.update {
+                        BannerView(text: L("update_banner", version), palette: palette, onClose: { model.dismissUpdate() }) {
+                            Link(L("update_open"), destination: UpdateCheck.portal)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(palette.accent)
+                        }
+                    }
                     mascot
                     receiveCard
                     if !model.lastReceived.isEmpty { receivedCard }
@@ -70,12 +81,24 @@ struct ContentView: View {
             ActivityView(items: shareItems).ignoresSafeArea()
         }
         .sheet(item: $editing) { prompt in TextPromptSheet(prompt: prompt, palette: palette).environmentObject(model) }
-        .alert(L("incoming_title"), isPresented: Binding(get: { model.offer != nil }, set: { _ in }), presenting: model.offer) { _ in
-            // Decline first and as the cancel (bold, default) action: never auto-accept.
-            Button(L("decline"), role: .cancel) { model.decide(accept: false) }
-            Button(L("accept")) { model.decide(accept: true) }
-        } message: { offer in
-            Text(Self.offerText(offer))
+        // Swiping the sheet away declines (model.decide ignores an offer already answered):
+        // never auto-accept.
+        .sheet(item: Binding(get: { model.offer }, set: { if $0 == nil { model.decide(accept: false) } })) { offer in
+            OfferSheet(offer: offer).environmentObject(model)
+        }
+        .sheet(isPresented: Binding(get: { model.scanningFor == .send }, set: { if !$0 { model.cancelScan() } })) {
+            QRScanSheet(onCode: { model.scanned($0) }, onCancel: { model.cancelScan() })
+        }
+        .sheet(isPresented: Binding(get: { model.myQR?.over == .send }, set: { if !$0 { model.closeMyQR() } })) {
+            MyQRSheet(payload: model.myQR?.payload ?? "", onClose: { model.closeMyQR() })
+        }
+        .alert(L("key_changed_title", model.keyChanged?.name ?? ""),
+               isPresented: Binding(get: { model.keyChanged != nil && model.offer == nil }, set: { if !$0 { model.keyChanged = nil } }),
+               presenting: model.keyChanged) { alert in
+            Button(L("forget_device"), role: .destructive) { model.forget(alert.peerId) }
+            Button(L("ok"), role: .cancel) { model.keyChanged = nil }
+        } message: { alert in
+            Text(L("key_changed_text", alert.name))
         }
         .alert(L("receive_error_title"), isPresented: Binding(get: { model.receiveError != nil }, set: { if !$0 { model.receiveError = nil } })) {
             Button(L("ok"), role: .cancel) { model.receiveError = nil }
@@ -183,6 +206,24 @@ struct ContentView: View {
             if case let .progress(_, percent) = model.sendStatus {
                 ProgressView(value: Double(percent), total: 100).accessibilityHidden(true)
             }
+            if let security = model.sendSecurity {
+                SecurityPanel(security: security, peerName: sendPeerName, palette: palette,
+                              collapsed: model.sendCheckHidden,
+                              note: model.noteFor == .send ? model.securityNote : nil,
+                              onMatch: { model.confirmMatch(.send) },
+                              onScanQR: { model.startScan(.send) },
+                              onShowQR: { model.showMyQR(over: .send) },
+                              onLater: { model.later(.send) })
+            } else if model.noteFor == .send, let note = model.securityNote {
+                Text(note).font(.subheadline).foregroundColor(palette.text)
+            }
+        }
+    }
+
+    private var sendPeerName: String {
+        switch model.sendStatus {
+        case let .waiting(n), let .fallback(n), let .progress(n, _), let .delivered(n), let .declined(n): return n
+        default: return model.sendSecurity?.peer?.name ?? "?"
         }
     }
 
@@ -216,6 +257,13 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint(L("send_to_hint"))
+                    .contextMenu {
+                        if peer.trust == "known" || peer.trust == "verified" {
+                            Button(role: .destructive) { model.forget(peer.id) } label: {
+                                Label(L("forget_device"), systemImage: "trash")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -232,6 +280,10 @@ struct ContentView: View {
             }
             Button { openReceivedFolder() } label: {
                 Label(L("open_received"), systemImage: "folder")
+            }
+            // Phone ↔ phone verification: the other device scans this (spec §7.7).
+            Button { model.showMyQR(over: .send) } label: {
+                Label(L("sec_show_my_qr"), systemImage: "qrcode")
             }
             Toggle(L("sound"), isOn: $model.soundOn)
         } label: {
@@ -287,6 +339,64 @@ struct ContentView: View {
             text += "\n\n" + names.joined(separator: "\n") + (offer.count > names.count ? "\n…" : "")
         }
         return text
+    }
+}
+
+// MARK: - incoming offer
+
+/// "File in arrivo": sender, files, security (code / QR / ✓ / non cifrato), Rifiuta first.
+struct OfferSheet: View {
+    let offer: HoppyOffer
+    @EnvironmentObject var model: AppModel
+    @Environment(\.colorScheme) var scheme
+
+    var body: some View {
+        let palette = Palette.current(scheme)
+        let current = model.offer ?? offer
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(ContentView.offerText(current))
+                        .font(.body)
+                        .foregroundColor(palette.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    SecurityPanel(security: current.security, peerName: current.fromName, palette: palette,
+                                  collapsed: model.offerCheckHidden,
+                                  note: model.noteFor == .offer ? model.securityNote : nil,
+                                  onMatch: { model.confirmMatch(.offer) },
+                                  onScanQR: { model.startScan(.offer) },
+                                  onShowQR: { model.showMyQR(over: .offer) },
+                                  onLater: { model.later(.offer) })
+                    // Decline first: the safe choice; no answer in 110 s also declines.
+                    VStack(spacing: 10) {
+                        Button { model.decide(accept: false) } label: {
+                            Text(L("decline")).frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(HoppyButtonStyle(palette: palette))
+                        .keyboardShortcut(.cancelAction)
+                        Button { model.decide(accept: true) } label: {
+                            Text(L("accept")).font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(20)
+                .frame(maxWidth: 560)
+                .frame(maxWidth: .infinity)
+            }
+            .background(palette.bg.ignoresSafeArea())
+            .navigationTitle(L("incoming_title"))
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .navigationViewStyle(.stack)
+        .tint(palette.accent)
+        .sheet(isPresented: Binding(get: { model.scanningFor == .offer }, set: { if !$0 { model.cancelScan() } })) {
+            QRScanSheet(onCode: { model.scanned($0) }, onCancel: { model.cancelScan() })
+        }
+        .sheet(isPresented: Binding(get: { model.myQR?.over == .offer }, set: { if !$0 { model.closeMyQR() } })) {
+            MyQRSheet(payload: model.myQR?.payload ?? "", onClose: { model.closeMyQR() })
+        }
     }
 }
 

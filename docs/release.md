@@ -30,16 +30,30 @@ The **Windows tray updater** (`crates/hoppy-cli/src/update.rs`, docs/platforms/w
 release without both assets is not offered. **Never rename `Hoppy-Setup-x64.exe` or
 `SHA256SUMS.txt`**, never drop the installer from the sums, and keep tags `v` + plain `X.Y.Z`.
 
-The **Linux tray** (docs/platforms/linux.md "How it works") reads the same `releases/latest`
-and offers a version only when `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached;
-it never downloads: it links to the portal, whose Ubuntu button points at
+The **Linux tray** (docs/platforms/linux.md "Updates") reads the same `releases/latest`
+and offers a version only when `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached.
+Installed from the .deb (`/usr/bin/hoppyw`), it downloads `Hoppy-linux-amd64.deb` from
+`releases/download/<tag>/`, refuses it unless its SHA-256 matches its line in that release's
+`SHA256SUMS.txt`, installs it with `pkexec apt-get install -y` (password through polkit) and
+restarts; other copies link to the portal, whose Ubuntu button points at
 `releases/latest/download/Hoppy-linux-amd64.deb` (`site/app.js`). **Never rename it.**
-The **Mac menu-bar app** (docs/platforms/macos-ios.md) does the same with
-`Hoppy-macos-universal.dmg`: notification + *Download Hoppy X…* → portal, no download (an
-unsigned app replaced in place would go through Gatekeeper again anyway). **Never rename it.**
-The **iPhone/iPad app** has no update check: a sideloaded app is replaced by sideloading the
-new `Hoppy-ios-unsigned.ipa` (the portal's iOS button points at
-`releases/latest/download/Hoppy-ios-unsigned.ipa`). **Never rename it.**
+The **Mac menu-bar app** (docs/platforms/macos-ios.md "Updates") does the same with
+`Hoppy-macos-universal.dmg` when it runs as `/Applications/Hoppy.app` (or
+`~/Applications`) in a folder the user can write: download from `releases/download/<tag>/`,
+SHA-256 against `SHA256SUMS.txt`, then the `Hoppy.app` **at the root of the .dmg** replaces
+the installed one if `codesign --verify` passes and its `CFBundleIdentifier` is
+`app.hoppy.desktop` and its `CFBundleShortVersionString` is the tag's `X.Y.Z` — so keep
+`build-app.sh` writing the version and the bundle id, and the app at the image's root.
+Elsewhere: notification + *Download Hoppy X…* → portal. **Never rename it.**
+The **iPhone/iPad app** (`apps/ios/Hoppy/UpdateCheck.swift`) reads the same `releases/latest`
+at most once a day and announces a version only when `Hoppy-ios-unsigned.ipa` is attached; it
+never downloads (a sideloaded app is replaced by SideStore or by sideloading the new .ipa; the
+portal's iOS button points at `releases/latest/download/Hoppy-ios-unsigned.ipa`). The portal
+also publishes **`sidestore.json`**, an AltStore/SideStore source written by `tools/site.py`
+from the latest release (`downloadURL` = `releases/download/<tag>/Hoppy-ios-unsigned.ipa`,
+`version` = the tag without `v` or `-suffix`, equal to the app's `CFBundleShortVersionString`).
+`release.yml` dispatches `pages.yml` after publishing so the source lists the new version
+(releases created with `GITHUB_TOKEN` trigger no `release: published` run). **Never rename it.**
 
 **Trust model of updates.** `SHA256SUMS.txt` comes from the same GitHub Release as the
 installer, so it proves *integrity* (no corrupted or truncated download), not *authenticity*:
@@ -119,8 +133,12 @@ row above.
 - Source: `site/` (`index.html`, `styles.css`, `app.js`); built by `tools/site.py`
   (fills the repo/URL, generates `qr.svg`, converts the bundled fonts to WOFF2).
 - Preview locally: `python3 tools/site.py serve` → http://localhost:8000
-- Deployed by `.github/workflows/pages.yml` on pushes to `main` that touch the site and on
-  every published release. One-time setup: `Settings → Pages → Source: GitHub Actions`.
+- Deployed by `.github/workflows/pages.yml` on pushes to `main` that touch the site, on
+  releases published by hand and when `release.yml` dispatches it after publishing (needs
+  `actions: write` in that job). One-time setup: `Settings → Pages → Source: GitHub Actions`.
+- `sidestore.json` (iPhone/iPad SideStore/AltStore source) is generated at build time from
+  `releases/latest`; CI builds with `--require-release` (an unreachable API fails the deploy
+  rather than publishing a source without versions).
 - Accessibility: `tools/site_audit.py` (axe-core, WCAG 2.2 AA, light/dark × desktop/phone, plus
   text over the checkerboard against both tiles) runs before every deploy and blocks it on failure.
 - Behaviour: detects the OS (user-agent client hints + UA), shows one big download button

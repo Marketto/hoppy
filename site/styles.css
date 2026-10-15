@@ -262,6 +262,9 @@ h2 { font-family: "Mochiy Pop One", sans-serif; font-weight: 400; font-size: 26p
 .card-more { font-size: 13.5px; color: var(--muted); }
 .card-more summary { padding: 12px 0; cursor: pointer; font-weight: 700; color: var(--text); }
 .card-more p { margin: 0 0 4px; line-height: 1.45; }
+.card-more .card-source { margin-top: 8px; }
+.card-source code { display: block; margin: 4px 0; padding: 6px 8px; border-radius: 8px; background: var(--bg); color: var(--text); font-size: 12.5px; overflow-wrap: anywhere; user-select: all; }
+.card-source a { font-weight: 700; }
 .badge {
   display: inline-flex; align-self: flex-start; padding: 6px 14px; border-radius: 16px;
   background: var(--soon); color: var(--soon-text); font-weight: 900; font-size: 13.5px;

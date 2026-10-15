@@ -96,7 +96,18 @@ La firma gratuita **dura 7 giorni**: poi Hoppy non si apre più e basta ripetere
 file ricevuti restano). Hoppy riceve **solo mentre è aperto**: lascia attivo *Pronto a
 ricevere*, accetta con **Accetta** (Rifiuta è la scelta predefinita) e trovi i file in *File →
 Sul mio iPad → Hoppy*. Per inviare: *Invia file* nell'app, oppure *Condividi → Hoppy* da Foto o
-File. Dettagli, limiti e risoluzione dei problemi: [`docs/platforms/ios.md`](docs/platforms/ios.md).
+File (agli altri appare come un dispositivo a parte, «iPad (Condividi)»).
+
+*Aggiornamenti e rinnovo automatici:* se usi **SideStore** (gratuito; si installa una volta con
+Sideloadly seguendo la sua guida), aggiungi la sorgente
+`https://marketto.github.io/hoppy/sidestore.json` (link sul portale, scheda iPhone e iPad):
+SideStore rinnova la firma ogni settimana e propone le nuove versioni. Altrimenti Hoppy mostra
+«Hoppy X disponibile» e basta reinstallare con Sideloadly.
+
+*Verifica dei dispositivi:* la prima volta che invii o ricevi da un dispositivo nuovo Hoppy mostra
+4 emoji (o 8 cifre con «123»): se sono uguali sull'altro schermo tocca **Coincide**, oppure
+**Verifica con QR** e inquadra il codice dell'altro dispositivo (✓ accanto al nome). Dettagli,
+limiti e risoluzione dei problemi: [`docs/platforms/ios.md`](docs/platforms/ios.md).
 
 **Android** — installa l'APK `hoppy-android` dagli artifact della CI.
 

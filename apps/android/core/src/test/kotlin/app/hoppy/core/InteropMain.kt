@@ -7,36 +7,71 @@ import java.net.ServerSocket
 import kotlin.system.exitProcess
 
 /**
- * Tiny CLI over the Kotlin core, used by tools/interop.sh to test the Android
- * networking code against the Rust CLI and the Python reference.
+ * Tiny CLI over the Kotlin core, used by tools/interop.sh to test the Android networking
+ * and v1 encryption code against the Rust CLI and the Python reference.
  *
- *   send HOST PORT FILE...      receive DIR PORT [UDP_PORT]      peers SEED_PORT
- *   send-peer UDP_PORT [--no-direct] FILE...   (discovers 127.0.0.1:UDP_PORT; callback, spec §6)
+ *   send HOST PORT FILE...                    receive DIR PORT [UDP_PORT] [--show-qr]
+ *   send-peer UDP_PORT [--no-direct] FILE...  (discovers 127.0.0.1:UDP_PORT; callback, spec §6)
+ *   peers SEED_PORT                           verify HOST PORT PAYLOAD   (QR scanner, spec §7.7)
+ *
+ * Identity: with HOPPY_KT_DIR set, the key and trust store live there (identity.key,
+ * trust.json) and are shared by every process, like Android's filesDir; else in memory.
+ * Output: sessions print "🔒 encrypted · <trust> · <emoji> (<1234 5678>)" or "NOT encrypted".
  */
 fun main(args: Array<String>) {
     val me = DeviceInfo("kotlin-interop", "InteropKotlin", "android")
+    val local = System.getenv("HOPPY_KT_DIR")?.let { dir ->
+        Local(me, DeviceKey.loadOrCreate(File(dir, "identity.key")), Trust.open(File(dir, "trust.json")))
+    } ?: Local.ephemeral(me)
+    fun describe(s: SessionInfo) =
+        if (!s.encrypted) "NOT encrypted" else "🔒 encrypted · ${s.trust?.wire} · ${s.sas?.text} (${s.sas?.digits})"
+    val printer = object : SendListener {
+        override fun onSession(info: SessionInfo) = println("session ${describe(info)}")
+        override fun onWarning(warning: Warning) = println("warning $warning")
+    }
+    fun finish(outcome: Result<SendOutcome>): Nothing {
+        outcome.onSuccess { println(it) }.onFailure { println("error ${it::class.simpleName}: ${it.message}") }
+        exitProcess(if (outcome.getOrNull() == SendOutcome.Delivered) 0 else 1)
+    }
     when (args.firstOrNull()) {
-        "send" -> {
-            val outcome = TransferClient.send(
-                InetAddress.getByName(args[1]), args[2].toInt(), me, args.drop(3).map { FileSource(File(it)) },
-            )
-            println(outcome)
-            exitProcess(if (outcome == SendOutcome.Delivered) 0 else 1)
-        }
+        "send" -> finish(
+            runCatching {
+                TransferClient.send(
+                    InetAddress.getByName(args[1]), args[2].toInt(), local, args.drop(3).map { FileSource(File(it)) }, printer,
+                )
+            },
+        )
         "receive" -> {
-            val dir = File(args[1])
-            val server = ServerSocket(args[2].toInt())
-            val node = (args.getOrNull(3)?.let { DiscoveryNode(me, bindPort = it.toInt(), useMulticast = false) } ?: DiscoveryNode(me))
+            val rest = args.drop(1).filter { it != "--show-qr" }
+            val dir = File(rest[0])
+            val server = ServerSocket(rest[1].toInt())
+            val node = (rest.getOrNull(2)?.let { DiscoveryNode(me, bindPort = it.toInt(), useMulticast = false) } ?: DiscoveryNode(me))
                 .apply { transferPort = server.localPort; start() }
-            println("receiving on ${server.localPort}")
+            println("receiving on ${server.localPort} fingerprint ${local.fingerprint}")
+            if ("--show-qr" in args) println("qr ${local.beginQr()}")
+            System.out.flush()
             val handler = object : ReceiveHandler {
-                override fun decide(offer: Offer, from: InetAddress) = true
+                override fun decide(offer: Offer, from: InetAddress, session: SessionInfo): Boolean {
+                    println("offer from ${offer.sender.name}: ${describe(session)}")
+                    return true
+                }
+                override fun autoAccepts() = true // like `hoppy receive --yes`: never pins
                 override fun onFinished(from: InetAddress, offer: Offer, saved: List<String>, error: String?) =
                     println("finished ${saved.size} error=$error")
+                override fun onBlocked(from: InetAddress, offer: Offer, session: SessionInfo, reason: String) =
+                    println("blocked ${offer.sender.name}: $reason")
+                override fun onVerified(from: InetAddress, peer: PeerKey) = println("verified ${peer.name}")
+                override fun onWarning(from: InetAddress, warning: Warning) = when (warning) {
+                    is Warning.HandshakeAborts ->
+                        println("WARNING: ${warning.recent} encrypted connections broken off right after the handshake")
+                    is Warning.TrustNotSaved -> println("WARNING: ${warning.message}")
+                }
             }
-            CallbackReceiver.install(node, DirectorySink(dir), handler)
-            while (true) TransferServer.handle(server.accept(), DirectorySink(dir), handler)
-            @Suppress("UNREACHABLE_CODE") node.stop()
+            CallbackReceiver.install(node, DirectorySink(dir), handler, local)
+            while (true) {
+                val client = server.accept()
+                Thread { TransferServer.handle(client, DirectorySink(dir), handler, local) }.start()
+            }
         }
         "send-peer" -> {
             val direct = args[2] != "--no-direct"
@@ -49,11 +84,21 @@ fun main(args: Array<String>) {
             val deadline = System.currentTimeMillis() + 5_000
             while (node.peers().isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(50)
             val peer = node.peers().firstOrNull() ?: run { System.err.println("no peer"); exitProcess(1) }
-            val outcome = if (direct) TransferClient.sendToPeer(peer, me, files, node)
-            else TransferClient.sendViaCallback(peer, me, files, node)
-            println(outcome)
+            val outcome = runCatching {
+                if (direct) TransferClient.sendToPeer(peer, local, files, node, printer)
+                else TransferClient.sendViaCallback(peer, local, files, node, printer)
+            }
             node.stop()
-            exitProcess(if (outcome == SendOutcome.Delivered) 0 else 1)
+            finish(outcome)
+        }
+        "verify" -> {
+            val payload = args[3]
+            val qr = QrPayload.parse(payload) ?: run { println("error: not a Hoppy verification code"); exitProcess(1) }
+            val peer = Peer(DeviceInfo(qr.id, args[1], "?"), InetAddress.getByName(args[1]), args[2].toInt(), Protocol.CRYPTO_VERSION)
+            val result = runCatching { QrVerification.scan(payload, null, local, listOf(peer), null) }
+            result.onSuccess { println("verified ${it.peer.name} confirmed=${it.confirmed} ${it.problem ?: ""}") }
+                .onFailure { println("error ${it::class.simpleName}: ${it.message}") }
+            exitProcess(if (result.getOrNull()?.confirmed == true) 0 else 1)
         }
         "peers" -> {
             val node = DiscoveryNode(
@@ -62,11 +107,16 @@ fun main(args: Array<String>) {
             )
             node.start()
             Thread.sleep(2_000)
-            node.peers().forEach { println("${it.device.name} ${it.device.platform} ${it.address.hostAddress}:${it.port}") }
+            node.peers().forEach {
+                println("${it.device.name} ${it.device.platform} ${if (it.encrypts) "v1" else "v0"} ${it.address.hostAddress}:${it.port}")
+            }
             node.stop()
         }
         else -> {
-            System.err.println("usage: send HOST PORT FILE... | receive DIR PORT [UDP_PORT] | send-peer UDP_PORT [--no-direct] FILE... | peers SEED_PORT")
+            System.err.println(
+                "usage: send HOST PORT FILE... | receive DIR PORT [UDP_PORT] [--show-qr] | " +
+                    "send-peer UDP_PORT [--no-direct] FILE... | peers SEED_PORT | verify HOST PORT PAYLOAD",
+            )
             exitProcess(2)
         }
     }

@@ -16,6 +16,8 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
 | Open at login (SMAppService 13+, LaunchAgent fallback), `hoppy install/uninstall`, first run | `crates/hoppy-cli/src/macos/login.rs` |
 | Pure helpers + Info.plist consistency test (run on Linux) | `crates/hoppy-cli/src/macos/mod.rs` |
 | curl update transport (shared with Linux) | `crates/hoppy-cli/src/unix/http.rs` |
+| Self-update (download .dmg, hdiutil/ditto/codesign/PlistBuddy, swap, relaunch) | `crates/hoppy-cli/src/unix/selfupdate.rs` |
+| Verification dialogs (`show_dialog`: NSAlert + accessory view) | `crates/hoppy-cli/src/macos/ui.rs`, model in `crates/hoppy-cli/src/verify.rs` |
 | Bundle metadata, Finder service, privacy texts | `apps/macos/Info.plist`, `apps/macos/it.lproj/`, `apps/macos/en.lproj/` |
 | Build universal app + dmg / bundle given binaries | `apps/macos/build-app.sh` (`release` / `bundle`) |
 | Icons (generated: `python3 tools/gen_icons.py --macos`) | `assets/brand/macos/` |
@@ -31,6 +33,13 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
   reach the event loop, `dispatch2::run_on_main` for a dialog. Every call that runs its own
   event loop (menus, `runModal`) is followed by `after_modal()` (re-arms the wake-up event).
 - Never auto-accept: Decline is the alert's first (default) button; timeout = decline.
+- Dialogs nest (a warning over an accept question): per-dialog state is keyed by sequence
+  number (`OPEN_ASKS`, `ASK_WINDOWS`, `DIALOGS`); `abort_ask` only aborts its own alert when
+  it is the modal window on top. While a modal alert runs, `gui.rs`'s loop is blocked: work
+  that must happen meanwhile (closing the sender's code window) is done by workers.
+- Self-update replaces only `/Applications/Hoppy.app` or `~/Applications/Hoppy.app` in a
+  writable folder; the .dmg must keep `Hoppy.app` at its root with `CFBundleIdentifier` and
+  `CFBundleShortVersionString` set by `build-app.sh` (checked before the swap).
 - Values for `osascript` are script arguments after the `"hoppy"` sentinel, never script
   text (`notification_args`); no other shell/AppleScript strings are built from data.
 - Only the receiver registers as services provider (a sender process would take the port).

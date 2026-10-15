@@ -75,7 +75,7 @@ struct HoppyButtonStyle: ButtonStyle {
     }
 }
 
-/// A device row: generic shape icon (never a vendor logo), name, platform.
+/// A device row: generic shape icon (never a vendor logo), name, platform, security.
 struct PeerRow: View {
     let peer: HoppyPeer
     let palette: Palette
@@ -90,6 +90,12 @@ struct PeerRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(peer.name).font(.body.weight(.semibold)).foregroundColor(palette.text)
                 Text(Self.platformName(peer.platform)).font(.subheadline).foregroundColor(palette.muted)
+                // 🔒 / ✓ / ⚠ non cifrato (spec §7): text, so VoiceOver reads it too.
+                if let security = SecurityText.row(peer) {
+                    Text(security)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(peer.encrypted == false ? palette.accent : palette.muted)
+                }
             }
             Spacer()
             Image(systemName: "chevron.right").foregroundColor(palette.muted).accessibilityHidden(true)

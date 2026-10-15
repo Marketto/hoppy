@@ -9,6 +9,55 @@ struct HoppyPeer: Codable, Identifiable, Hashable {
     let name: String
     let platform: String
     let addr: String
+    /// Protocol v1 (spec §7): the device encrypts. nil from an older core.
+    var encrypted: Bool?
+    /// "new", "known" or "verified" (trust store, by id).
+    var trust: String?
+}
+
+/// A device's identity key as the core reports it (PEER in crates/hoppy-ffi/src/lib.rs).
+struct HoppyPeerKey: Codable, Hashable {
+    let id: String
+    let name: String
+    let platform: String
+    let fingerprint: String
+}
+
+/// The verification code (spec §7.6): 4 emoji or 8 digits of the same 24-bit value.
+struct HoppySas: Decodable, Hashable {
+    let value: UInt32
+    let emoji: [Int]
+    let text: String
+    let digits: String
+    let it: [String]
+    let en: [String]
+
+    /// The emoji one by one (`text` holds them as one string).
+    var symbols: [String] { text.map { String($0) } }
+
+    /// Names for VoiceOver, in the app's language.
+    var names: [String] { Bundle.main.preferredLocalizations.first == "it" ? it : en }
+}
+
+/// SECURITY of an offer / send session (spec §7): who is on the other end and how sure we are.
+struct HoppySecurity: Decodable, Hashable {
+    let encrypted: Bool
+    /// "new", "known", "verified" or "key_changed" (then the core blocks the transfer).
+    var trust: String?
+    var nameMatchesKnown: Bool?
+    var peer: HoppyPeerKey?
+    var sas: HoppySas?
+
+    static let plain = HoppySecurity(encrypted: false)
+
+    var isVerified: Bool { encrypted && trust == "verified" }
+    /// Encrypted, with a code worth comparing.
+    var needsCheck: Bool { encrypted && (trust == "new" || trust == "known") && sas != nil && peer != nil }
+
+    enum CodingKeys: String, CodingKey {
+        case encrypted, trust, peer, sas
+        case nameMatchesKnown = "name_matches_known"
+    }
 }
 
 struct HoppyOfferFile: Codable, Hashable {
@@ -23,10 +72,15 @@ struct HoppyOffer: Identifiable, Hashable {
     let files: [HoppyOfferFile]
     let count: Int
     let total: UInt64
+    var security: HoppySecurity = .plain
 }
 
 enum HoppySendOutcome: String {
     case delivered, declined, unreachable, error
+    /// The receiver's key differs from the remembered one: nothing was sent (spec §7.5).
+    case keyChanged = "key_changed"
+    /// A device known to encrypt answered in plaintext: refused.
+    case unencrypted
 }
 
 enum HoppyEvent {
@@ -39,11 +93,23 @@ enum HoppyEvent {
     case sendProgress(transfer: UInt64, done: UInt64, total: UInt64)
     case sendFallback(transfer: UInt64)
     case sendDone(transfer: UInt64, outcome: HoppySendOutcome, message: String?)
+    /// Before the offer goes out: show the code while waiting for the receiver.
+    case sendSession(transfer: UInt64, security: HoppySecurity)
+    /// An offer declined without asking ("key_changed" / "encryption_required").
+    case blocked(id: String, name: String, platform: String, reason: String)
+    /// A device scanned our QR code (spec §7.7).
+    case verified(HoppyPeerKey)
+    /// Repeated interrupted handshakes from one address (someone may guess codes, spec §7.3).
+    case handshakeAborts(from: String, recent: Int)
+    /// The trust store could not be written (receiver side, or `send_warning` on the sender).
+    case trustNotSaved(String)
+    /// Result of `qrScan`: `local` = marked verified here, `remote` = the other side too.
+    case qrDone(scan: UInt64, ok: Bool, local: Bool, remote: Bool, error: String?)
 }
 
 /// Everything the Rust side may put in an event (see crates/hoppy-ffi/src/lib.rs).
 private struct RawEvent: Decodable {
-    struct From: Decodable { let name: String; let platform: String }
+    struct From: Decodable { let id: String?; let name: String; let platform: String }
     let type: String
     let peers: [HoppyPeer]?
     let on: Bool?
@@ -59,6 +125,13 @@ private struct RawEvent: Decodable {
     let transfer: UInt64?
     let outcome: String?
     let message: String?
+    let security: HoppySecurity?
+    let reason: String?
+    let peer: HoppyPeerKey?
+    let recent: Int?
+    let scan: UInt64?
+    let local: Bool?
+    let remote: Bool?
 
     /// `from` is an object in `offer`, a plain name in `received`.
     enum FromField: Decodable {
@@ -89,7 +162,8 @@ private struct RawEvent: Decodable {
             var list: [HoppyOfferFile] = []
             if case let .offered(f)? = files { list = f }
             return .offer(HoppyOffer(id: id, fromName: sender.name, fromPlatform: sender.platform,
-                                     files: list, count: count ?? list.count, total: total ?? 0))
+                                     files: list, count: count ?? list.count, total: total ?? 0,
+                                     security: security ?? .plain))
         case "offer_closed":
             return offer.map { .offerClosed($0) }
         case "receive_progress":
@@ -108,6 +182,23 @@ private struct RawEvent: Decodable {
         case "send_done":
             guard let t = transfer else { return nil }
             return .sendDone(transfer: t, outcome: HoppySendOutcome(rawValue: outcome ?? "") ?? .error, message: message)
+        case "send_session":
+            guard let t = transfer else { return nil }
+            return .sendSession(transfer: t, security: security ?? .plain)
+        case "blocked":
+            guard case let .device(d)? = from else { return nil }
+            return .blocked(id: d.id ?? "", name: d.name, platform: d.platform, reason: reason ?? "")
+        case "verified":
+            return peer.map { .verified($0) }
+        case "handshake_aborts":
+            var ip = "?"
+            if case let .name(n)? = from { ip = n }
+            return .handshakeAborts(from: ip, recent: recent ?? 0)
+        case "trust_not_saved", "send_warning":
+            return .trustNotSaved(error ?? "?")
+        case "qr_done":
+            guard let s = scan else { return nil }
+            return .qrDone(scan: s, ok: ok ?? false, local: local ?? false, remote: remote ?? false, error: error)
         default:
             return nil // newer core, older app: ignore
         }
@@ -127,6 +218,10 @@ struct HoppyConfig: Encodable {
     var sweep: Sweep = .subnets
     var seeds: [String] = []
     var decision_timeout_secs: UInt64 = 110
+    /// Protocol v1 device key and trust store (spec §7.5), in this container's private
+    /// Application Support folder (`Identity.startNode`). nil = throw-away key (tests only).
+    var key_file: String?
+    var trust_file: String?
 
     enum Sweep: Encodable {
         case subnets, off, hosts([String])
@@ -211,6 +306,10 @@ final class HoppyNode {
         let name: String
         let udp_port: UInt16
         let tcp_port: UInt16
+        /// This device's key fingerprint (spec §7.5).
+        let fingerprint: String?
+        /// A damaged trust store was set aside at start.
+        let trust_warning: String?
     }
 
     var info: Info? {
@@ -242,5 +341,60 @@ final class HoppyNode {
     func decide(_ offer: UInt64, accept: Bool) -> Bool {
         guard let raw = raw else { return false }
         return hoppy_node_decide(raw, offer, accept)
+    }
+
+    // MARK: trust (spec §7)
+
+    struct TrustList: Decodable {
+        struct Me: Decodable { let fingerprint: String }
+        struct Entry: Decodable { let id: String; let name: String; let fingerprint: String; let verified: Bool }
+        let me: Me
+        let peers: [Entry]
+    }
+
+    var trustList: TrustList? {
+        guard let raw = raw, let data = takeString(hoppy_node_trust_list(raw)) else { return nil }
+        return try? JSONDecoder().decode(TrustList.self, from: data)
+    }
+
+    /// "Dimentica dispositivo": its next contact is New (needed after a KeyChanged block).
+    @discardableResult
+    func forget(_ peerId: String) -> Bool {
+        guard let raw = raw else { return false }
+        return peerId.withCString { hoppy_node_trust_forget(raw, $0) }
+    }
+
+    /// "Coincide": false if another key is remembered for that id.
+    @discardableResult
+    func verify(_ peer: HoppyPeerKey) -> Bool {
+        guard let raw = raw, let json = Self.json(peer) else { return false }
+        return json.withCString { hoppy_node_trust_verify(raw, $0) }
+    }
+
+    /// Payload to render as a QR code (valid while shown, at most 10 minutes).
+    func qrBegin() -> String? {
+        guard let raw = raw, let data = takeString(hoppy_node_qr_begin(raw)) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func qrEnd() {
+        if let raw = raw { hoppy_node_qr_end(raw) }
+    }
+
+    /// Checks a scanned payload against `live` (the device on screen) or the remembered key,
+    /// then tells that device; the result arrives as `.qrDone`. 0 = not a Hoppy QR code.
+    func qrScan(_ payload: String, live: HoppyPeerKey?) -> UInt64 {
+        guard let raw = raw else { return 0 }
+        let liveJson = live.flatMap { Self.json($0) }
+        return payload.withCString { (p: UnsafePointer<CChar>) -> UInt64 in
+            if let liveJson = liveJson {
+                return liveJson.withCString { hoppy_node_qr_scan(raw, p, $0) }
+            }
+            return hoppy_node_qr_scan(raw, p, nil)
+        }
+    }
+
+    private static func json<T: Encodable>(_ value: T) -> String? {
+        (try? JSONEncoder().encode(value)).map { String(decoding: $0, as: UTF8.self) }
     }
 }

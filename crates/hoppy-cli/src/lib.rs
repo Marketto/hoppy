@@ -5,7 +5,9 @@
 //!
 //! Win32 FFI lives only in `platform.rs`; the Linux desktop backend in `linux/`, the macOS
 //! one in `macos/` (AppKit FFI only in its `#[cfg(target_os = "macos")]` modules); `gui.rs`
-//! is safe, platform-neutral Rust on top of `platform::ui`.
+//! is safe, platform-neutral Rust on top of `platform::ui`. `verify.rs` describes the
+//! verification dialogs every backend draws; `unix/selfupdate.rs` installs a downloaded update
+//! on macOS and Linux (Windows runs the installer).
 
 pub mod config;
 pub mod diag;
@@ -23,6 +25,7 @@ pub mod platform;
 #[cfg(not(windows))]
 pub mod unix;
 pub mod update;
+pub mod verify;
 
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::PathBuf;

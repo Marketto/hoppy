@@ -70,8 +70,8 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
 - First contacts remain TOFU: protection against an attacker present at the very first
   contact needs the optional code/QR check. Discovery stays unauthenticated (spoofing only
   redirects to an impostor that then shows as New or is blocked as KeyChanged).
-- Until Kotlin implements v1 (phase 2), Android ↔ desktop/iOS transfers run in plaintext,
-  flagged; the interop test keeps checking that fallback.
+- Android implements v1 in its pure-JVM core (phase 2, below); the interop test checks Kotlin
+  against Rust and Python encrypted, and its plaintext fallback against a v0 node.
 - A reinstalled device has a new key: its peers see KeyChanged and must forget it — the
   UI must make "Dimentica dispositivo" obvious in the warning.
 - ADR 0003's "no public release before v1 encryption" is met for v1 ↔ v1 only; remote/relay
@@ -101,3 +101,53 @@ value. Old (v0) apps must keep working during the transition, visibly flagged.
   specific reasons `key_changed` / plaintext-from-known stay local (wire: `declined`), and the
   matching warnings are rate-limited.
 
+## iPhone/iPad (phase 2, 2026-10-15)
+- The app and the Share extension pass `key_file` / `trust_file` (Application Support of each
+  container, excluded from backups); the device id is re-generated whenever the key is new, so
+  a reinstall or restore appears as a New device, not KeyChanged. The extension cannot share the
+  app's key with a free signature (no App Group / keychain sharing, ADR 0009 addendum): it is a
+  separate device, «iPad (Condividi)», with its own key and trust store.
+- UI as on the other platforms: rows 🔒 / ✓ / ⚠ non cifrato; the code (4 emoji, «123» → 8 digits,
+  VoiceOver reads the names) with «Coincide», «Verifica con QR» (AVFoundation, falls back to the
+  code without camera permission), «Mostra il mio QR» (CoreImage; receiving stays on while it is
+  shown), «Più tardi»; KeyChanged → blocking alert with «Dimentica dispositivo».
+
+## Android (phase 2, 2026-10-15)
+- The Kotlin `:core` implements §7 itself (still pure JVM, invariant 4): Noise XX, SAS
+  commit/reveal, framing, trust store (same JSON as desktop), aborted-handshake guard, busy
+  frame, deadlines. X25519 and ChaCha20-Poly1305 come from the BouncyCastle lightweight API
+  (`bcprov-jdk18on`, pure Java, constant time): Android 10 has no X25519 in JCA, and
+  hand-written field arithmetic is not worth the risk. SHA-256/HMAC come from the JDK. It
+  passes every `v1` vector (positive and negative) and the RFC KATs, and the interop legs
+  K1–K10. Cost: the APK grows by the (unshrunk) BouncyCastle classes until R8 is enabled.
+- Key and trust store in app-private storage (`filesDir/identity.key`, `filesDir/trust.json`).
+- UI: device rows 🔒 / ✓ / ⚠ non cifrato; while sending to a New/Known device the code shows
+  over the list (4 emoji, «123» → 8 digits, TalkBack reads the names) with «Coincide»,
+  «Verifica con QR», «Mostra il mio QR», «Più tardi»; the incoming-offer notification carries
+  the code and a «Verifica» action (Accept/Decline unchanged, default decline); KeyChanged →
+  blocking dialog / notification with «Dimentica dispositivo»; code-guessing and refused
+  senders → "Security warnings" notifications. QR: ZXing Android Embedded (scan, camera
+  permission asked on use, falls back to the code) and ZXing encoding for «Mostra il mio QR»
+  (receiving stays on while it is shown). A scanned device never seen before is verified only
+  through a session presenting exactly the scanned key.
+
+## Desktop: Windows, Linux, macOS (phase 2, 2026-10-15)
+- One description of every dialog (`crates/hoppy-cli/src/verify.rs`, `gui.rs`), drawn by
+  each backend: a small Win32 window of Hoppy's own (MessageBox cannot show large emoji, a
+  toggle or a QR code; GDI draws emoji in one colour, so each has its name under it), an
+  `NSAlert` accessory view on macOS, zenity with Pango markup on Linux (QR code as Unicode
+  half blocks, black on white). The QR code is generated with the `qrcode` crate (no
+  renderer features) as a module matrix.
+- Receiver (tray): accept dialog with the code (4 emoji + names, «123» → 8 digits) for
+  New/Known senders; Rifiuta (default, also on close/timeout) / Accetta / «Coincide,
+  accetta» (accept + mark verified). From a phone it also shows this device's QR code
+  (`Local::begin_qr`, `end_qr` when the dialog closes); the `verified` hook (matched by key
+  fingerprint) replaces it with ✓. Linux shows the accept question as a notification first
+  (Accept / Decline / «Verifica…»).
+- Sender (`hoppyw send`): device menu 🔒 / ✓ / ⚠ non cifrato; a code window with «Coincide»
+  while the receiver decides, closed by the send worker when the transfer ends. No QR code
+  there: the one-time code would live in the short-lived send process while the phone's
+  confirmation reaches the tray receiver.
+- KeyChanged on either side: blocking warning with «Dimentica dispositivo» (never the
+  default); tray menu «Dispositivi fidati…» lists and forgets remembered devices;
+  code-guessing warnings at most once a minute; a damaged trust store is announced.

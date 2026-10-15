@@ -8,8 +8,10 @@ description: Use for the Android app - share target, device picker, receive fore
 Two modules in `apps/android/`:
 
 - `:core` (`core/src/main/kotlin/app/hoppy/core/`) — **pure JVM** protocol, discovery and
-  transfer. No `android.*` imports. Unit tests in `core/src/test/...`; interop with Rust
-  via `InteropMain.kt` + `tools/interop.sh`.
+  transfer, plus protocol v1 (`Crypto.kt`, `Noise.kt`, `Trust.kt`; BouncyCastle lightweight
+  API for X25519/ChaCha20-Poly1305). No `android.*` imports. Unit tests in
+  `core/src/test/...` (`CoreTest`, `V1Test` = every `v1` vector); interop with Rust and
+  Python via `InteropMain.kt` + `tools/interop.sh` (legs K1–K10).
 - `:app` (`app/src/main/java/app/hoppy/`) — thin Android shell:
   - `HoppyApp.kt` — `Prefs` (identity, theme, auto-accept) and `Node` (process-wide
     `DiscoveryNode`, ref-counted, owns the Wi-Fi `MulticastLock`; screens subscribe to `Node`).
@@ -46,6 +48,11 @@ Two modules in `apps/android/`:
     `update/UpdateLogic.kt` (+ test). Details: `docs/platforms/android.md` "Updates".
   - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
     all animated views (see `hoppy-themes`).
+  - v1 security (docs/platforms/android.md "Encryption and device verification"):
+    `security/Security.kt` (key + trust store in `filesDir`, `Security.local(ctx)` off the
+    main thread, `PendingVerifications`), `ui/VerifyPanel.kt` + `layout/view_verify.xml`
+    (code panel, `QrScanner`), `ui/VerifyActivity.kt` (receiver code / changed key),
+    `ui/QrActivity.kt` (show my QR / scan). Badges in `PeerAdapter.trusted`.
 
 ## Rules
 
@@ -68,6 +75,11 @@ Two modules in `apps/android/`:
   download from a user tap (banner, or our token-carrying notification).
 - Music plays only on the sender and only while a Hoppy screen is visible; never start it
   over other audio, never on the receiver. New screens get it for free (lifecycle callbacks).
+- v1: never fall back to plaintext for a peer that advertised `crypto`, whose key or address
+  is remembered, or that answered "busy"; KeyChanged always blocks (dialog / notification
+  with "Forget device"); pin keys only on a person's Accept; show every plaintext session as
+  "non cifrato"; the QR code goes only to a session presenting the scanned key
+  (`QrVerification.scan`). Never put session data in intents to exported components.
 
 ## Build & verify
 

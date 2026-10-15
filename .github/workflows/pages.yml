@@ -13,7 +13,7 @@ on:
       - "apps/android/app/src/main/res/font/**"
       - ".github/workflows/pages.yml"
   release:
-    types: [published]
+    types: [published] # releases published by a person; release.yml dispatches this itself
   workflow_dispatch:
 
 permissions:
@@ -40,7 +40,10 @@ jobs:
         run: |
           python3 -m playwright install --with-deps chromium
           python3 tools/site_audit.py
-      - run: python3 tools/site.py build --out _site --base-url "${{ steps.pages.outputs.base_url }}" --repo "${{ github.repository }}"
+      # Also writes sidestore.json (iPhone/iPad SideStore source) from the latest release.
+      - run: python3 tools/site.py build --out _site --base-url "${{ steps.pages.outputs.base_url }}" --repo "${{ github.repository }}" --require-release
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

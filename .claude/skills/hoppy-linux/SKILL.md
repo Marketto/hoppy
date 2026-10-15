@@ -15,7 +15,9 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 | `platform::ui` on Linux (same API as `platform::win`) | `crates/hoppy-cli/src/linux/ui.rs` |
 | Panel icon (ksni) | `crates/hoppy-cli/src/linux/sni.rs` |
 | Notifications (zbus) | `crates/hoppy-cli/src/linux/notify.rs` |
-| zenity/kdialog argv builders | `crates/hoppy-cli/src/linux/dialog.rs` |
+| zenity/kdialog argv builders (incl. the verification dialog with Pango markup) | `crates/hoppy-cli/src/linux/dialog.rs` |
+| Verification dialog model (shared) | `crates/hoppy-cli/src/verify.rs` |
+| Self-update (.deb via pkexec, Mac app swap, relaunch helper) | `crates/hoppy-cli/src/unix/selfupdate.rs` |
 | Per-user right-click entries, launcher, autostart | `crates/hoppy-cli/src/linux/integration.rs` |
 | Jingle players / curl+wget | `crates/hoppy-cli/src/linux/sound.rs`, `crates/hoppy-cli/src/unix/http.rs` (shared with macOS) |
 | Package launcher (kept equal to `integration::launcher_entry` by a test) | `apps/linux/hoppy.desktop` |
@@ -39,6 +41,13 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
   `--no-markup`, kdialog look-alikes for `<`/`>`; dialog list entries never start with `-`
   and never follow a bare `--` (zenity shows it as a row).
 - Never auto-accept: no notification buttons and no dialog program = declined.
+- The verification dialog is the only zenity text with markup on: every value goes through
+  `dialog::markup_escape`; sizes are integers (1/1024 pt) so old Pango parses them. zenity
+  cannot change an open dialog: `ui::show_dialog` re-opens it for the "123" toggle and for
+  ✓ after a QR scan (`run_watch` kills the old one).
+- Self-update only for `/usr/bin/hoppyw` from the package (`selfupdate::deb_installed`);
+  root only through `pkexec` (the user's password), never sudo or a setuid helper; values to
+  `/bin/sh` only as positional parameters.
 - Integration files carry `integration::MARKER`; never overwrite or delete a file without it.
 - Asset names are a contract (`docs/release.md`): `Hoppy-linux-amd64.deb`, `SHA256SUMS.txt`.
 
@@ -48,4 +57,6 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 `cargo deb -p hoppy --no-build && dpkg-deb -c target/debian/*.deb`. Scripted end-to-end
 runs need a private session bus (`dbus-run-session`) and a notification server/tray host
 (a fake one is fine; GNOME-specific behaviour still needs a real desktop: see the test
-plan in `docs/platforms/linux.md`). Keep Windows compiling: the `windows-latest` CI job.
+plan in `docs/platforms/linux.md`). Real zenity renders under `Xvfb` (with
+`LANG=C.UTF-8`, else zenity rejects non-ASCII arguments, and `GSK_RENDERER=cairo` for
+zenity 4); `import -window root` + OpenCV's `QRCodeDetector` checks that the QR code scans. Keep Windows compiling: the `windows-latest` CI job.

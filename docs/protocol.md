@@ -5,7 +5,7 @@ Status: **PoC**. Implemented in three places that MUST stay in lockstep:
 | Implementation | Path |
 | --- | --- |
 | Rust core (reference for desktop and iOS) | `crates/hoppy-core/src/protocol.rs`, `discovery.rs`, `transfer.rs`; v1: `crypto.rs`, `session.rs`, `trust.rs` |
-| Android (Kotlin) | `apps/android/core/src/main/kotlin/app/hoppy/core/` (v0 only until phase 2 of ADR 0010) |
+| Android (Kotlin) | `apps/android/core/src/main/kotlin/app/hoppy/core/`; v1: `Crypto.kt`, `Noise.kt`, `Trust.kt` |
 | Python reference / test tool | `tools/hoppy_ref.py` |
 
 Any change follows the `hoppy-protocol-change` skill. Sections 1–6 are **v0**: no

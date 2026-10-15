@@ -4,8 +4,8 @@
 # ends, QR verification, fallback to/from v0 nodes). Run from the repo root: tools/interop.sh
 #
 # The Python reference encrypts in pure Python (~1 MB/s): its encrypted legs use a 256 KB
-# file. Until the Android core implements v1 (phase 2), the Kotlin legs run against v0 and
-# check that Rust and Python fall back to plaintext with it.
+# file. The Kotlin legs (K1–K10, with HOPPY_KT_CP) run the Android core against both, encrypted,
+# plus its fallback to a v0 (old) app, QR verification both ways and the aborted-handshake limit.
 set -euo pipefail
 export LC_ALL=C.UTF-8  # JVM needs a UTF-8 locale for non-ASCII file names
 
@@ -143,32 +143,110 @@ grep -q "busy" "$WORK/rs-busy.log" || fail "no busy: $(cat "$WORK/rs-busy.log")"
 
 if [[ -n "${HOPPY_KT_CP:-}" ]]; then
   # Classpath of the compiled Android :core module + its tests (CI sets this, see tools/dev.py).
-  # The Kotlin core is still v0: every leg below is plaintext through the v0 fallback.
+  # The Kotlin core speaks v1 (phase 2 of ADR 0010): every leg is encrypted unless noted.
   KT="java -cp $HOPPY_KT_CP app.hoppy.core.InteropMainKt"
-  echo "K1/6 Kotlin(Android core, v0) → Rust"
-  $KT send 127.0.0.1 47482 "$WORK/nota 🐰.txt" >/dev/null
-  sleep 0.3
+  # Key + trust store shared by every Kotlin process, like the app's filesDir.
+  export HOPPY_KT_DIR="$WORK/kt-cfg"
+  mkdir -p "$HOPPY_KT_DIR"
+  # Waits until FILE has more than N lines matching PATTERN.
+  wait_more() {
+    for _ in $(seq 1 50); do (( $(grep -c "$2" "$1" 2>/dev/null || true) > $3 )) && return 0; sleep 0.1; done
+    fail "no new '$2' in $1: $(cat "$1" 2>/dev/null)"
+  }
+
+  echo "K1/10 Kotlin(Android core) → Rust (encrypted, same code on both screens)"
+  N="$(grep -c "🔒 encrypted" "$WORK/rs-in.log" || true)"
+  $KT send 127.0.0.1 47482 "$WORK/nota 🐰.txt" >"$WORK/kt-send.log" || fail "$(cat "$WORK/kt-send.log")"
   cmp "$WORK/nota 🐰.txt" "$WORK/rs-in/nota 🐰 (1).txt"
-  echo "K2/6 Rust → Kotlin (v1 hello refused, plaintext fallback)"
-  $KT receive "$WORK/kt-in" 47483 47592 >/dev/null &
-  PIDS+=($!); sleep 1.5
+  grep -q "session 🔒 encrypted" "$WORK/kt-send.log" || fail "Kotlin sender did not encrypt: $(cat "$WORK/kt-send.log")"
+  wait_more "$WORK/rs-in.log" "🔒 encrypted" "$N"
+  KT_CODE="$(digits < "$WORK/kt-send.log")"
+  RS_CODE="$(grep "🔒 encrypted" "$WORK/rs-in.log" | tail -1 | digits)"
+  [[ -n "$KT_CODE" && "$KT_CODE" == "$RS_CODE" ]] || fail "codes differ: Kotlin '$KT_CODE', Rust '$RS_CODE'"
+  echo "   code $KT_CODE on both"
+
+  echo "K2/10 Rust → Kotlin (encrypted, same code)"
+  $KT receive "$WORK/kt-in" 47483 47592 >"$WORK/kt-in.log" 2>&1 &
+  PIDS+=($!)
+  wait_for "$WORK/kt-in.log" "receiving on"
   "$BIN" send --to 127.0.0.1:47483 "$WORK/blob.bin" >"$WORK/rs-kt.log"
   sleep 0.3
   cmp "$WORK/blob.bin" "$WORK/kt-in/blob.bin"
-  grep -q "NOT encrypted" "$WORK/rs-kt.log" || fail "plaintext not flagged"
-  echo "K3/6 discovery: Kotlin sees the Rust receiver"
-  $KT peers 47470 | grep -q InteropRust || fail "Rust receiver not discovered by Kotlin"
-  echo "K4/6 callback: Kotlin sender → Rust receiver connects back"
-  $KT send-peer 47591 --no-direct "$WORK/nota 🐰.txt" >/dev/null
+  grep -q "🔒 encrypted" "$WORK/rs-kt.log" || fail "Rust → Kotlin not encrypted: $(cat "$WORK/rs-kt.log")"
+  RS_CODE="$(digits < "$WORK/rs-kt.log")"
+  KT_CODE="$(grep "offer from InteropRust" "$WORK/kt-in.log" | tail -1 | digits)"
+  [[ -n "$RS_CODE" && "$RS_CODE" == "$KT_CODE" ]] || fail "codes differ: Rust '$RS_CODE', Kotlin '$KT_CODE'"
+
+  echo "K3/10 discovery: Kotlin sees the Rust receiver as v1"
+  $KT peers 47470 | grep InteropRust | grep -q " v1 " || fail "Rust receiver not discovered as v1 by Kotlin"
+
+  echo "K4/10 callback: Kotlin sender → Rust receiver connects back (encrypted)"
+  $KT send-peer 47591 --no-direct "$WORK/nota 🐰.txt" >"$WORK/kt-cb.log" || fail "$(cat "$WORK/kt-cb.log")"
   sleep 0.3
   cmp "$WORK/nota 🐰.txt" "$WORK/rs-cb/nota 🐰.txt"
-  echo "K5/6 callback: Rust sender → Kotlin receiver connects back"
-  "$BIN" send --seed 127.0.0.1:47592 --to InteropKotlin --no-direct "$WORK/nota 🐰.txt" >/dev/null
+  grep -q "session 🔒 encrypted" "$WORK/kt-cb.log" || fail "callback session not encrypted"
+
+  echo "K5/10 callback: Rust sender → Kotlin receiver connects back (encrypted)"
+  "$BIN" send --seed 127.0.0.1:47592 --to InteropKotlin --no-direct "$WORK/nota 🐰.txt" >"$WORK/rs-ktcb.log"
   sleep 0.3
   cmp "$WORK/nota 🐰.txt" "$WORK/kt-in/nota 🐰.txt"
-  echo "K6/6 callback: Python sender (direct refused) → Kotlin receiver connects back"
-  $REF send 127.0.0.1:1 "$WORK/blob.bin" --peer-udp 127.0.0.1:47592 >/dev/null 2>&1
+  grep -q "🔒 encrypted" "$WORK/rs-ktcb.log" || fail "callback session not encrypted"
+
+  echo "K6/10 callback: Python sender (direct refused) → Kotlin receiver connects back (encrypted)"
+  $REF send 127.0.0.1:1 "$WORK/small.bin" --peer-udp 127.0.0.1:47592 >"$WORK/py-ktcb.json" 2>/dev/null
   sleep 0.3
-  cmp "$WORK/blob.bin" "$WORK/kt-in/blob (1).bin"
+  cmp "$WORK/small.bin" "$WORK/kt-in/small.bin"
+  grep -q '"encrypted": true' "$WORK/py-ktcb.json" || fail "callback session not encrypted"
+
+  echo "K7/10 Python ↔ Kotlin direct (encrypted, same code)"
+  $REF send 127.0.0.1:47483 "$WORK/nota 🐰.txt" >"$WORK/py-kt.json" 2>"$WORK/py-kt.log"
+  sleep 0.3
+  cmp "$WORK/nota 🐰.txt" "$WORK/kt-in/nota 🐰 (1).txt"
+  PY_CODE="$(digits < "$WORK/py-kt.log")"
+  KT_CODE="$(grep "offer from" "$WORK/kt-in.log" | tail -1 | digits)"
+  [[ -n "$PY_CODE" && "$PY_CODE" == "$KT_CODE" ]] || fail "codes differ: Python '$PY_CODE', Kotlin '$KT_CODE'"
+  $REF receive "$WORK/py-kt-in" --port 47489 --no-announce >"$WORK/py-kt-in.log" 2>&1 &
+  PIDS+=($!); sleep 0.7
+  $KT send 127.0.0.1 47489 "$WORK/small.bin" >"$WORK/kt-py.log" || fail "$(cat "$WORK/kt-py.log")"
+  cmp "$WORK/small.bin" "$WORK/py-kt-in/small.bin"
+  wait_for "$WORK/py-kt-in.log" "offer from"
+  KT_CODE="$(digits < "$WORK/kt-py.log")"
+  PY_CODE="$(grep "offer from" "$WORK/py-kt-in.log" | digits)"
+  [[ -n "$KT_CODE" && "$KT_CODE" == "$PY_CODE" ]] || fail "codes differ: Kotlin '$KT_CODE', Python '$PY_CODE'"
+
+  echo "K8/10 v1 ↔ v0: Kotlin with an old (v0) Python app: plaintext both ways, flagged"
+  $KT send 127.0.0.1 47485 "$WORK/small.bin" >"$WORK/kt-v0.log" || fail "$(cat "$WORK/kt-v0.log")"
+  cmp "$WORK/small.bin" "$WORK/py-v0/small (1).bin"
+  grep -q "session NOT encrypted" "$WORK/kt-v0.log" || fail "plaintext not flagged"
+  $REF send 127.0.0.1:47483 "$WORK/small.bin" --v0 >/dev/null 2>&1
+  sleep 0.3
+  cmp "$WORK/small.bin" "$WORK/kt-in/small (1).bin"
+  grep "offer from" "$WORK/kt-in.log" | tail -1 | grep -q "NOT encrypted" || fail "v0 offer not flagged"
+
+  echo "K9/10 QR: Kotlin scans a Rust receiver's code, Python scans Kotlin's → verified both ways"
+  "$BIN" receive --yes --port 47488 --udp-port 47595 --show-qr --dir "$WORK/rs-qr2" >"$WORK/rs-qr2.log" &
+  PIDS+=($!)
+  wait_for "$WORK/rs-qr2.log" "QR verification code"
+  PAYLOAD="$(grep -oE 'hoppy:verify:1:[^ ]+' "$WORK/rs-qr2.log")"
+  $KT verify 127.0.0.1 47488 "$PAYLOAD" >"$WORK/kt-verify.log" || fail "Kotlin could not verify: $(cat "$WORK/kt-verify.log")"
+  grep -q "confirmed=true" "$WORK/kt-verify.log" || fail "not confirmed: $(cat "$WORK/kt-verify.log")"
+  "$BIN" trust list | grep "✓" | grep -q InteropKotlin || fail "Rust did not mark the Kotlin scanner verified"
+  if $KT verify 127.0.0.1 47488 "$PAYLOAD" >/dev/null 2>&1; then fail "QR code accepted twice"; fi
+  $KT receive "$WORK/kt-qr" 47490 47596 --show-qr >"$WORK/kt-qr.log" 2>&1 &
+  PIDS+=($!)
+  wait_for "$WORK/kt-qr.log" "^qr "
+  PAYLOAD="$(grep -oE 'hoppy:verify:1:[^ ]+' "$WORK/kt-qr.log")"
+  $REF verify 127.0.0.1:47490 "$PAYLOAD" --name InteropScanner >"$WORK/py-ktverify.json" 2>&1 \
+    || fail "verify refused: $(cat "$WORK/py-ktverify.json")"
+  wait_for "$WORK/kt-qr.log" "verified InteropScanner"
+
+  echo "K10/10 aborted handshakes are limited on the Kotlin receiver; busy never falls back"
+  OUT="$($REF abort-handshakes 127.0.0.1:47483 7)"
+  [[ "$OUT" == '{"served": 5, "refused": 2}' ]] || fail "Kotlin receiver: $OUT"
+  wait_for "$WORK/kt-in.log" "broken off right after the handshake"
+  if $KT send 127.0.0.1 47483 "$WORK/nota 🐰.txt" >"$WORK/kt-busy.log" 2>&1; then
+    fail "a refused receiver must not get a plaintext fallback"
+  fi
+  grep -q "ReceiverBusyException" "$WORK/kt-busy.log" || fail "no busy: $(cat "$WORK/kt-busy.log")"
 fi
 echo "interop OK"

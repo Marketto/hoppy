@@ -53,6 +53,8 @@
       exeHint: "Se Windows mostra un avviso: «Ulteriori informazioni» → «Esegui comunque».",
       dmgHint: "Trascina Hoppy in Applicazioni. Al primo avvio: Impostazioni di Sistema → Privacy e sicurezza → «Apri comunque».",
       ipaTitle: "Installazione con Sideloadly",
+      sideHint: "Aggiornamenti automatici con SideStore (rinnova anche la firma di 7 giorni): aggiungi la sorgente",
+      sideAdd: "Aggiungi a SideStore",
       ipaHint: "Scarica il file .ipa sul PC (Windows o Mac) e installa Sideloadly. Collega l'iPad o l'iPhone con il cavo, trascina il file in Sideloadly, scrivi il tuo Apple ID e premi Start. Sull'iPad: Impostazioni → Generali → VPN e gestione dispositivi → autorizza il tuo Apple ID, poi Impostazioni → Privacy e sicurezza → Modalità sviluppatore → attiva e riavvia. La firma gratuita dura 7 giorni: poi ripeti l'installazione.",
       musicOn: "Attiva musica",
       musicOff: "Disattiva musica",
@@ -93,6 +95,8 @@
       exeHint: "If Windows shows a warning: “More info” → “Run anyway”.",
       dmgHint: "Drag Hoppy to Applications. On first launch: System Settings → Privacy & Security → “Open Anyway”.",
       ipaTitle: "Installing with Sideloadly",
+      sideHint: "Automatic updates with SideStore (it also renews the 7-day signature): add the source",
+      sideAdd: "Add to SideStore",
       ipaHint: "Download the .ipa on a computer (Windows or Mac) and install Sideloadly. Connect the iPad or iPhone with a cable, drop the file on Sideloadly, enter your Apple ID and press Start. On the iPad: Settings → General → VPN & Device Management → trust your Apple ID, then Settings → Privacy & Security → Developer Mode → turn on and restart. The free signature lasts 7 days: then install again.",
       musicOn: "Play music",
       musicOff: "Pause music",
@@ -317,7 +321,7 @@
         (x.id === os ? `<span class="tag"></span>` : "") +
         `<svg class="card-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[x.icon]}</svg>` +
         `<p class="card-name"></p><p class="card-req"></p>` +
-        (ok && x.id === "ios" ? `<details class="card-more"><summary></summary><p></p></details>` : "") +
+        (ok && x.id === "ios" ? `<details class="card-more"><summary></summary><p></p><p class="card-source"><span></span> <code></code> <a></a></p></details>` : "") +
         (ok ? `<a class="card-btn"></a>` : `<span class="badge"></span>`);
       if (x.id === os) li.querySelector(".tag").textContent = t.suggested;
       li.querySelector(".card-name").textContent = t.names[x.id];
@@ -331,6 +335,13 @@
         if (more) {
           more.querySelector("summary").textContent = t.ipaTitle;
           more.querySelector("p").textContent = t.ipaHint;
+          // AltStore-format source built by tools/site.py from the latest release.
+          const source = cfg.baseUrl.replace(/\/$/, "") + "/sidestore.json";
+          more.querySelector(".card-source span").textContent = t.sideHint;
+          more.querySelector(".card-source code").textContent = source;
+          const add = more.querySelector(".card-source a");
+          add.textContent = t.sideAdd;
+          add.href = "sidestore://source?url=" + encodeURIComponent(source);
         }
       } else {
         li.querySelector(".badge").textContent = t.soon;

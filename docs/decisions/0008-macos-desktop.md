@@ -63,3 +63,15 @@ firewall) may repeat after updates because grants are tied to the ad-hoc signatu
 entry lives under Services, not top level; no Share-menu entry (both need an `.appex`, i.e.
 Xcode + signing: roadmap). The `osascript` fallback shows notifications under Script Editor's
 name. An Apple Developer account removes the first two costs without code changes.
+
+## Amendment (2026-10-15): self-update and device verification
+The product owner asked that the desktop apps fetch, verify and install new versions
+themselves. The "no self-install" choice above assumed Gatekeeper would block a replaced
+app; an update downloaded by Hoppy's own curl carries no quarantine flag, so it is not
+blocked. Hoppy now replaces `/Applications/Hoppy.app` (or `~/Applications`) when that folder
+is writable by the user: the release's .dmg (SHA-256 against `SHA256SUMS.txt`) is mounted
+read-only, the app copied next to the installed one, checked (`codesign --verify`, bundle id,
+version), swapped in with two renames and relaunched after the tray exits; elsewhere the
+portal link stays. Privacy prompts may still repeat after an update (ad-hoc signature). The
+protocol v1 verification UI (ADR 0010) is an `NSAlert` accessory view (emoji + names, a
+"123" switch, the QR code as an image). Details: `docs/platforms/macos-ios.md`.

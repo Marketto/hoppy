@@ -9,10 +9,12 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.view.animation.OvershootInterpolator
 import android.widget.EditText
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
@@ -24,6 +26,7 @@ import app.hoppy.R
 import app.hoppy.audio.Music
 import app.hoppy.core.Peer
 import app.hoppy.databinding.ActivityMainBinding
+import app.hoppy.security.Security
 import app.hoppy.service.ReceiveService
 import app.hoppy.ui.theme.HomeDecor
 import app.hoppy.ui.theme.Motion
@@ -185,6 +188,7 @@ class MainActivity : ThemedActivity() {
         showPeers(Node.peers())
         syncSwitch()
         decor.start()
+        showTrustWarning()
     }
 
     override fun onStop() {
@@ -200,6 +204,17 @@ class MainActivity : ThemedActivity() {
     private fun showPeers(peers: List<Peer>) {
         adapter.submitList(peers)
         b.empty.isVisible = peers.isEmpty()
+        refreshTrustBadges(this, adapter)
+    }
+
+    /** A damaged list of known devices was set aside at startup: say so once. */
+    private fun showTrustWarning() {
+        val app = applicationContext
+        thread(name = "hoppy-trust-warning") {
+            val warning = runCatching { Security.trust(app).takeWarning() }.getOrNull() ?: return@thread
+            Log.w("HoppyMain", warning)
+            runOnUiThread { Toast.makeText(app, R.string.trust_damaged, Toast.LENGTH_LONG).show() }
+        }
     }
 
     private fun syncSwitch() {
@@ -232,6 +247,8 @@ class MainActivity : ThemedActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.theme -> { chooseTheme(); true }
+        R.id.show_qr -> { startActivity(QrActivity.showIntent(this)); true }
+        R.id.scan_qr -> { startActivity(QrActivity.scanIntent(this)); true }
         R.id.rename -> { rename(); true }
         R.id.music -> {
             item.isChecked = !item.isChecked
