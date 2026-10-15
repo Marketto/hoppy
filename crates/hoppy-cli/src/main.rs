@@ -1,7 +1,9 @@
 //! `hoppy` desktop CLI (PoC). On Windows, `hoppy install` adds "Send to → Hoppy", the
 //! "Send with Hoppy" right-click verb and a login item, pointing at the `hoppyw` tray/GUI
 //! binary when it sits next to this one (fallback: `hoppy send --pause` / `hoppy receive`,
-//! no verb). Shared code: `src/lib.rs`.
+//! no verb). On Linux it adds the right-click entries (Nautilus, Nemo, Dolphin), a
+//! launcher and the tray at login for this user (needs `hoppyw` next to `hoppy`).
+//! Shared code: `src/lib.rs`.
 
 use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
@@ -79,13 +81,14 @@ enum Command {
     },
     /// Show or change this device's name.
     Name { new_name: Option<String> },
-    /// Show or change whether Windows "Send to → Hoppy" plays a short sound when the files
-    /// are delivered (`hoppy send` is always silent).
+    /// Show or change whether "Send with Hoppy" (the desktop app) plays a short sound when
+    /// the files are delivered (`hoppy send` is always silent).
     Music { state: Option<OnOff> },
-    /// Windows: add "Send to → Hoppy", the "Send with Hoppy" right-click entry and start
-    /// the receiver at login.
+    /// Add the "Send with Hoppy" right-click entry and start the receiver at login
+    /// (Windows: also "Send to → Hoppy"; Linux: Nautilus, Nemo and Dolphin, for this user).
     Install,
-    /// Windows: remove what `install` added (and the classic menu, if Hoppy turned it on).
+    /// Remove what `install` added (Windows: also the classic menu, if Hoppy turned it on;
+    /// Linux: the tray then stops adding it back).
     Uninstall,
     /// Windows 11: show or change whether right-click opens the classic menu, where
     /// "Send with Hoppy" is visible at once (per user; applies after Explorer restarts).
@@ -233,7 +236,10 @@ fn cmd_classic_menu(state: Option<OnOff>, restart_explorer: bool) -> Result<()> 
 
 fn cmd_firewall(fix: bool, apply: bool, remove: bool) -> Result<()> {
     if !cfg!(windows) {
-        bail!("`hoppy firewall` is Windows-only; elsewhere open TCP 47471 and UDP 47470 by hand");
+        bail!(
+            "`hoppy firewall` is Windows-only; elsewhere allow TCP 47471 and UDP 47470 by hand \
+             (Ubuntu's ufw is off by default: `sudo ufw allow 47471/tcp` and `47470/udp` if on)"
+        );
     }
     let exe = std::env::current_exe()?;
     let dir = exe.parent().context("no program folder")?.to_path_buf();
@@ -249,7 +255,7 @@ fn cmd_firewall(fix: bool, apply: bool, remove: bool) -> Result<()> {
     }
     if fix {
         println!("Asking for administrator permission…");
-        let child = platform::win::run_elevated(None, &exe, "firewall --apply")?;
+        let child = platform::ui::run_elevated(None, &exe, "firewall --apply")?;
         match child.wait(120_000) {
             Some(0) => println!("✓ Firewall rules added"),
             Some(code) => bail!(

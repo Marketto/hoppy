@@ -9,7 +9,7 @@
     { id: "windows", asset: "Hoppy-Setup-x64.exe", icon: "laptop" },
     { id: "android", asset: "Hoppy-android.apk", icon: "phone" },
     { id: "macos", asset: "Hoppy-macos-universal.dmg", icon: "laptop" },
-    { id: "linux", asset: "hoppy_amd64.deb", icon: "desktop" },
+    { id: "linux", asset: "Hoppy-linux-amd64.deb", icon: "desktop" },
     { id: "ios", asset: null, icon: "tablet" }, // will link to TestFlight / App Store
   ];
   // Used when the GitHub API is unreachable (rate limit, offline).

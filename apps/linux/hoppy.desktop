@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Hoppy
+GenericName=File sharing
+GenericName[it]=Condivisione file
+Comment=Send files to nearby devices
+Comment[it]=Invia file ai dispositivi vicini
+Exec=hoppyw open %F
+TryExec=hoppyw
+Icon=hoppy
+Terminal=false
+StartupNotify=false
+Categories=Network;FileTransfer;
+Keywords=send;share;transfer;phone;android;
+Keywords[it]=invia;condividi;trasferisci;telefono;android;
+MimeType=application/octet-stream;
+Actions=send;
+
+[Desktop Action send]
+Name=Send files…
+Name[it]=Invia file…
+Exec=hoppyw send

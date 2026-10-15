@@ -11,6 +11,7 @@ Full reference: `docs/release.md`. Platform targets: `docs/platforms/macos-ios.m
 | --- | --- |
 | Release pipeline | `.github/workflows/release.yml` (tags `v*` or manual; `publish` input for dry runs) |
 | Windows installer | `apps/windows/hoppy.iss` (Inno Setup, per-user, runs `hoppy install`); icon `assets/brand/hoppy.ico` (from `tools/gen_icons.py`), embedded in the exe by `crates/hoppy-cli/build.rs` |
+| Ubuntu .deb | `release.yml` `linux` job (ubuntu-22.04, `cargo deb -p hoppy --no-build` → `Hoppy-linux-amd64.deb`); metadata `[package.metadata.deb]` in `crates/hoppy-cli/Cargo.toml`; launcher `apps/linux/hoppy.desktop`; icons `assets/brand/linux/` (`tools/gen_icons.py`) |
 | Android version + signing | `apps/android/app/build.gradle.kts` (`hoppyVersionName`/`hoppyVersionCode` properties, `HOPPY_KEYSTORE_*` env from secrets) |
 | Portal | `site/` + `tools/site.py`; deployed by `.github/workflows/pages.yml` |
 | Portal "Come funziona" | `site/howto.js` (`FLOWS`: per-OS send/receive steps, mockup builders, IT/EN copy in `C`), section `#come-funziona` + SVG symbols `#hb-glyph`/`#hb-bunny`/`#hb-happy` in `site/index.html`, `.howto`/`.shots`/`.m-*`/`.ph`/`.p*` + `--m-*` tokens in `site/styles.css`; rendered from `render()` in `site/app.js` |
@@ -22,8 +23,8 @@ Full reference: `docs/release.md`. Platform targets: `docs/platforms/macos-ios.m
   and `releases/latest/download/<asset>` depend on them. Rename in both places or nowhere.
 - Signing material comes only from GitHub secrets; never commit keystores, certificates or
   passwords (`python3 tools/dev.py secrets` enforces it).
-- A platform is "live" when its job is enabled (`ENABLE_*` repo variable) and the latest
-  release contains its asset. Don't fake availability in the portal.
+- A platform is "live" when its job is enabled (Windows, Android, Ubuntu always; others by
+  `ENABLE_*` repo variable) and the latest release contains its asset. Don't fake availability in the portal.
 - Portal copy exists in Italian and English (`T` in `site/app.js`); keep both in sync.
 - Device icons are generic shapes, never vendor logos.
 - "Come funziona" mockups are HTML/CSS/inline SVG, no screenshots. They evoke each OS

@@ -2,9 +2,13 @@
 //!
 //! Pure logic only, unit-tested on every OS: version comparison, release JSON and
 //! `SHA256SUMS.txt` parsing, install-location check, and a download that hashes while it
-//! writes. The HTTP transport is the `Http` trait (WinHTTP in `platform::win::http_get`).
-//! The release workflow must keep the asset names `Hoppy-Setup-x64.exe` and
-//! `SHA256SUMS.txt` stable (docs/release.md).
+//! writes. The HTTP transport is the `Http` trait (WinHTTP in `platform::win::http_get`,
+//! curl/wget on Linux). The release workflow must keep the asset names
+//! `Hoppy-Setup-x64.exe`, `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` stable
+//! (docs/release.md).
+//!
+//! Linux only announces a new version and links to the download portal (the .deb is
+//! installed by the system's software installer, with the user's password): no download.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -23,6 +27,14 @@ pub const LATEST_API: &str = "https://api.github.com/repos/Marketto/hoppy/releas
 pub const DOWNLOAD_BASE: &str = "https://github.com/Marketto/hoppy/releases/download";
 pub const PORTAL_URL: &str = "https://marketto.github.io/hoppy/";
 pub const INSTALLER_ASSET: &str = "Hoppy-Setup-x64.exe";
+/// Ubuntu/Debian package (release.yml `linux` job).
+pub const DEB_ASSET: &str = "Hoppy-linux-amd64.deb";
+/// A release is offered only once this platform's package is attached.
+pub const PLATFORM_ASSET: &str = if cfg!(windows) {
+    INSTALLER_ASSET
+} else {
+    DEB_ASSET
+};
 pub const SUMS_ASSET: &str = "SHA256SUMS.txt";
 /// Inno Setup flags. `/VERYSILENT`: no window, so no Cancel button. `/UPDATE=1` makes
 /// hoppy.iss relaunch the tray when done, and also if setup fails.
@@ -139,6 +151,11 @@ impl Release {
 /// Reads `/releases/latest`. `None` unless the tag is a plain release and both the
 /// installer and the checksum file are attached (a release still uploading is skipped).
 pub fn parse_latest(json: &[u8]) -> Option<Release> {
+    parse_latest_for(json, INSTALLER_ASSET)
+}
+
+/// Like [`parse_latest`], requiring `asset` (this platform's package) instead.
+pub fn parse_latest_for(json: &[u8], asset: &str) -> Option<Release> {
     let v: serde_json::Value = serde_json::from_slice(json).ok()?;
     let tag = v.get("tag_name")?.as_str()?;
     let version = parse_version(tag).filter(|v| v.release)?;
@@ -151,7 +168,7 @@ pub fn parse_latest(json: &[u8]) -> Option<Release> {
         .iter()
         .filter_map(|a| a.get("name")?.as_str())
         .collect();
-    if !names.contains(&INSTALLER_ASSET) || !names.contains(&SUMS_ASSET) {
+    if !names.contains(&asset) || !names.contains(&SUMS_ASSET) {
         return None;
     }
     Some(Release {
@@ -202,7 +219,8 @@ fn get_small(http: &dyn Http, url: &str, max: usize) -> Result<Vec<u8>> {
 /// The latest release if it is newer than `current`.
 pub fn check(http: &dyn Http, current: &str) -> Result<Option<Release>> {
     let json = get_small(http, LATEST_API, MAX_JSON)?;
-    Ok(parse_latest(&json).filter(|r| is_newer(&r.version.to_string(), current)))
+    Ok(parse_latest_for(&json, PLATFORM_ASSET)
+        .filter(|r| is_newer(&r.version.to_string(), current)))
 }
 
 /// The downloaded installer does not match `SHA256SUMS.txt`; it has been deleted.
@@ -433,6 +451,11 @@ mod tests {
         assert!(parse_latest(&release_json(" v0.2.0", &both)).is_none());
         assert!(parse_latest(b"{").is_none());
         assert!(parse_latest(b"{\"tag_name\": 3}").is_none());
+        // Linux waits for the .deb, Windows for the installer.
+        let deb = [DEB_ASSET, SUMS_ASSET];
+        assert!(parse_latest_for(&release_json("v0.2.0", &deb), DEB_ASSET).is_some());
+        assert!(parse_latest_for(&release_json("v0.2.0", &both), DEB_ASSET).is_none());
+        assert!(parse_latest(&release_json("v0.2.0", &deb)).is_none());
     }
 
     const H: &str = "00112233445566778899aabbccddeeff00112233445566778899AABBCCDDEEFF";
@@ -476,7 +499,7 @@ mod tests {
         let mut m = HashMap::new();
         m.insert(
             LATEST_API.to_owned(),
-            release_json(tag, &[INSTALLER_ASSET, SUMS_ASSET]),
+            release_json(tag, &[INSTALLER_ASSET, DEB_ASSET, SUMS_ASSET]),
         );
         m.insert(format!("{base}/{INSTALLER_ASSET}"), installer.to_vec());
         m.insert(

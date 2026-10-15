@@ -3,9 +3,9 @@ name: Release
 # Builds the installable packages and publishes a GitHub Release.
 #   - push a tag:        git tag v0.2.0 && git push origin v0.2.0
 #   - or run manually:   Actions → Release → Run workflow (version: 0.2.0)
-# Windows and Android are always built. macOS, Ubuntu and iPhone/iPad are switched on
+# Windows, Android and Ubuntu are always built. macOS and iPhone/iPad are switched on
 # one at a time with repository variables (Settings → Secrets and variables → Actions →
-# Variables): ENABLE_MACOS, ENABLE_LINUX, ENABLE_IOS = true. See docs/release.md.
+# Variables): ENABLE_MACOS, ENABLE_IOS = true. See docs/release.md.
 
 on:
   push:
@@ -176,20 +176,28 @@ jobs:
           path: dist/*
 
   linux:
-    name: Ubuntu · .deb
+    name: Ubuntu · .deb (22.04+)
     needs: meta
-    if: vars.ENABLE_LINUX == 'true'
+    # The oldest supported Ubuntu: the binaries then need glibc ≤ 2.35 and run on 22.04+.
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Set version
         run: sed -i 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
       - run: cargo install cargo-deb --locked
-      - run: |
-          cargo deb -p hoppy
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release -p hoppy --message-format=short 2>&1 | tee build.log ||
+            { bash tools/ci-annotate.sh "cargo build (Linux release)" build.log; exit 1; }
+          cargo deb -p hoppy --no-build
           mkdir -p dist
-          cp target/debian/*.deb dist/hoppy_amd64.deb
+          # Stable name: the portal and the Linux update check rely on it (docs/release.md).
+          cp target/debian/*.deb dist/Hoppy-linux-amd64.deb
+          dpkg-deb --info dist/Hoppy-linux-amd64.deb
+          dpkg-deb --contents dist/Hoppy-linux-amd64.deb
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-linux
@@ -239,6 +247,7 @@ jobs:
           | --- | --- |
           | Windows 10/11 (64-bit) | \`Hoppy-Setup-x64.exe\` (installer) · \`Hoppy-windows-x64.zip\` (portable) |
           | Android 10+ (phone and tablet) | \`Hoppy-android.apk\` |
+          | Ubuntu 22.04+ (64-bit) | \`Hoppy-linux-amd64.deb\` (open it with App Center / Software Install) |
 
           > Proof of concept: protocol v0 is **not encrypted**. Use Hoppy only on networks you trust.
           > Windows may show a SmartScreen warning (the installer is not code-signed yet): More info → Run anyway.
