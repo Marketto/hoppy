@@ -1690,6 +1690,9 @@ def vectors(v1: bool = False) -> None:
 
 def main() -> int:
     global V0_MODE
+    # Log lines must reach a redirected stdout at once (interop.sh waits for them in files);
+    # without this they sit in the block buffer unless PYTHONUNBUFFERED happens to be set.
+    sys.stdout.reconfigure(line_buffering=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--v0", action="store_true", help="behave like a v0 (old, unencrypted) node")
     common.add_argument("--key", type=Path, help="device key file (created if missing; default: in memory)")

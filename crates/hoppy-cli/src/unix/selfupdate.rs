@@ -754,7 +754,9 @@ mod tests {
     }
 
     /// The real helper script, run up to the point where it would install (needs only
-    /// coreutils; the dpkg-deb case only where dpkg-deb exists).
+    /// coreutils; the dpkg-deb case only where dpkg-deb exists). Linux only: the helper
+    /// ships in the .deb and relies on GNU coreutils (`sha256sum`), absent on macOS.
+    #[cfg(target_os = "linux")]
     #[test]
     fn root_helper_validates_before_installing() {
         let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/linux/install-update");

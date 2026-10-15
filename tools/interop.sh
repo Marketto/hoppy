@@ -10,7 +10,8 @@ set -euo pipefail
 export LC_ALL=C.UTF-8  # JVM needs a UTF-8 locale for non-ASCII file names
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REF="python3 $ROOT/tools/hoppy_ref.py"
+export PYTHONUNBUFFERED=1  # receivers' logs are read from files while they run
+REF="python3 -u $ROOT/tools/hoppy_ref.py"
 cargo build -q --manifest-path "$ROOT/Cargo.toml" -p hoppy
 BIN="$ROOT/target/debug/hoppy"
 WORK="$(mktemp -d)"
@@ -24,7 +25,16 @@ printf 'ciao' > "$WORK/nota 🐰.txt"
 export HOPPY_CONFIG_DIR="$WORK/cfg"
 "$BIN" name "InteropRust" >/dev/null
 
-fail() { echo "   FAIL: $*" >&2; exit 1; }
+# On failure, the tail of every log of this run (CI shows the last lines as an annotation).
+fail() {
+  echo "   FAIL: $*" >&2
+  for f in "$WORK"/*.log "$WORK"/*.json; do
+    [[ -f $f ]] || continue
+    echo "--- $(basename "$f") (last 15 lines)" >&2
+    tail -n 15 "$f" >&2
+  done
+  exit 1
+}
 # The 8-digit SAS ("1234 5678") in a line of output.
 digits() { grep -oE '[0-9]{4} [0-9]{4}' | head -1; }
 # Waits until FILE has a line matching PATTERN (background receivers print asynchronously).
