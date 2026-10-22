@@ -18,6 +18,7 @@ Spec and palettes: `docs/design/themes.md`. Decision: `docs/decisions/0005-five-
 | Mascots + animations (generated) | `tools/gen_mascots.py` → `res/drawable/mascot_*.xml`, `res/animator/mascot_*.xml`, `assets/brand/` |
 | App icon (generated) | `tools/gen_mascots.py` (`ICON_*`) → `res/drawable/ic_launcher_{background,foreground,monochrome}.xml`, `assets/brand/hoppy-icon.svg`; then `tools/gen_icons.py` → `assets/brand/hoppy.ico`, `hoppy-512.png`. Spec: `docs/design/themes.md` "App icon" |
 | Japanese decor copy | `res/values/decor.xml` |
+| Desktop send window (5 themes as CSS, motion, WOFF2 fonts) | `crates/hoppy-cli/src/sendui/web/` (`app.css` palettes checked by `tools/contrast.py`; fonts by `tools/fonts.py --desktop`), choice in `crates/hoppy-cli/src/theme.rs`; spec `docs/design/themes.md` "Desktop send window" |
 | Music (generated) | `tools/gen_music.py` → `res/raw/music_<theme>_<idle\|transfer\|done>.ogg`, `assets/music/desktop_*.wav`, `assets/music/manifest.json` |
 | Fonts (generated, OFL) | `tools/fonts.py` → `res/font/*.ttf`, licences in `apps/android/app/src/main/assets/licenses/fonts/` |
 
@@ -44,4 +45,6 @@ Spec and palettes: `docs/design/themes.md`. Decision: `docs/decisions/0005-five-
 3. `Theme.Hoppy.<Name>` in `themes.xml` (Material color roles, fonts, `shapeAppearanceCorner*`).
 4. Drawing branches in `ThemeBackgroundView`, `MascotStageView`, `HoppyButton`, `HomeDecor`; body motion in `MascotView`.
 5. Label + description strings in `values/strings.xml` and `values-it/strings.xml`; new fonts in `tools/fonts.py`.
+   Desktop: a `Theme` variant in `crates/hoppy-cli/src/theme.rs`, a `[data-theme]` block + motion
+   in `sendui/web/app.css` (every variable `tools/contrast.py` checks), `python3 tools/fonts.py --desktop`.
 6. If it should be auto-suggested, extend `ThemeSuggestion` and its test.

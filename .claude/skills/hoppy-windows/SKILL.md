@@ -15,10 +15,11 @@ PoC UX (no console windows):
 - **Send**: Explorer → select files → right click → **Send with Hoppy** (HKCU verb; on Win11
   top-level only with the opt-in classic menu, else *Show more options*), or **Send to →
   Hoppy**, or drop on the desktop shortcut, runs `hoppyw send FILES` (no files = Open
-  dialog first; one process per file from the verb, merged by the first one): tray icon
-  "Looking for devices…", then a
-  popup menu at the mouse cursor lists nearby devices → click one → progress in the tray
-  tooltip → final balloon → the process exits a few seconds later. Sound: silent while
+  dialog first; one process per file from the verb, merged by the first one): the themed
+  **send window** (WebView2, `sendui`, ADR 0011: searching → device cards / "nobody found"
+  tips → progress + inline 4-emoji panel → delivered, auto-close) → the process exits.
+  Without WebView2 (or the page not ready in 10 s) the native fallback runs: tray icon
+  "Looking for devices…", popup menu at the cursor, progress in the tooltip, final balloon. Sound: silent while
   searching/menu/sending; only the done jingle on delivery (replaces the balloon's system
   sound), unless `music: false` in device.json (tray item "♪ Sound when delivered",
   `hoppy music on|off`; field name kept for compatibility). The tray receiver plays no
@@ -49,6 +50,15 @@ PoC UX (no console windows):
   process spawns, UAC (`run_elevated` takes a `Waker` as owner) and the classic-menu toggle
   run on workers; worker errors become `Notice`s (balloon) + log lines. Handlers run inside
   `diag::UiWatch::handler`; wrap modal calls (menus, dialogs) in `h.modal(...)`.
+- `crates/hoppy-cli/src/sendui/` — the send window, shared by all desktops (ADR 0011):
+  `mod.rs` pure state machine `Flow` + `View` JSON + `parse_action` (IPC validation),
+  unit-tested on Linux; `window.rs` wry/tao (`run` → `Unavailable` before showing anything
+  = fallback to `gui::send_native`); `web.rs` embedded page + CSP + custom protocol table;
+  `web/` HTML/CSS/JS + WOFF2 fonts (`tools/fonts.py --desktop`); `smoke.rs`
+  (`hoppyw --smoke-test-window`, `--dump-views`). Platform glue stays tiny: `ui::activate_app`
+  (no-op on Windows: tao's `set_focus` forces the foreground). Theme: `crate::theme` +
+  `platform::system_look` (Windows: `AppsUseLightTheme`, `SPI_GETHIGHCONTRAST`) and the
+  tray's *Theme* submenu (`MenuItem::Sub`, `build_popup` with `MF_POPUP`).
 - `crates/hoppy-cli/src/diag.rs` — `%LOCALAPPDATA%\Hoppy\hoppy.log` (channel → writer
   thread, rotation at 256 KB, UTC timestamps; no file names/paths: `format_line` runs
   `redact_paths`, core errors are logged via `error_kind`/`error_chain`, never `{e}`; IPs
@@ -184,7 +194,9 @@ PoC UX (no console windows):
 
 ## Verify
 
-Linux can't build the Windows target here. Run `python3 tools/dev.py check`, then rely on
+Send window: Linux runs it for real (`xvfb-run target/debug/hoppyw --smoke-test-window`,
+`python3 tools/sendui_audit.py`); on Windows check it by hand (docs/platforms/windows.md
+"Send window"). Linux can't build the Windows target here. Run `python3 tools/dev.py check`, then rely on
 the `windows-latest` CI job (clippy + `cargo test` + artifacts `hoppy.exe`, `hoppyw.exe`);
 its failures appear as annotations (`tools/ci-annotate.sh`), not only in the log.
 Windows-only code can be type-checked on Linux with a harness that flips `cfg(windows)` and
@@ -203,5 +215,6 @@ callback receive with the Hoppy rules removed (phone → PC; `hoppyw send` while
 runs on the same PC still receives), "trying another way" tip and "Can't reach" balloon;
 verification dialogs (receiver: emoji + names legible at 100/150/200 % scaling, no digits
 or QR code, Tab/Enter/Esc, Enter declines, Narrator reads the names, high-contrast theme;
-sender code window "Later"/"They match", closes when the send ends;
+sender code window "Later"/"They match", closes when the send ends (fallback only; the send
+window shows it inline);
 key-change warning + "Forget device"; "Trusted devices…").

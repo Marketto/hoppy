@@ -16,7 +16,7 @@ Match the request to a row, load the skill, follow it. One request may hit sever
 | --- | --- | --- | --- |
 | Wire format, discovery messages, limits, file-name rules | `.claude/skills/hoppy-protocol-change/SKILL.md` | `docs/protocol.md`, `docs/test-vectors.json` | `python3 tools/dev.py all` |
 | Rust core (discovery, transfer, sanitizing) | `.claude/skills/hoppy-rust-core/SKILL.md` | `crates/hoppy-core/src/` | `python3 tools/dev.py check` |
-| Desktop CLI, Windows "Send to", installer | `.claude/skills/hoppy-windows/SKILL.md` | `crates/hoppy-cli/src/`, `apps/windows/` | `python3 tools/dev.py check` |
+| Desktop CLI, Windows "Send to", installer, the desktop send window (all desktops) | `.claude/skills/hoppy-windows/SKILL.md` | `crates/hoppy-cli/src/`, `crates/hoppy-cli/src/sendui/`, `apps/windows/` | `python3 tools/dev.py check` (+ `python3 tools/sendui_audit.py`) |
 | Ubuntu/Linux desktop (tray, notifications, right-click entries, .deb) | `.claude/skills/hoppy-linux/SKILL.md` | `crates/hoppy-cli/src/linux/`, `crates/hoppy-cli/src/gui.rs`, `apps/linux/` | `python3 tools/dev.py check` (+ `cargo deb -p hoppy`) |
 | Mac desktop (menu-bar app, Finder service, login item, Hoppy.app/.dmg, signing) | `.claude/skills/hoppy-macos/SKILL.md` | `crates/hoppy-cli/src/macos/`, `crates/hoppy-cli/src/gui.rs`, `apps/macos/` | `python3 tools/dev.py check` + CI job `macOS · tests + universal Hoppy.app` (annotations) |
 | Android app (UI, service, share target, storage) | `.claude/skills/hoppy-android/SKILL.md` | `apps/android/` | `python3 tools/dev.py android-test` (+ CI build) |
@@ -36,7 +36,7 @@ touches bytes on the wire or files written to disk.
 
 ```
 crates/hoppy-core/     Rust library: protocol.rs, discovery.rs, transfer.rs, sanitize.rs, crypto.rs/session.rs (v1 Noise), trust.rs (TOFU)
-crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` tray/Send GUI (Windows + Linux + macOS)
+crates/hoppy-cli/      `hoppy` CLI (send / receive / peers / install) + `hoppyw` tray/Send GUI (Windows + Linux + macOS; themed send window in src/sendui/, ADR 0011)
 crates/hoppy-ffi/      C ABI over hoppy-core (staticlib → HoppyFFI.xcframework) for the iOS app
 apps/android/core/     Pure-JVM Kotlin: same protocol for Android (unit + interop tested)
 apps/android/app/      Android UI shell: share target, receive service, themes

@@ -16,6 +16,8 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 | Panel icon (ksni) | `crates/hoppy-cli/src/linux/sni.rs` |
 | Notifications (zbus) | `crates/hoppy-cli/src/linux/notify.rs` |
 | zenity/kdialog argv builders (incl. the verification dialog with Pango markup) | `crates/hoppy-cli/src/linux/dialog.rs` |
+| Send window (wry/tao on WebKitGTK, shared with Windows/macOS; ADR 0011) | `crates/hoppy-cli/src/sendui/` |
+| Theme choice + OS signals (`gsettings`) | `crates/hoppy-cli/src/theme.rs`, `crates/hoppy-cli/src/linux/mod.rs` (`system_look`) |
 | Verification dialog model (shared) | `crates/hoppy-cli/src/verify.rs` |
 | Self-update (.deb via pkexec, Mac app swap, relaunch helper) | `crates/hoppy-cli/src/unix/selfupdate.rs` |
 | Update check cadence (shared, all desktops) | `crates/hoppy-cli/src/update.rs` (`Cadence`, `check_due`: 30 s, every 3 h, after wake-up, on menu open with a 10-min throttle) + `gui.rs` (`request_update_check`; *About…* dialog `about_dialog` with *Check for updates*) |
@@ -38,6 +40,9 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
   `[target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]`. Code shared
   with macOS (`which`, curl/wget) lives in `crate::unix`.
 - No tokio: zbus/ksni use `async-io` (their own thread); our code is blocking.
+- `hoppyw` links WebKitGTK 4.1 + GTK 3 for the send window (build: `libwebkit2gtk-4.1-dev
+  libgtk-3-dev`; .deb Depends `libwebkit2gtk-4.1-0`); the `hoppy` CLI must not (check with
+  `readelf -d target/release/hoppy`). The window falls back to zenity when it cannot start.
 - Network text in notifications: `display_*` first; `notify.rs` escapes markup; zenity gets
   `--no-markup`, kdialog look-alikes for `<`/`>`; dialog list entries never start with `-`
   and never follow a bare `--` (zenity shows it as a row).
@@ -58,7 +63,9 @@ UX, files and test plan: `docs/platforms/linux.md`. Decision: `docs/decisions/00
 ## Verify
 
 `python3 tools/dev.py check` (Linux unit tests included), `cargo build --release -p hoppy`,
-`cargo deb -p hoppy --no-build && dpkg-deb -c target/debian/*.deb`. Scripted end-to-end
+`cargo deb -p hoppy --no-build && dpkg-deb -c target/debian/*.deb`. Send window:
+`xvfb-run -a target/debug/hoppyw --smoke-test-window` (every screen × theme) and
+`python3 tools/sendui_audit.py` (axe-core in Chromium). Scripted end-to-end
 runs need a private session bus (`dbus-run-session`) and a notification server/tray host
 (a fake one is fine; GNOME-specific behaviour still needs a real desktop: see the test
 plan in `docs/platforms/linux.md`). Real zenity renders under `Xvfb` (with

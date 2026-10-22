@@ -16,8 +16,10 @@ Commands (each prints what it runs and exits non-zero on failure):
                  (needs numpy + soundfile; `python3 tools/gen_music.py --check` verifies)
   docs           lint AI docs: links in AGENTS.md/skills exist, skill frontmatter valid
   secrets        scan tracked + new files for credentials and personal e-mails
-  contrast       WCAG AA contrast of every Android theme text/background pair
-  a11y           axe-core audit of the download portal (needs Playwright + npm)
+  contrast       WCAG AA contrast of every app theme text/background pair (Android, iOS, desktop
+                 send window)
+  a11y           axe-core audit of the download portal and of the desktop send window in all
+                 five themes (needs Playwright + npm)
   all            check + interop + android-test (what CI runs on Linux)
 """
 from __future__ import annotations
@@ -198,6 +200,7 @@ def cmd_contrast() -> None:
 
 def cmd_a11y() -> None:
     run([sys.executable, "tools/site_audit.py"])
+    run([sys.executable, "tools/sendui_audit.py"])
 
 
 def cmd_all() -> None:

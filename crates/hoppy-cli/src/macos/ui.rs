@@ -546,6 +546,24 @@ pub fn run_elevated(_owner: Option<&Waker>, _exe: &Path, _params: &str) -> Resul
 
 // ---------------------------------------------------------------- sound, network, shell
 
+/// The send window (`sendui::window`, a tao window) was just shown: make Hoppy the active
+/// app so the window gets the keyboard and stays in front, like the old device panel
+/// (`bring_to_front`) but without pumping events: tao's loop is running. Main thread.
+pub fn activate_app() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    activate(&app);
+    if super::login::at_least(14) {
+        app.activate(); // macOS 14+ cooperative activation
+    }
+    diag::log(format!(
+        "activation: send window, active={}",
+        app.isActive()
+    ));
+}
+
 /// The delivery jingle (embedded WAV) through `NSSound`. Main thread (the send loop).
 pub fn play_done_jingle() {
     if MainThreadMarker::new().is_none() {
@@ -1262,6 +1280,11 @@ fn build_menu(mtm: MainThreadMarker, items: &[MenuItem<'_>]) -> Retained<NSMenu>
                 add(text, None);
             }
             MenuItem::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+            MenuItem::Sub(text, sub) => {
+                let item = add(text, None);
+                item.setEnabled(true);
+                item.setSubmenu(Some(&build_menu(mtm, sub)));
+            }
         }
     }
     menu

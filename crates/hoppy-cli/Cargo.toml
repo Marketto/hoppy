@@ -32,6 +32,15 @@ serde_json = "1.0.154"
 sha2 = "0.11.1"
 uuid = { version = "1.28.0", features = ["v4"] }
 
+# The themed send window (`hoppyw send`, src/sendui/, ADR 0011): a system webview (WebView2
+# on Windows, WKWebView on macOS, WebKitGTK 4.1 on Linux) in a tao window. Content is
+# embedded in the binary; no network, no devtools. Linux builds need libwebkit2gtk-4.1-dev
+# and libgtk-3-dev; the .deb depends on libwebkit2gtk-4.1-0.
+[target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
+png = "0.18.1"
+tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
+wry = { version = "0.57.0", default-features = false, features = ["os-webview"] }
+
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
@@ -47,6 +56,8 @@ windows-sys = { version = "0.61.2", features = [
     # SHELLEXECUTEINFOW / ShellExecuteExW (UAC "runas" for the firewall rules).
     "Win32_System_Registry",
     "Win32_System_Threading",
+    # HIGHCONTRASTW (high contrast → the Manga theme).
+    "Win32_UI_Accessibility",
     "Win32_UI_Controls_Dialogs",
     # SetFocus / EnableWindow (the verification dialog).
     "Win32_UI_Input_KeyboardAndMouse",
@@ -59,7 +70,6 @@ windows-sys = { version = "0.61.2", features = [
 # executor thread; Hoppy's code stays blocking (no tokio).
 [target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
-png = "0.18.1"
 zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 # macOS desktop (`hoppyw` in Hoppy.app, src/macos/): AppKit, UserNotifications and
@@ -161,7 +171,9 @@ Includes the hoppy command line tool and the Hoppy desktop app: a panel icon tha
 receives files, and "Send with Hoppy" in the Files right-click menu."""
 section = "net"
 priority = "optional"
-depends = "$auto"
+# $auto finds libwebkit2gtk-4.1-0 / libgtk-3-0 from hoppyw's links; named here too so the
+# send window's runtime is explicit (Ubuntu 22.04+ ships it).
+depends = "$auto, libwebkit2gtk-4.1-0"
 # zenity/kdialog: device list and file picker; curl/wget: update check; xdg-utils: open folders;
 # pkexec: installing updates (else the .deb opens in the software installer).
 recommends = "zenity | kdialog, curl | wget, xdg-utils, pkexec | policykit-1"
@@ -180,4 +192,6 @@ assets = [
     ["../../assets/brand/linux/hoppy-512.png", "usr/share/icons/hicolor/512x512/apps/hoppy.png", "644"],
     ["../../assets/brand/linux/hoppy.svg", "usr/share/icons/hicolor/scalable/apps/hoppy.svg", "644"],
     ["../../LICENSE", "usr/share/doc/hoppy/", "644"],
+    # OFL licences of the fonts embedded in hoppyw (send window).
+    ["src/sendui/web/fonts/*-OFL.txt", "usr/share/doc/hoppy/fonts/", "644"],
 ]

@@ -54,6 +54,32 @@ pub fn first_run_integration() -> Result<crate::config::Identity> {
     integration::first_run()
 }
 
+/// Dark mode and high contrast for the theme suggestion (`theme::suggest`), from the GNOME
+/// settings (also used by Ubuntu, Cinnamon, MATE, Budgie); unknown = light, normal contrast.
+/// Runs `gsettings`: call it from a worker or before an event loop.
+pub fn system_look() -> crate::theme::SystemLook {
+    use crate::theme;
+    let get = |schema: &str, key: &str| -> String {
+        std::process::Command::new("gsettings")
+            .args(["get", schema, key])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let gtk = get("org.gnome.desktop.interface", "gtk-theme");
+    let scheme = get("org.gnome.desktop.interface", "color-scheme");
+    let a11y = get("org.gnome.desktop.a11y.interface", "high-contrast");
+    theme::SystemLook {
+        // GNOME 42+ "Style: Dark", or a dark GTK theme (older GNOME, Cinnamon, MATE).
+        dark: theme::gsettings_color_scheme_dark(&scheme).unwrap_or(false)
+            || theme::gtk_theme_dark(&gtk),
+        high_contrast: theme::gsettings_high_contrast(&a11y, &gtk),
+    }
+}
+
 /// UI language: Italian when the message locale is Italian (gettext order: `LANGUAGE`
 /// unless the locale is C/POSIX, then `LC_ALL`, `LC_MESSAGES`, `LANG`).
 pub fn ui_is_italian() -> bool {

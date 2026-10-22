@@ -27,6 +27,9 @@ Design notes: `docs/architecture.md`. Wire rules: `docs/protocol.md`.
   send-only processes without seeds via `hoppy::sweep_for`); `set_transfer_port` switches
   receiving on/off at runtime (bye/announce). Nodes without multicast also unicast
   query/announce/bye to known peers.
+- hoppy-cli `src/sendui/` (desktop send window, ADR 0011) and `src/theme.rs` are pure where
+  possible (state machine, IPC parsing, theme rule) and tested on Linux; wry/tao only in
+  `sendui/window.rs`.
 - `sanitize.rs` also has `display_text` (strip bidi/control characters before showing
   network text), shared by the CLI and the FFI.
 

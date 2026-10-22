@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- Hoppy send window (crates/hoppy-cli/src/sendui, ADR 0011). Served from the binary by the
+     `hoppy:` custom protocol; the MASCOT comments are replaced with assets/brand SVGs. -->
+<html lang="it" data-theme="purikura" data-screen="searching">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Hoppy</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="bg" aria-hidden="true">
+  <div class="bg-fx"></div>
+  <div class="cloud c1"></div><div class="cloud c2"></div><div class="cloud c3"></div>
+  <div class="stars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="bubbles"><i></i><i></i><i></i><i></i><i></i></div>
+</div>
+<main id="app">
+  <div class="stage" aria-hidden="true">
+    <div class="burst"></div>
+    <div class="ring"></div>
+    <div class="radar"><i></i><i></i><i></i></div>
+    <div class="mascot" id="mascot" data-kind="idle">
+      <div class="m m-kawaii"><!--MASCOT:kawaii--></div>
+      <div class="m m-pro"><!--MASCOT:pro--></div>
+      <div class="m m-happy"><!--MASCOT:happy--></div>
+    </div>
+    <div class="sparkles"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <span class="decor" id="decor"></span>
+  </div>
+  <p class="header" id="header"></p>
+  <section class="panel" id="panel" aria-labelledby="title">
+    <h1 class="title" id="title"></h1>
+    <div class="body" id="body"></div>
+    <div class="footer" id="footer"></div>
+  </section>
+  <div class="sr-only" id="live" role="status" aria-live="polite"></div>
+</main>
+</body>
+</html>

@@ -41,6 +41,7 @@ in Applications.
 | Pure helpers (tested on Linux) | `crates/hoppy-cli/src/macos/mod.rs` | Bundle path, App-Translocation check, LaunchAgent plist, osascript argv, language, status title; a test keeps `apps/macos/Info.plist` in sync with the code. |
 | Login item | `crates/hoppy-cli/src/macos/login.rs` | macOS 13+: `SMAppService.mainApp` (Login Items lists Hoppy); if the system refuses it, or on macOS 12: `~/Library/LaunchAgents/app.hoppy.desktop.login.plist` (`open -a Hoppy.app`, carries a marker, never touches a file without it). |
 | Bundle, Finder service, document types | `apps/macos/Info.plist`, `apps/macos/en.lproj/`, `apps/macos/it.lproj/` | `LSUIElement` (no Dock icon), `LSMinimumSystemVersion` 12.0, `NSServices` "Send with Hoppy" («Invia con Hoppy»), `CFBundleDocumentTypes` (`public.data`, rank Alternate), privacy prompt texts. |
+| Send window | `crates/hoppy-cli/src/sendui/` | wry + tao on WKWebView (ADR 0011): the themed device/progress/verification window of `hoppyw send`; tao creates the `NSApplication` of that process (Accessory policy), `ui::activate_app` brings it to the front. Theme from device.json `theme`, else `defaults` (`AppleInterfaceStyle`, `increaseContrast`). |
 | Packaging | `apps/macos/build-app.sh` | Builds both architectures, `lipo`, checks `minos` ≤ 12.0 per architecture, assembles and signs `Hoppy.app`, makes the .dmg (`hdiutil`, retried). |
 | Icons (generated) | `assets/brand/macos/` (`python3 tools/gen_icons.py --macos`) | `Hoppy.icns` + `hoppy-1024.png` (824 px body on the 1024 grid) and `menubar-template.png` (36 px = 18 pt @2x, black + alpha template image, tinted by macOS). |
 
@@ -151,7 +152,7 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
    on an Italian system.
 3. **Menu bar**: bunny icon tinted correctly in light and dark menu bars and on a
    non-Retina display (2015 MacBook Air); left and right click open the menu at once under
-   the icon; entries: header, Invia file…, Apri cartella ricevuti, ♪ Suono a fine invio,
+   the icon; entries: header, Invia file…, Apri cartella ricevuti, ♪ Suono a fine invio, Tema ▸,
    Apri all'accesso, Dispositivi fidati…, Informazioni… (NSAlert with the app icon: version, author, GitHub link; Chiudi /
    Controlla aggiornamenti / Pagina GitHub / Diagnostica), Esci; no Dock icon,
    no app menu.
@@ -162,12 +163,15 @@ Check `~/Library/Logs/Hoppy/hoppy.log` after each block.
 5. **Send**: Finder → right-click 1 file and 20 files → Services → *Invia con Hoppy* (also
    with Hoppy not running: it starts and then sends); drop on the app icon; *Open With →
    Hoppy*; menu *Invia file…*. The picker window appears near the pointer, in front of the
-   Finder, and stays until a choice (2015 MacBook Air on macOS 12: the 0.7.0 bug); click a
-   device, *Cerca di nuovo*, *Annulla*, Esc and the close button (all cancel); the log has
-   `activation: active=true` and `picker: closed, choice=…`;
-   progress in the second status item; jingle once on delivery and none when muted;
-   *Annulla invio* from the second icon; "Non riesco a raggiungere" balloon with the
-   receiver off.
+   Finder, with keyboard focus, and stays until a choice (2015 MacBook Air on macOS 12: the
+   0.7.0 bug); it is the themed **send window** (WKWebView): click a device or arrows +
+   Return, *Cerca di nuovo*, *Annulla*, Esc and the close button (all cancel); the log has
+   `send window: shown after N ms` and `activation: send window, active=true`; progress bar,
+   jingle once on delivery and none when muted, the window closes by itself ~3 s later;
+   *Annulla invio* in the window; "Non riesco a raggiungere" screen with the receiver off;
+   menu *Tema* ▸ switches the next window's look; dark mode / *Increase contrast* with no
+   theme chosen → Night / Manga; *Reduce motion* stops the animations; no Dock icon while
+   it is open.
 6. **Login item**: first run turns it on (macOS 13+: System Settings → General → Login Items
    lists Hoppy; macOS 12: the LaunchAgent plist exists); toggle off/on from the menu; log
    out and in; `hoppy uninstall` then `hoppy install`. From the .dmg (translocated): the

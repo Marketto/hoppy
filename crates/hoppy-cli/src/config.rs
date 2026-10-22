@@ -35,6 +35,10 @@ pub struct Identity {
     /// does).
     #[serde(default)]
     pub desktop_integration: String,
+    /// Desktop theme of the send window (`theme::Theme::id`), chosen from the tray's
+    /// "Theme" submenu. Empty = never chosen: follow the system (`theme::effective`).
+    #[serde(default)]
+    pub theme: String,
 }
 
 fn default_music() -> bool {
@@ -135,6 +139,7 @@ pub fn load_or_create() -> Result<Identity> {
         music: default_music(),
         firewall_hint: String::new(),
         desktop_integration: String::new(),
+        theme: String::new(),
     };
     save(&identity)?;
     Ok(identity)
@@ -170,6 +175,14 @@ pub fn set_firewall_hint(version: &str) -> Result<Identity> {
 pub fn set_desktop_integration(state: &str) -> Result<Identity> {
     let mut identity = load_or_create()?;
     identity.desktop_integration = state.to_owned();
+    save(&identity)?;
+    Ok(identity)
+}
+
+/// Saves the desktop theme chosen in the tray (re-reads the file first, like `set_music`).
+pub fn set_theme(id: &str) -> Result<Identity> {
+    let mut identity = load_or_create()?;
+    identity.theme = id.to_owned();
     save(&identity)?;
     Ok(identity)
 }
@@ -228,6 +241,7 @@ mod tests {
         assert!(old.music);
         assert!(old.firewall_hint.is_empty());
         assert!(old.desktop_integration.is_empty());
+        assert!(old.theme.is_empty(), "no theme chosen: follow the system");
         let off: Identity =
             serde_json::from_str(r#"{"id":"x","name":"PC","music":false}"#).unwrap();
         assert!(!off.music);

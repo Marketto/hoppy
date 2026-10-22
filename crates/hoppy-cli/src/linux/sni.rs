@@ -9,7 +9,7 @@ use std::sync::mpsc::Sender;
 
 use anyhow::{Result, anyhow};
 use ksni::blocking::{Handle, TrayMethods};
-use ksni::menu::{CheckmarkItem, StandardItem};
+use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
 
 use crate::diag;
 use crate::platform::{MenuItem, TrayEvent};
@@ -26,6 +26,7 @@ pub enum Item {
     Bold(u32, String),
     Label(String),
     Separator,
+    Sub(String, Vec<Item>),
 }
 
 impl Item {
@@ -36,6 +37,9 @@ impl Item {
             MenuItem::Bold(id, t) => Item::Bold(id, mnemonic_safe(t)),
             MenuItem::Label(t) => Item::Label(mnemonic_safe(t)),
             MenuItem::Separator => Item::Separator,
+            MenuItem::Sub(t, sub) => {
+                Item::Sub(mnemonic_safe(t), sub.iter().map(Item::from_menu).collect())
+            }
         }
     }
 }
@@ -80,46 +84,7 @@ impl ksni::Tray for PanelItem {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        self.items
-            .iter()
-            .map(|item| match item {
-                Item::Action(id, label) | Item::Bold(id, label) => {
-                    let id = *id;
-                    StandardItem {
-                        label: label.clone(),
-                        icon_name: if matches!(item, Item::Bold(..)) {
-                            "software-update-available".into()
-                        } else {
-                            String::new()
-                        },
-                        activate: Box::new(move |t: &mut Self| {
-                            let _ = t.tx.send(TrayEvent::Menu(id));
-                        }),
-                        ..Default::default()
-                    }
-                    .into()
-                }
-                Item::Check(id, label, on) => {
-                    let id = *id;
-                    CheckmarkItem {
-                        label: label.clone(),
-                        checked: *on,
-                        activate: Box::new(move |t: &mut Self| {
-                            let _ = t.tx.send(TrayEvent::Menu(id));
-                        }),
-                        ..Default::default()
-                    }
-                    .into()
-                }
-                Item::Label(label) => StandardItem {
-                    label: label.clone(),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-                Item::Separator => ksni::MenuItem::Separator,
-            })
-            .collect()
+        menu_items(&self.items)
     }
 
     fn watcher_online(&self) {
@@ -132,6 +97,56 @@ impl ksni::Tray for PanelItem {
         ));
         true // keep the service: the host may come (back) later
     }
+}
+
+/// The dbusmenu entries for `items` (submenus recursively).
+fn menu_items(items: &[Item]) -> Vec<ksni::MenuItem<PanelItem>> {
+    items
+        .iter()
+        .map(|item| match item {
+            Item::Action(id, label) | Item::Bold(id, label) => {
+                let id = *id;
+                StandardItem {
+                    label: label.clone(),
+                    icon_name: if matches!(item, Item::Bold(..)) {
+                        "software-update-available".into()
+                    } else {
+                        String::new()
+                    },
+                    activate: Box::new(move |t: &mut PanelItem| {
+                        let _ = t.tx.send(TrayEvent::Menu(id));
+                    }),
+                    ..Default::default()
+                }
+                .into()
+            }
+            Item::Check(id, label, on) => {
+                let id = *id;
+                CheckmarkItem {
+                    label: label.clone(),
+                    checked: *on,
+                    activate: Box::new(move |t: &mut PanelItem| {
+                        let _ = t.tx.send(TrayEvent::Menu(id));
+                    }),
+                    ..Default::default()
+                }
+                .into()
+            }
+            Item::Label(label) => StandardItem {
+                label: label.clone(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            Item::Separator => ksni::MenuItem::Separator,
+            Item::Sub(label, sub) => SubMenu {
+                label: label.clone(),
+                submenu: menu_items(sub),
+                ..Default::default()
+            }
+            .into(),
+        })
+        .collect()
 }
 
 pub struct Sni {

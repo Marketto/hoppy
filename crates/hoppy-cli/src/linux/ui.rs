@@ -82,6 +82,9 @@ pub fn run_elevated(_owner: Option<&Waker>, _exe: &Path, _params: &str) -> Resul
 
 // ---------------------------------------------------------------- sound, network, shell
 
+/// The send window was shown (`sendui::window`): GTK raises it itself; nothing to do.
+pub fn activate_app() {}
+
 pub fn play_done_jingle() {
     sound::play_done_jingle();
 }

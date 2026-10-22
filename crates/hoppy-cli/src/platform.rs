@@ -64,6 +64,20 @@ pub fn ui_is_italian() -> bool {
     }
 }
 
+/// The OS display preferences behind the theme suggestion (`theme::suggest`): dark mode and
+/// high contrast. Reads the registry (Windows) or runs `gsettings`/`defaults`: call it from
+/// a worker, or before an event loop starts.
+pub fn system_look() -> crate::theme::SystemLook {
+    #[cfg(windows)]
+    {
+        win::system_look()
+    }
+    #[cfg(not(windows))]
+    {
+        desktop::system_look()
+    }
+}
+
 /// Windows: Send To + verb + startup shortcut. Linux: right-click entries (Nautilus, Nemo,
 /// Dolphin), launcher and autostart for this user (`linux::integration`). macOS: login
 /// item + Services refresh (the Finder service itself is declared in Info.plist).
@@ -403,6 +417,9 @@ pub enum MenuItem<'a> {
     /// Not selectable; drawn in normal (not greyed) text for contrast.
     Label(&'a str),
     Separator,
+    /// A submenu (the tray's "Theme" list). Only in tray menus; list dialogs (Linux zenity,
+    /// the macOS device panel) skip it.
+    Sub(&'a str, &'a [MenuItem<'a>]),
 }
 
 /// Copies `s` into a fixed UTF-16 field (e.g. `szTip`), truncating on a character
@@ -506,6 +523,7 @@ pub mod win {
         CreateMutexW, GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
     };
+    use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
     use windows_sys::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, FNERR_BUFFERTOOSMALL, GetOpenFileNameW, OFN_ALLOWMULTISELECT,
         OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -521,9 +539,10 @@ pub mod win {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRectEx, BN_CLICKED, BS_DEFPUSHBUTTON, BS_PUSHBUTTON, DC_HASDEFID, DM_GETDEFID,
         HMENU, HWND_TOPMOST, IDC_ARROW, IDCANCEL, IsDialogMessageW, LoadCursorW, PostQuitMessage,
-        SPI_GETWORKAREA, SendMessageW, SetWindowPos, ShowWindow, SystemParametersInfoW, WM_CLOSE,
-        WM_COMMAND, WM_SETFONT, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW, WS_EX_DLGMODALFRAME,
-        WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+        SPI_GETHIGHCONTRAST, SPI_GETWORKAREA, SendMessageW, SetWindowPos, ShowWindow,
+        SystemParametersInfoW, WM_CLOSE, WM_COMMAND, WM_SETFONT, WS_CAPTION, WS_CHILD,
+        WS_EX_APPWINDOW, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
+        WS_VISIBLE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -531,8 +550,8 @@ pub mod win {
         GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON, IDI_APPLICATION, IDYES,
         IMAGE_ICON, InSendMessageEx, KillTimer, LR_DEFAULTCOLOR, LoadIconW, LoadImageW,
         MB_DEFBUTTON2, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL,
-        MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW,
-        MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT,
+        MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_DISABLED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
+        MessageBoxW, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT,
         RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SMTO_ABORTIFHUNG,
         SW_HIDE, SW_SHOWNORMAL, SendMessageTimeoutW, SetForegroundWindow, SetMenuDefaultItem,
         SetProcessDPIAware, SetTimer, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
@@ -587,6 +606,43 @@ pub mod win {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    /// A popup menu for `items` (submenus included; `DestroyMenu` on the result frees them
+    /// too). `None` if the menu could not be created.
+    fn build_popup(items: &[MenuItem<'_>]) -> Option<HMENU> {
+        // SAFETY: no arguments.
+        let menu = unsafe { CreatePopupMenu() };
+        if menu.is_null() {
+            return None;
+        }
+        for item in items {
+            let (flags, id, text) = match *item {
+                MenuItem::Action(id, t) => (MF_STRING, id as usize, Some(t)),
+                MenuItem::Check(id, t, on) => {
+                    let check = if on { MF_CHECKED } else { 0 };
+                    (MF_STRING | check, id as usize, Some(t))
+                }
+                MenuItem::Bold(id, t) => (MF_STRING, id as usize, Some(t)),
+                MenuItem::Label(t) => (MF_STRING | MF_DISABLED, 0, Some(t)),
+                MenuItem::Separator => (MF_SEPARATOR, 0, None),
+                MenuItem::Sub(t, sub) => match build_popup(sub) {
+                    // With MF_POPUP the "id" is the submenu handle (owned by `menu` now).
+                    Some(sub) => (MF_STRING | MF_POPUP, sub as usize, Some(t)),
+                    None => continue,
+                },
+            };
+            // '&' marks a keyboard accelerator in menus; names must show it literally.
+            let text = text.map(|t| wide(&t.replace('&', "&&")));
+            let ptr = text.as_ref().map_or(null(), |t| t.as_ptr());
+            // SAFETY: live menu; AppendMenuW copies the string.
+            unsafe { AppendMenuW(menu, flags, id, ptr) };
+            if let MenuItem::Bold(id, _) = *item {
+                // SAFETY: live menu; `id` was just appended (by command, not position).
+                unsafe { SetMenuDefaultItem(menu, id, 0) };
+            }
+        }
+        Some(menu)
+    }
+
     fn wide_path(p: &Path) -> Vec<u16> {
         p.as_os_str()
             .encode_wide()
@@ -597,6 +653,10 @@ pub mod win {
     /// Starts `tune` asynchronously (loops: Idle, Transfer), replacing whatever this process
     /// was playing. Silent if the PC has no audio device (SND_NODEFAULT: no beep either).
     /// One-shot "delivered" jingle (assets/music/desktop_done.wav), asynchronous.
+    /// The send window was shown (`sendui::window`): tao's `set_focus` already forces it to
+    /// the foreground (Explorer started us, so we may); nothing more to do.
+    pub fn activate_app() {}
+
     pub fn play_done_jingle() {
         // SAFETY: with SND_MEMORY the "name" is a pointer to a complete WAV image; it is
         // 'static, so it stays valid for the whole asynchronous playback.
@@ -1067,32 +1127,7 @@ pub mod win {
             above: bool,
             anchor: Option<(i32, i32)>,
         ) -> Option<u32> {
-            // SAFETY: no arguments.
-            let menu = unsafe { CreatePopupMenu() };
-            if menu.is_null() {
-                return None;
-            }
-            for item in items {
-                let (flags, id, text) = match *item {
-                    MenuItem::Action(id, t) => (MF_STRING, id as usize, Some(t)),
-                    MenuItem::Check(id, t, on) => {
-                        let check = if on { MF_CHECKED } else { 0 };
-                        (MF_STRING | check, id as usize, Some(t))
-                    }
-                    MenuItem::Bold(id, t) => (MF_STRING, id as usize, Some(t)),
-                    MenuItem::Label(t) => (MF_STRING | MF_DISABLED, 0, Some(t)),
-                    MenuItem::Separator => (MF_SEPARATOR, 0, None),
-                };
-                // '&' marks a keyboard accelerator in menus; names must show it literally.
-                let text = text.map(|t| wide(&t.replace('&', "&&")));
-                let ptr = text.as_ref().map_or(null(), |t| t.as_ptr());
-                // SAFETY: live menu; AppendMenuW copies the string.
-                unsafe { AppendMenuW(menu, flags, id, ptr) };
-                if let MenuItem::Bold(id, _) = *item {
-                    // SAFETY: live menu; `id` was just appended (by command, not position).
-                    unsafe { SetMenuDefaultItem(menu, id, 0) };
-                }
-            }
+            let menu = build_popup(items)?;
             let mut flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON;
             if above {
                 flags |= TPM_BOTTOMALIGN;
@@ -2028,6 +2063,26 @@ pub mod win {
             )
         };
         (code == ERROR_SUCCESS).then_some(value)
+    }
+
+    /// Dark mode ("Choose your app mode" = Dark) and a high-contrast theme, for the theme
+    /// suggestion. Registry read: never on the tray thread.
+    pub fn system_look() -> crate::theme::SystemLook {
+        let personalize = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+        let dark = get_dword(personalize, "AppsUseLightTheme") == Some(0);
+        let mut hc = HIGHCONTRASTW {
+            cbSize: size_of::<HIGHCONTRASTW>() as u32,
+            dwFlags: 0,
+            lpszDefaultScheme: null_mut(),
+        };
+        // SAFETY: valid, correctly sized out-structure.
+        let ok = unsafe {
+            SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, (&raw mut hc).cast(), 0)
+        } != 0;
+        crate::theme::SystemLook {
+            dark,
+            high_contrast: ok && hc.dwFlags & HCF_HIGHCONTRASTON != 0,
+        }
     }
 
     /// Deletes `path` and everything below it; a missing key is fine.
