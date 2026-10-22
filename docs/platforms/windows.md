@@ -20,7 +20,8 @@
   folder when clicked. `hoppy receive --yes` (CLI) skips the question (trusted networks
   only).
 - Tray menu (left or right click; it opens at the point Windows reports for the click):
-  *Send files…*, *Open received folder*, *♪ Sound when delivered* (check mark = on), on
+  *Send files…*, *Open received folder*, *♪ Sound when delivered* (check mark = on),
+  *Theme* ▸ (the send window's look; check mark = in use), on
   Windows 11 *"Send with Hoppy" directly on right-click (classic menu)* (check mark = on),
   *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Diagnostics* = the log), *Quit*. When an update
   is available, a bold
@@ -50,11 +51,15 @@
 - Installer upgrades/uninstalls stop only the `hoppy.exe`/`hoppyw.exe` running from the
   install folder (PowerShell, path-filtered), not same-named programs elsewhere.
 - Send: right-click one or more files → *Send with Hoppy* (or *Send to* → *Hoppy*, or drop
-  them on the desktop icon) → a menu at the mouse lists nearby devices (✓ verified,
-  🔒 encrypted, "⚠ not encrypted" for old apps) → click one. For a device not verified
-  yet a small window shows the same code as the receiver's dialog, with **They match**.
-  Progress is in the tray icon tooltip; a notification confirms delivery (or the refusal).
-  Folders are refused with a message (not supported yet).
+  them on the desktop icon) → the **send window** opens centred on the screen with the
+  pointer, in the theme chosen in the tray (see [Send window](#send-window)): mascot,
+  "Invia «file» +N (size) a", device cards (✓ verified, 🔒 encrypted, ⚠ not encrypted) →
+  click one (or arrows + Enter) → progress bar, and for a device not verified yet the same 4
+  emoji as the receiver's dialog inline with **They match** / **Later** → "Delivered to X ✓"
+  (closes by itself after ~3 s), or declined / can't reach / key changed with *Try again* /
+  *Close* / *Forget device*. Folders are refused with a message (not supported yet).
+  Without WebView2 the previous UI is used: a menu at the mouse, the code window, progress
+  in the tray tooltip and a notification.
 - Sound (only on the sender): the *Send to* flow is silent while it searches, shows the
   device menu and sends; it plays one short jingle when the files are delivered (instead
   of the system notification sound). Turn it off from the tray menu (*♪ Sound when
@@ -64,6 +69,29 @@
   *♪ Music* bottom-left; silent installs stay silent).
 - Strings follow the Windows display language: Italian, otherwise English.
 - Firewall: see [Firewall](#firewall) below.
+
+## Send window
+
+`hoppyw send` shows one themed window (ADR 0011, `crates/hoppy-cli/src/sendui/`): a WebView2
+page embedded in `hoppyw.exe` (no network, strict CSP), about 420×580, always on top while
+choosing, brought to the foreground (Explorer's launch gives us that right). Esc or the
+close button = cancel (also cancels a running transfer). Theme: tray menu → *Theme* /
+*Tema* (Purikura, Showa, Manga, Yume, Night; saved as `"theme"` in device.json); never
+chosen = Manga with a high-contrast theme, Night with dark app mode, else Purikura.
+Animations stop with *Settings → Accessibility → Animation effects* off. WebView2's data
+folder is `%LOCALAPPDATA%\Hoppy\WebView2`.
+
+Fallback: no WebView2 runtime (some Windows 10 LTSC/Server images), or the page not loading
+within 10 s → the native menu at the mouse (log: `send: window unavailable (…); native
+picker`). Log lines: `send window: WebView2 <version>`, `send window: shown after N ms`.
+
+Manual checks on a real PC: Windows 10 and 11, 100/150/200 % scaling and two monitors with
+different scaling (sharp text, window on the pointer's screen); right-click → Send with
+Hoppy from Explorer comes to the front with keyboard focus (not just flashing in the
+taskbar); Tab/arrows/Enter/Esc; Narrator reads the device cards and the emoji names;
+high-contrast theme → Manga and system colours; each of the five themes from the tray
+submenu; a PC without WebView2 (or with it uninstalled) falls back to the menu; the
+installer's uninstall leaves no `hoppyw.exe.WebView2` folder in the install folder.
 
 ## Right-click send
 

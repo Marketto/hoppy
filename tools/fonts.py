@@ -11,6 +11,12 @@ Japanese text to any res/values*/*.xml**, otherwise Android falls back to the
 system font for the missing characters (no tofu, just a style mismatch).
 
 Needs: npm, fonttools (`pip install fonttools`).   Usage: python3 tools/fonts.py
+
+Desktop send window (`python3 tools/fonts.py --desktop`, needs fonttools + brotli, no npm):
+the bundled TTFs above are subset again to Latin + kana + the Japanese decor used by
+crates/hoppy-cli/src/sendui/ and written as WOFF2 to crates/hoppy-cli/src/sendui/web/fonts/
+(embedded in hoppyw). Re-run after changing the decor text there. The fonts keep their
+name tables (copyright + OFL notice); the licences are copied next to them.
 """
 from __future__ import annotations
 
@@ -62,7 +68,50 @@ def app_text() -> str:
     return "".join(chunks)
 
 
+DESKTOP_OUT = ROOT / "crates/hoppy-cli/src/sendui/web/fonts"
+DESKTOP_SOURCES = [ROOT / "crates/hoppy-cli/src/sendui/mod.rs", ROOT / "crates/hoppy-cli/src/sendui/web/app.js"]
+# Fonts the send window uses (docs/design/themes.md); Yusei Magic is Android-only.
+DESKTOP_FONTS = [n for n in FONTS if n != "yusei_magic"]
+DESKTOP_RANGES = [
+    (0x0020, 0x007E), (0x00A0, 0x017F), (0x2010, 0x2027), (0x2190, 0x2193),
+    (0x3000, 0x303F), (0x3040, 0x30FF), (0xFF01, 0xFF5E),
+]
+
+
+def desktop() -> int:
+    """WOFF2 subsets of the bundled TTFs for the desktop send window."""
+    try:
+        from fontTools import subset  # noqa: F401
+        import brotli  # noqa: F401
+    except ImportError:
+        sys.exit("✗ pip install fonttools brotli")
+    chars = {chr(c) for lo, hi in DESKTOP_RANGES for c in range(lo, hi + 1)}
+    for src in DESKTOP_SOURCES:
+        # Japanese decor and other non-Latin text in the sources (CJK, kana, punctuation).
+        chars |= {c for c in src.read_text(encoding="utf-8") if 0x3000 <= ord(c) <= 0x9FFF or 0xFF00 <= ord(c) <= 0xFFEF}
+    text = "".join(sorted(chars))
+    DESKTOP_OUT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        text_file = Path(tmp) / "chars.txt"
+        text_file.write_text(text, encoding="utf-8")
+        total = 0
+        for name in DESKTOP_FONTS:
+            out = DESKTOP_OUT / f"{name}.woff2"
+            subprocess.run([sys.executable, "-m", "fontTools.subset", str(OUT / f"{name}.ttf"),
+                            f"--text-file={text_file}", f"--output-file={out}", "--flavor=woff2",
+                            "--layout-features=kern,liga,palt", "--no-hinting", "--name-IDs=0,1,2,3,4,5,6,13,14",
+                            "--name-languages=*"], check=True)
+            total += out.stat().st_size
+            print(f"✓ {out.relative_to(ROOT)}  {out.stat().st_size // 1024} KB")
+    for pkg in sorted({FONTS[n][0] for n in DESKTOP_FONTS}):
+        shutil.copy(LICENSES / f"{pkg}-OFL.txt", DESKTOP_OUT / f"{pkg}-OFL.txt")
+    print(f"✓ {len(text)} characters, {total // 1024} KB in {DESKTOP_OUT.relative_to(ROOT)}")
+    return 0
+
+
 def main() -> int:
+    if "--desktop" in sys.argv[1:]:
+        return desktop()
     if not shutil.which("npm"):
         sys.exit("✗ npm is required")
     try:

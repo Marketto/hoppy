@@ -33,8 +33,8 @@ UX (`docs/platforms/macos-ios.md`, ADR 0008).
 | **Send (Files/Nautilus)** | select files → right-click → **Scripts → Send with Hoppy** ("Invia con Hoppy" in Italian). |
 | **Send (Dolphin, Nemo)** | right-click → **Send with Hoppy** (top level). |
 | **Send (launcher)** | *Open with → Hoppy*, drop files on the Hoppy icon in the dock, the launcher's *Send files…* action, or tray menu → *Send files…* (file picker). |
-| **Then** | "Looking for devices…" notification (with **Cancel**) → a list dialog with nearby devices (✓ verified, 🔒 encrypted, "⚠ not encrypted" for old apps; + *Search again*) → for a device not verified yet, a code window (same 4 emoji as on the other screen, **Later** / **They match**) while it decides → progress in a notification updated in place (at most every 2 s) with a **Cancel sending** button → "Delivered to X ✓" + jingle (unless muted) → the process exits 7 s later. |
-| **Tray menu** | header "Hoppy · receiving as NAME", *Send files…*, *Open received folder*, *♪ Sound when delivered* (check), *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Diagnostics* = the log in the text editor), *Quit*; a bold *Update to X…* (installed from the .deb) or *Download Hoppy X…* (other copies) entry on top when an update exists. Left click opens it too. |
+| **Then** | the **send window** (ADR 0011; WebKitGTK): mascot, device cards (✓ verified, 🔒 encrypted, ⚠ not encrypted), *Search again* / *Cancel*; nobody found → tips (open Hoppy on the other device, same Wi-Fi, Windows firewall) + *Search again*; for a device not verified yet the 4 emoji inline (**Later** / **They match**) while it decides; progress bar; "Delivered to X ✓" + jingle (unless muted), closes after ~3 s. Without a display or WebKitGTK failing: the previous zenity list + notifications. |
+| **Tray menu** | header "Hoppy · receiving as NAME", *Send files…*, *Open received folder*, *♪ Sound when delivered* (check), *Theme* ▸ (Purikura, Showa, Manga, Yume, Night: the send window's look), *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Diagnostics* = the log in the text editor), *Quit*; a bold *Update to X…* (installed from the .deb) or *Download Hoppy X…* (other copies) entry on top when an update exists. Left click opens it too. |
 
 Strings: Italian when the message locale is Italian (`LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`),
 else English (`gui.rs` string table, shared with Windows).
@@ -44,7 +44,8 @@ else English (`gui.rs` string table, shared with Windows).
 `hoppyw` is one cross-platform GUI binary: `crates/hoppy-cli/src/gui.rs` holds the logic for
 both systems and calls `platform::ui`, which is `platform::win` on Windows and
 `crates/hoppy-cli/src/linux/ui.rs` here (same API; `ui::NATIVE_POPUPS = false` switches the
-two places where the UIs differ). Everything is pure Rust; no C libraries beyond libc.
+two places where the UIs differ). Pure Rust except the send window, which links WebKitGTK
+4.1 and GTK 3 (`hoppyw` only; the `hoppy` CLI needs only libc).
 
 | Piece | File | Notes |
 | --- | --- | --- |
@@ -55,6 +56,7 @@ two places where the UIs differ). Everything is pure Rust; no C libraries beyond
 | Jingle | `crates/hoppy-cli/src/linux/sound.rs` | `assets/music/desktop_done.wav` embedded, written to `$XDG_RUNTIME_DIR/hoppy-done-<pid>.wav`, played by `pw-play` → `paplay` → `aplay`. |
 | Updates | `crates/hoppy-cli/src/unix/http.rs` (shared with macOS), `crates/hoppy-cli/src/update.rs`, `crates/hoppy-cli/src/unix/selfupdate.rs` | `curl` (redirects to https only) / `wget` (no redirects); 30 s after start, every 3 h, after a wake-up from sleep and when the menu opens (wake-up/menu: at most every 10 min); *About… → Check for updates* answers with a notification. A release counts only once `Hoppy-linux-amd64.deb` and `SHA256SUMS.txt` are attached. See [Updates](#updates). |
 | Right-click, launcher, autostart | `crates/hoppy-cli/src/linux/integration.rs` | see below |
+| Send window | `crates/hoppy-cli/src/sendui/` | wry + tao on WebKitGTK 4.1 / GTK 3 (`libwebkit2gtk-4.1-0`, a .deb dependency); the page is embedded; theme from device.json `theme`, else GNOME's high-contrast / `color-scheme` / `-dark` GTK theme (`gsettings`). See ADR 0011. |
 | Log | `crates/hoppy-cli/src/diag.rs` | `~/.local/share/hoppy/hoppy.log` (`hoppy log`). Same privacy rules as Windows. |
 
 ## Device verification
@@ -145,6 +147,10 @@ can still send here: when its direct connection fails it asks Hoppy to connect b
 - **No icon in the top bar** (GNOME without the AppIndicator extension, e.g. Fedora/Debian):
   Hoppy still receives (notifications) and the right-click entries work. Install/enable
   "AppIndicator and KStatusNotifierItem Support". The log says "no panel icon host".
+- **Send window blank or not shown**: the log says `send window: …`; without a display or
+  when WebKitGTK fails Hoppy uses the zenity list instead. A blank white window on some
+  NVIDIA + Wayland setups is a WebKitGTK issue (`WEBKIT_DISABLE_DMABUF_RENDERER=1` works
+  around it).
 - **No device list / file picker**: install `zenity` (or `kdialog`); a notification says so.
 - **Dialog opens behind windows** (Wayland focus-stealing prevention): it is listed in the
   dock/Alt+Tab; a known limit of external dialog programs.
@@ -181,3 +187,8 @@ tray host): see `docs/decisions/0007-linux-desktop.md`. On a real Ubuntu 22.04 a
    receiver's dialog. Reinstall the other device → warning with **Forget device** on both
    sides; *Trusted devices…* lists and forgets. Orca reads the names.
 8. ufw on without rules: phone → PC still arrives (callback).
+9. Send window (GNOME Wayland + X11, KDE): opens in front with keyboard focus (Wayland may
+   only flash it in the dock: note it), centred on X11; each theme from *Theme*; GNOME dark
+   style / high contrast with no theme chosen → Night / Manga; *Settings → Accessibility →
+   Reduce animation* stops the motion; Orca reads cards, buttons and emoji names; HiDPI
+   (200 %) sharp; NVIDIA laptop: not blank.

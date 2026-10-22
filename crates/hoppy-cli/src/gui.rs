@@ -12,8 +12,10 @@
 //!   (`platform::login_item`), files from the Finder service / app icon handed to
 //!   `hoppyw send` by the backend.
 //! - `hoppyw open [FILE…]` (Linux launcher): files → `send`, none → the receiver.
-//! - `hoppyw send FILE…`: searches nearby devices, shows a popup menu at the cursor, sends
-//!   with progress in the tray tooltip, final balloon, then exits. Silent while searching
+//! - `hoppyw send FILE…`: the themed send window (`sendui`, ADR 0011: device cards, progress,
+//!   inline verification, results; theme from the tray's "Theme" submenu, `crate::theme`).
+//!   If the webview cannot start, the native flow (`send_native`): a popup menu at the
+//!   cursor, progress in the tray tooltip, final balloon, then exit. Silent while searching
 //!   and sending; on delivery plays the done jingle unless muted (`music` in device.json,
 //!   "Sound when delivered"). The receiver never plays it (its balloon has the system sound). Explorer's "Send with Hoppy" verb starts one instance
 //!   per selected file: the first collects the others' files (`platform::gather_send_files`).
@@ -71,6 +73,8 @@ use hoppy_core::{
 use crate::firewall::{self, Verdict};
 use crate::platform::ui::{self, Tray, Waker};
 use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent};
+use crate::sendui::{self, DeviceCard};
+use crate::theme::{self, SystemLook, Theme};
 use crate::verify::{CodeView, DialogLive, DialogView};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
@@ -204,6 +208,30 @@ pub struct Strings {
     pub update_current: &'static str,
     pub update_found: &'static str,
     pub update_check_failed: &'static str,
+    // The send window (`sendui`, ADR 0011).
+    pub ui_window_title: &'static str,
+    pub ui_header_one: &'static str,
+    pub ui_header_more: &'static str,
+    pub ui_searching: &'static str,
+    pub ui_searching_text: &'static str,
+    pub ui_pick: &'static str,
+    pub ui_devices: &'static str,
+    pub ui_none_title: &'static str,
+    pub ui_none_text: &'static str,
+    pub ui_tip_open: &'static str,
+    pub ui_tip_wifi: &'static str,
+    pub ui_tip_firewall: &'static str,
+    pub ui_badge_verified: &'static str,
+    pub ui_badge_encrypted: &'static str,
+    pub ui_badge_plain: &'static str,
+    pub ui_send_to: &'static str,
+    pub ui_sending: &'static str,
+    pub ui_done_text: &'static str,
+    pub ui_declined_text: &'static str,
+    pub ui_retry: &'static str,
+    pub ui_verify: &'static str,
+    pub ui_code: &'static str,
+    pub menu_theme: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -316,6 +344,29 @@ pub const IT: Strings = Strings {
     update_current: "Hoppy è aggiornato ({version})",
     update_found: "Hoppy {version} è disponibile — clic su «{item}»",
     update_check_failed: "Non riesco a controllare gli aggiornamenti",
+    ui_window_title: "Hoppy — invia file",
+    ui_header_one: "Invia «{file}» ({size}) a",
+    ui_header_more: "Invia «{file}» +{more} ({size}) a",
+    ui_searching: "Cerco dispositivi vicini…",
+    ui_searching_text: "Tieni Hoppy aperto sull'altro dispositivo.",
+    ui_pick: "Scegli un dispositivo",
+    ui_devices: "Dispositivi vicini",
+    ui_none_title: "Nessun dispositivo trovato",
+    ui_none_text: "Prova così:",
+    ui_tip_open: "Apri Hoppy sull'altro dispositivo",
+    ui_tip_wifi: "Collegatevi alla stessa rete Wi-Fi",
+    ui_tip_firewall: "Su Windows consenti Hoppy nel firewall (icona di Hoppy → «Consenti nel firewall…»)",
+    ui_badge_verified: "Verificato",
+    ui_badge_encrypted: "Cifrato",
+    ui_badge_plain: "Non cifrato",
+    ui_send_to: "Invia a {name}, {platform}, {badge}",
+    ui_sending: "Invio a {name}…",
+    ui_done_text: "La finestra si chiude da sola.",
+    ui_declined_text: "Puoi riprovare quando è pronto.",
+    ui_retry: "Riprova",
+    ui_verify: "Controlla che su {name} ci siano le stesse 4 immagini, poi premi «Coincide».",
+    ui_code: "Codice di verifica",
+    menu_theme: "Tema",
 };
 
 pub const EN: Strings = Strings {
@@ -428,6 +479,29 @@ pub const EN: Strings = Strings {
     update_current: "Hoppy is up to date ({version})",
     update_found: "Hoppy {version} is available — click “{item}”",
     update_check_failed: "Can't check for updates",
+    ui_window_title: "Hoppy — send files",
+    ui_header_one: "Send “{file}” ({size}) to",
+    ui_header_more: "Send “{file}” +{more} ({size}) to",
+    ui_searching: "Looking for nearby devices…",
+    ui_searching_text: "Keep Hoppy open on the other device.",
+    ui_pick: "Choose a device",
+    ui_devices: "Nearby devices",
+    ui_none_title: "No devices found",
+    ui_none_text: "Try this:",
+    ui_tip_open: "Open Hoppy on the other device",
+    ui_tip_wifi: "Connect both to the same Wi-Fi network",
+    ui_tip_firewall: "On Windows, allow Hoppy through the firewall (Hoppy icon → “Allow through firewall…”)",
+    ui_badge_verified: "Verified",
+    ui_badge_encrypted: "Encrypted",
+    ui_badge_plain: "Not encrypted",
+    ui_send_to: "Send to {name}, {platform}, {badge}",
+    ui_sending: "Sending to {name}…",
+    ui_done_text: "This window closes by itself.",
+    ui_declined_text: "You can try again when they are ready.",
+    ui_retry: "Try again",
+    ui_verify: "Check that {name} shows the same 4 pictures, then press “They match”.",
+    ui_code: "Verification code",
+    menu_theme: "Theme",
 };
 
 pub fn strings() -> &'static Strings {
@@ -1059,6 +1133,8 @@ const ID_CLASSIC: u32 = 7;
 const ID_ABOUT: u32 = 8;
 const ID_LOGIN: u32 = 9;
 const ID_TRUSTED: u32 = 10;
+/// Entries of the "Theme" submenu: `ID_THEME_FIRST + index` in `Theme::ALL`.
+const ID_THEME_FIRST: u32 = 20;
 /// Entries of the trusted-devices menu: `ID_TRUSTED_FIRST + index`.
 const ID_TRUSTED_FIRST: u32 = 1000;
 
@@ -1087,6 +1163,8 @@ struct Prefs {
     classic_busy: bool,
     /// macOS "Open at login"; `None` = no such switch here.
     login: Option<bool>,
+    /// Dark mode / high contrast, for the theme shown as current when none was chosen.
+    look: SystemLook,
 }
 
 /// Serialises the workers' device.json reads/writes (and their cache updates). Never taken
@@ -1133,6 +1211,7 @@ impl Ctx {
             let started = Instant::now();
             let classic = platform::classic_menu();
             let login = platform::login_item();
+            let look = platform::system_look();
             let io = lock(&CONFIG_IO);
             let identity = config::load_or_create();
             let mut p = lock(&ctx.prefs);
@@ -1144,6 +1223,7 @@ impl Ctx {
                 p.classic = classic; // else `set_classic` reports the new state itself
             }
             p.login = login;
+            p.look = look;
             p.refreshing = false;
             drop((p, io));
             if !ui::NATIVE_POPUPS {
@@ -1178,6 +1258,13 @@ impl Ctx {
     fn set_music(&self, on: bool) {
         lock(&self.prefs).identity.music = on;
         self.config_job("music", move || config::set_music(on));
+    }
+
+    /// Tray "Theme" submenu: the send window's look from now on (device.json `theme`).
+    fn set_theme(&self, theme: Theme) {
+        lock(&self.prefs).identity.theme = theme.id().to_owned();
+        diag::log(format!("theme: {}", theme.id()));
+        self.config_job("theme", move || config::set_theme(theme.id()));
     }
 
     /// Turns the classic context menu on/off, then offers to restart Explorer (worker:
@@ -1362,6 +1449,23 @@ struct TrayMenu {
     music: bool,
     classic: Option<bool>,
     login: Option<bool>,
+    /// The "Theme" submenu, the theme in use checked.
+    themes: Vec<MenuItem<'static>>,
+}
+
+/// The "Theme" submenu entries (`ID_THEME_FIRST + index`), `current` checked.
+fn theme_items(current: Theme) -> Vec<MenuItem<'static>> {
+    Theme::ALL
+        .iter()
+        .zip(ID_THEME_FIRST..)
+        .map(|(&t, id)| MenuItem::Check(id, t.label(), t == current))
+        .collect()
+}
+
+/// The theme of a "Theme" submenu id.
+fn theme_of_id(id: u32) -> Option<Theme> {
+    let index = usize::try_from(id.checked_sub(ID_THEME_FIRST)?).ok()?;
+    Theme::ALL.get(index).copied()
 }
 
 impl TrayMenu {
@@ -1380,6 +1484,7 @@ impl TrayMenu {
             MenuItem::Action(ID_SEND, s.menu_send),
             MenuItem::Action(ID_OPEN, s.menu_open),
             MenuItem::Check(ID_MUSIC, s.menu_music, self.music),
+            MenuItem::Sub(s.menu_theme, &self.themes),
         ]);
         if let Some(on) = self.classic {
             items.push(MenuItem::Check(ID_CLASSIC, s.menu_classic, on));
@@ -1429,6 +1534,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             refreshing: false,
             classic_busy: false,
             login: None,
+            look: SystemLook::default(),
         })),
         notices: Arc::clone(&notices),
         trust: local.trust.clone(),
@@ -1485,9 +1591,10 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
     // The tray menu as of now; on Windows built at each click, on Linux kept up to date
     // after every event (`Tray::set_menu`).
     let menu = || {
-        let (music, classic, login) = {
+        let (music, classic, login, current) = {
             let p = lock(&ctx.prefs);
-            (p.identity.music, p.classic, p.login)
+            let current = theme::effective(&p.identity.theme, p.look);
+            (p.identity.music, p.classic, p.login, current)
         };
         TrayMenu {
             update: update_menu_text(s, &lock(&updates), mode),
@@ -1495,6 +1602,7 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             music,
             classic,
             login,
+            themes: theme_items(current),
         }
     };
     // Runs a menu pick; false = quit. `shown`: the menu the user picked from (toggles flip
@@ -1520,7 +1628,11 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
             ID_TRUSTED => ctx.load_trusted(),
             ID_ABOUT => ctx.show_about(mode, &updates),
             ID_QUIT => return false,
-            _ => {}
+            id => {
+                if let Some(theme) = theme_of_id(id) {
+                    ctx.set_theme(theme);
+                }
+            }
         }
         true
     };
@@ -2237,10 +2349,18 @@ impl Drop for Jingle {
     }
 }
 
+/// A device found by the search, with its menu label and window card (✓ / 🔒 / ⚠, read
+/// from the trust store).
+struct Found {
+    peer: Peer,
+    label: String,
+    card: DeviceCard,
+}
+
 #[derive(Default)]
 struct SendState {
-    /// Found devices with their menu labels (✓ / 🔒 / ⚠, read from the trust store).
-    peers: Option<Vec<(Peer, String)>>,
+    /// Found devices.
+    peers: Option<Vec<Found>>,
     /// The receiver said yes (first `Progress::FileStarted`).
     accepted: bool,
     pct: Option<u64>,
@@ -2256,6 +2376,27 @@ struct SendState {
     /// The open code window; the send worker closes it with the outcome (on macOS the UI
     /// loop waits while that window is up, so it cannot do it itself).
     code_window: Option<DialogLive>,
+    /// Send window: "They match" / "Forget device" finished (ok, message).
+    verify_result: Option<(bool, String)>,
+    forget_result: Option<(bool, String)>,
+}
+
+/// Workers report to whichever UI drives the send: the tray loop (`ui::Waker`) or the
+/// send window (`sendui::window::Waker`).
+trait Wake: Clone + Send + 'static {
+    fn wake(&self);
+}
+
+impl Wake for Waker {
+    fn wake(&self) {
+        Waker::wake(self);
+    }
+}
+
+impl Wake for sendui::window::Waker {
+    fn wake(&self) {
+        sendui::window::Waker::wake(self);
+    }
 }
 
 enum SendError {
@@ -2309,21 +2450,183 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
     let identity = config::load_or_create()?;
     let local = config::local(&identity)?;
     let discovery = Arc::new(start_discovery(&local.device, 0, &[])?);
+    diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
+    // The OS look only matters when no theme was chosen (it runs gsettings/defaults).
+    let look = if Theme::from_id(&identity.theme).is_some() {
+        SystemLook::default()
+    } else {
+        platform::system_look()
+    };
+    let theme = theme::effective(&identity.theme, look);
+    // macOS: the file picker (no files given) already started AppKit, and tao must be
+    // first; the native panel then.
+    let window = if ui::send_window_possible() {
+        send_window(s, &files, total, &identity, &local, &discovery, theme)
+    } else {
+        Err(sendui::window::Unavailable("AppKit already started".into()))
+    };
+    match window {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            diag::log(format!("send: window unavailable ({e}); native picker"));
+            send_native(s, files, total, &identity, &local, &discovery)
+        }
+    }
+}
 
+/// The themed send window (`sendui`, ADR 0011): searching, device cards, progress, the
+/// verification panel and the results in one window. `Err` only when the window could
+/// not start (nothing was shown yet): the caller then uses the native picker.
+fn send_window(
+    s: &'static Strings,
+    files: &[PathBuf],
+    total: u64,
+    identity: &config::Identity,
+    local: &Local,
+    discovery: &Arc<Discovery>,
+    theme: Theme,
+) -> Result<(), sendui::window::Unavailable> {
+    use sendui::window::{self, Input};
+    use sendui::{Effect, Flow, Outcome};
+
+    let first = files
+        .first()
+        .and_then(|f| f.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let header = sendui::header(s, &first, files.len(), &human(total));
+    let state = Arc::new(Mutex::new(SendState::default()));
+    let mut flow = Flow::new();
+    // The devices of the last search (the page only knows their index).
+    let mut found: Vec<Peer> = Vec::new();
+    let mut chosen: Option<Peer> = None;
+    let mut session_peer: Option<PeerKey> = None;
+    let mut jingle = Jingle::new(identity.music);
+    let init = sendui::Init::new(s, theme);
+    window::run(s.ui_window_title, theme, &init, |ctl, input| {
+        let mut effects = Vec::new();
+        match input {
+            Input::Started => {
+                spawn_search(s, discovery, &local.trust, &state, ctl.waker());
+            }
+            Input::Ready => diag::log("send: window ready"),
+            Input::Action(action) => effects = flow.action(action),
+            Input::Wake => {
+                let mut st = lock(&state);
+                if let Some(list) = st.peers.take() {
+                    diag::log(format!("send: {} device(s) found", list.len()));
+                    let (peers, cards): (Vec<Peer>, Vec<DeviceCard>) =
+                        list.into_iter().map(|f| (f.peer, f.card)).unzip();
+                    found = peers;
+                    effects.extend(flow.found(cards));
+                }
+                if let Some(session) = st.session.take() {
+                    session_peer = session.peer.clone();
+                    flow.session(session, s.italian);
+                }
+                flow.progress(st.accepted, st.pct, st.fallback);
+                if let Some((ok, message)) = st.verify_result.take() {
+                    flow.verify_result(ok, message);
+                }
+                if let Some((ok, message)) = st.forget_result.take() {
+                    flow.forget_result(ok, message);
+                }
+                if let Some(outcome) = st.outcome.take() {
+                    if outcome.is_ok() {
+                        diag::log(format!("send: done (callback: {})", st.fallback));
+                    }
+                    let outcome = match outcome {
+                        Ok(SendOutcome::Delivered) => Outcome::Delivered,
+                        // "declined" = the user said No; other reasons are protocol limits.
+                        Ok(SendOutcome::Declined(reason)) => Outcome::Declined(
+                            reason
+                                .filter(|r| r != "declined")
+                                .map(|r| display_text(&r, SHOW_TEXT_MAX)),
+                        ),
+                        Err(SendError::Unreachable) => Outcome::Unreachable,
+                        Err(SendError::KeyChanged) => Outcome::KeyChanged,
+                        Err(SendError::Other(e)) => {
+                            Outcome::Failed(display_text(&e, SHOW_TEXT_MAX))
+                        }
+                    };
+                    effects.extend(flow.outcome(outcome));
+                }
+            }
+        }
+        for effect in effects {
+            match effect {
+                Effect::Search => {
+                    discovery.refresh();
+                    *lock(&state) = SendState::default();
+                    spawn_search(s, discovery, &local.trust, &state, ctl.waker());
+                }
+                Effect::Send(i) => {
+                    let Some(peer) = found.get(i).cloned() else {
+                        continue;
+                    };
+                    chosen = Some(peer.clone());
+                    session_peer = None;
+                    *lock(&state) = SendState::default();
+                    spawn_send(discovery, local, peer, files.to_vec(), &state, ctl.waker());
+                }
+                Effect::MarkVerified => {
+                    if let Some(peer) = session_peer.clone() {
+                        let (trust, state, waker) =
+                            (local.trust.clone(), Arc::clone(&state), ctl.waker());
+                        thread::spawn(move || {
+                            let n = mark_verified(s, &trust, &peer);
+                            lock(&state).verify_result = Some((!n.error, n.title));
+                            waker.wake();
+                        });
+                    }
+                }
+                Effect::Forget => {
+                    if let Some(peer) = &chosen {
+                        let (id, name) = (peer.device.id.clone(), display_name(&peer.device.name));
+                        let (trust, state, waker) =
+                            (local.trust.clone(), Arc::clone(&state), ctl.waker());
+                        thread::spawn(move || {
+                            let n = forget_device(s, &trust, &id, &name);
+                            lock(&state).forget_result = Some((!n.error, n.title));
+                            waker.wake();
+                        });
+                    }
+                }
+                Effect::Jingle => {
+                    jingle.play();
+                }
+                Effect::OnTop(on) => ctl.set_on_top(on),
+                Effect::CloseAfter(delay) => ctl.close_after(delay),
+                Effect::Exit => ctl.exit(),
+            }
+        }
+        ctl.render(&flow.view(s, &header));
+    })
+}
+
+/// The native send UI (the fallback when the window cannot start): progress in the tray
+/// icon, a popup menu (Windows), a panel (macOS) or a zenity list (Linux) of devices.
+fn send_native(
+    s: &'static Strings,
+    files: Vec<PathBuf>,
+    total: u64,
+    identity: &config::Identity,
+    local: &Local,
+    discovery: &Arc<Discovery>,
+) -> Result<()> {
     let tray = Tray::new(SEND_WINDOW, s.searching)?;
     // Linux: a Cancel button on the "Looking for devices…" notification.
     tray.set_menu(&[MenuItem::Action(ID_CANCEL, s.cancel)]);
     // Declared after `tray`, so it is dropped (jingle stopped) before the icon goes.
     let mut jingle = Jingle::new(identity.music);
     let state = Arc::new(Mutex::new(SendState::default()));
-    spawn_search(s, &discovery, &local.trust, &state, tray.waker());
+    spawn_search(s, discovery, &local.trust, &state, tray.waker());
     // A code window was shown (at most one per send).
     let mut code_shown = false;
     // The device chosen (its id for "Forget device").
     let mut chosen: Option<Peer> = None;
 
     let header = send_header(s, &files, total);
-    diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
     let mut phase = Phase::Searching;
     let mut files = Some(files);
     let watch = diag::UiWatch::start();
@@ -2334,7 +2637,8 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                 let Some(found) = lock(&state).peers.take() else {
                     continue;
                 };
-                let (peers, labels): (Vec<Peer>, Vec<String>) = found.into_iter().unzip();
+                let (peers, labels): (Vec<Peer>, Vec<String>) =
+                    found.into_iter().map(|f| (f.peer, f.label)).unzip();
                 let mut items = vec![MenuItem::Label(&header), MenuItem::Separator];
                 if peers.is_empty() {
                     items.push(MenuItem::Label(s.no_devices));
@@ -2351,7 +2655,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     Some(ID_RETRY) => {
                         tray.set_tip(s.searching);
                         discovery.refresh();
-                        spawn_search(s, &discovery, &local.trust, &state, tray.waker());
+                        spawn_search(s, discovery, &local.trust, &state, tray.waker());
                     }
                     Some(id) if id >= ID_PEER => {
                         let Some(peer) = peers.get((id - ID_PEER) as usize).cloned() else {
@@ -2363,7 +2667,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                         tray.set_tip(&fill(s.waiting, &[("name", &name)]));
                         let files = files.take().unwrap_or_default();
                         chosen = Some(peer.clone());
-                        spawn_send(&discovery, &local, peer, files, &state, tray.waker());
+                        spawn_send(discovery, local, peer, files, &state, tray.waker());
                         phase = Phase::Sending(name);
                     }
                     _ => break, // "Cancel" or menu dismissed
@@ -2422,7 +2726,7 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
                     if key_changed {
                         // A blocking warning with "Forget device"; exit once it is closed.
                         let peer_id = chosen.as_ref().map(|p| p.device.id.clone());
-                        spawn_key_warning(s, &local, peer_id, name, &state, tray.waker());
+                        spawn_key_warning(s, local, peer_id, name, &state, tray.waker());
                     } else {
                         tray.balloon(&title, &text, error, sound);
                         tray.set_timer(EXIT_TIMER, EXIT_AFTER_MS);
@@ -2501,7 +2805,7 @@ fn spawn_search(
     discovery: &Arc<Discovery>,
     trust: &Trust,
     state: &Arc<Mutex<SendState>>,
-    waker: Waker,
+    waker: impl Wake,
 ) {
     let (discovery, state, trust) = (Arc::clone(discovery), Arc::clone(state), trust.clone());
     thread::spawn(move || {
@@ -2509,9 +2813,13 @@ fn spawn_search(
         let store = trust.snapshot();
         let labelled = peers
             .into_iter()
-            .map(|p| {
-                let label = device_label(s, &p, store.peers.get(&p.device.id));
-                (p, label)
+            .map(|peer| {
+                let known = store.peers.get(&peer.device.id);
+                Found {
+                    label: device_label(s, &peer, known),
+                    card: sendui::device_card(s, &peer, known),
+                    peer,
+                }
             })
             .collect();
         lock(&state).peers = Some(labelled);
@@ -2535,36 +2843,42 @@ fn spawn_code_window(
         if ui::show_dialog(&view, &live) != Some(BTN_MATCH) {
             return;
         }
-        let name = display_name(&peer.name);
-        let notice = match trust.mark_verified(&peer) {
-            Ok(()) => {
-                diag::log("send: receiver marked verified");
-                Notice {
-                    title: fill(s.verified_title, &[("name", &name)]),
-                    text: String::new(),
-                    error: false,
-                    action: BalloonAction::Nothing,
-                }
-            }
-            Err(e) => {
-                diag::log(format!(
-                    "send: marking verified failed: {}",
-                    diag::error_kind(&e)
-                ));
-                Notice {
-                    title: fill(
-                        s.trust_problem,
-                        &[("error", &display_text(&e.to_string(), SHOW_TEXT_MAX))],
-                    ),
-                    text: String::new(),
-                    error: true,
-                    action: BalloonAction::Nothing,
-                }
-            }
-        };
+        let notice = mark_verified(s, &trust, &peer);
         lock(&state).notices.push_back(notice);
         waker.wake();
     });
+}
+
+/// "They match" on the sender: marks the receiver verified (worker: file I/O); the message
+/// to show about it.
+fn mark_verified(s: &Strings, trust: &Trust, peer: &PeerKey) -> Notice {
+    let name = display_name(&peer.name);
+    match trust.mark_verified(peer) {
+        Ok(()) => {
+            diag::log("send: receiver marked verified");
+            Notice {
+                title: fill(s.verified_title, &[("name", &name)]),
+                text: String::new(),
+                error: false,
+                action: BalloonAction::Nothing,
+            }
+        }
+        Err(e) => {
+            diag::log(format!(
+                "send: marking verified failed: {}",
+                diag::error_kind(&e)
+            ));
+            Notice {
+                title: fill(
+                    s.trust_problem,
+                    &[("error", &display_text(&e.to_string(), SHOW_TEXT_MAX))],
+                ),
+                text: String::new(),
+                error: true,
+                action: BalloonAction::Nothing,
+            }
+        }
+    }
 }
 
 /// `hoppyw send` hit a changed key: the warning dialog with "Forget device" on a worker;
@@ -2601,7 +2915,7 @@ fn spawn_send(
     peer: Peer,
     files: Vec<PathBuf>,
     state: &Arc<Mutex<SendState>>,
-    waker: Waker,
+    waker: impl Wake,
 ) {
     let (discovery, state, local) = (Arc::clone(discovery), Arc::clone(state), local.clone());
     thread::spawn(move || {
@@ -2718,6 +3032,11 @@ mod tests {
                 s.update_found,
                 s.about_version,
                 s.about_author,
+                s.ui_header_one,
+                s.ui_header_more,
+                s.ui_send_to,
+                s.ui_sending,
+                s.ui_verify,
             ]
         };
         for (it, en) in pairs(&IT).iter().zip(pairs(&EN)) {
@@ -2855,6 +3174,7 @@ mod tests {
             music: true,
             classic: None,
             login: None,
+            themes: theme_items(Theme::Night),
         };
         let items = menu.items(&EN, "Hoppy");
         let tail: Vec<String> = items
@@ -2864,6 +3184,59 @@ mod tests {
             .map(|i| format!("{i:?}"))
             .collect();
         assert_eq!(tail, ["Action(3, \"Quit\")", "Action(8, \"About…\")"]);
+    }
+
+    #[test]
+    fn theme_submenu_checks_the_theme_in_use() {
+        let menu = TrayMenu {
+            update: None,
+            firewall: None,
+            music: true,
+            classic: None,
+            login: None,
+            themes: theme_items(Theme::Yume),
+        };
+        let items = menu.items(&IT, "Hoppy");
+        let sub = items
+            .iter()
+            .find_map(|i| match i {
+                MenuItem::Sub(label, sub) => Some((*label, *sub)),
+                _ => None,
+            })
+            .expect("a Theme submenu");
+        assert_eq!(sub.0, "Tema");
+        let entries: Vec<(u32, &str, bool)> = sub
+            .1
+            .iter()
+            .map(|i| match *i {
+                MenuItem::Check(id, label, on) => (id, label, on),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.iter().filter(|e| e.2).count(), 1);
+        assert_eq!(entries[3], (ID_THEME_FIRST + 3, "Yume", true));
+        for (id, label, _) in entries {
+            assert_eq!(theme_of_id(id).map(Theme::label), Some(label));
+        }
+        // Ids around the range belong to other entries.
+        assert_eq!(theme_of_id(ID_THEME_FIRST - 1), None);
+        assert_eq!(theme_of_id(ID_THEME_FIRST + 5), None);
+        assert_eq!(theme_of_id(ID_TRUSTED_FIRST), None);
+        for id in [
+            ID_SEND,
+            ID_OPEN,
+            ID_QUIT,
+            ID_MUSIC,
+            ID_UPDATE,
+            ID_FIREWALL,
+            ID_CLASSIC,
+            ID_ABOUT,
+            ID_LOGIN,
+            ID_TRUSTED,
+        ] {
+            assert_eq!(theme_of_id(id), None);
+        }
     }
 
     #[test]

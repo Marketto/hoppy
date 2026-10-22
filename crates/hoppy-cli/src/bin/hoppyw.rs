@@ -13,6 +13,20 @@ fn main() {
     if args.len() == 1 && args[0] == "--smoke-test" {
         std::process::exit(hoppy::macos::ui::smoke_test());
     }
+    // CI and screenshots: the send window through every screen and theme (`sendui::smoke`).
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    {
+        let rest: Vec<String> = args
+            .iter()
+            .skip(1)
+            .map(|a| a.to_string_lossy().into())
+            .collect();
+        match args.first().and_then(|a| a.to_str()) {
+            Some("--smoke-test-window") => std::process::exit(hoppy::sendui::smoke::run(&rest)),
+            Some("--dump-views") => std::process::exit(hoppy::sendui::smoke::dump(&rest)),
+            _ => {}
+        }
+    }
     if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
         std::process::exit(hoppy::gui::run(args));
     }

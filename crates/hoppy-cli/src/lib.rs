@@ -22,6 +22,8 @@ pub mod linux;
 #[cfg(not(windows))]
 pub mod macos;
 pub mod platform;
+pub mod sendui;
+pub mod theme;
 #[cfg(not(windows))]
 pub mod unix;
 pub mod update;

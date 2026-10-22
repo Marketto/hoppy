@@ -27,8 +27,13 @@ UX, files, first launch, test plan: `docs/platforms/macos-ios.md`. Decision:
 
 ## Rules
 
-- The device list of `hoppyw send` is a modal panel (`pick_from_panel`, layout from the pure
-  `macos::picker_layout`), never an `NSMenu` popup: the sender is a background process and
+- `hoppyw send` uses the themed send window (`crates/hoppy-cli/src/sendui/`, tao + WKWebView,
+  ADR 0011): tao must create the `NSApplication` of that process (call nothing from
+  `macos::ui` that runs `app()` before it), Accessory policy, then `ui::activate_app` (no
+  event pumping inside tao's loop). Its macOS-only lines are checked only by the macos CI
+  job (`--smoke-test-window` runs there as its own process). The fallback device list is a
+  modal panel (`pick_from_panel`, layout from the pure `macos::picker_layout`), never an
+  `NSMenu` popup: the sender is a background process and
   macOS 12 closes such menus at once. Call `bring_to_front` before any window that process
   shows; keep the `activation:` / `picker:` log lines (real-Mac reports depend on them).
   The status-item menu (`above = true`) stays an `NSMenu`.

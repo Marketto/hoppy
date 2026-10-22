@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""WCAG 2.2 AA contrast check for the Android themes' text/background pairs.
+"""WCAG 2.2 AA contrast check for the Android/iOS themes' and the desktop send window's
+text/background pairs.
 
 Reads the real colors from apps/android/app/src/main/res/values/colors.xml and checks
 every pair below (text color on the backgrounds it is drawn over). Part of
@@ -17,6 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 COLORS = ROOT / "apps/android/app/src/main/res/values/colors.xml"
 # iPhone/iPad palettes: `static let name = 0xRRGGBB` lines in apps/ios/Shared/Theme.swift.
 IOS_COLORS = ROOT / "apps/ios/Shared/Theme.swift"
+
+# Desktop send window (crates/hoppy-cli/src/sendui/web/app.css): `--name: #RRGGBB` inside each
+# `[data-theme="…"]` block (Purikura is also `:root`).
+DESKTOP_CSS = ROOT / "crates/hoppy-cli/src/sendui/web/app.css"
 
 TEXT, LARGE = 4.5, 3.0
 
@@ -85,6 +90,57 @@ def load_ios_colors() -> dict[str, str]:
     return {"ios_" + m.group(1): m.group(2).upper() for m in re.finditer(r"static let (\w+) = 0x([0-9A-Fa-f]{6})\b", text)}
 
 
+# Send window pairs per theme: (what, text var, [background vars], threshold). Every theme
+# block defines all of these; `--btn-c` only Yume (missing vars are skipped only for it).
+DESKTOP_PAIRS = [
+    ("body text", "text", ["bg", "surface", "card", "card-hover", "container"], TEXT),
+    ("muted text", "muted", ["surface", "card", "card-hover"], TEXT),
+    ("accent text / outline buttons", "accent", ["surface", "card", "container"], TEXT),
+    ("button label / avatar", "on-btn", ["btn-a", "btn-b", "btn-c"], TEXT),
+    ("decor sticker", "decor-text", ["decor-bg"], TEXT),
+    ("focus ring (non-text)", "focus", ["surface", "card", "bg"], LARGE),
+    ("progress bar (non-text)", "bar", ["track"], LARGE),
+]
+# Text drawn straight on the page background (header line) over Purikura's tiles.
+DESKTOP_EXTRA = [("purikura", "header on checkerboard", "text", ["tile-a", "tile-b"], TEXT),
+                 ("yume", "header on the sky", "text", ["sky-1", "sky-2", "sky-3", "sky-4"], TEXT)]
+
+
+def load_desktop() -> dict[str, dict[str, str]]:
+    css = DESKTOP_CSS.read_text(encoding="utf-8")
+    themes: dict[str, dict[str, str]] = {}
+    for m in re.finditer(r'\[data-theme="(\w+)"\]\s*\{([^}]*)\}', css):
+        vars_ = dict(re.findall(r"--([\w-]+):\s*#([0-9A-Fa-f]{6})\s*;", m.group(2)))
+        if vars_:
+            themes[m.group(1)] = vars_
+    return themes
+
+
+def check_desktop() -> tuple[int, int]:
+    """(pairs checked, failures) for the send window."""
+    themes = load_desktop()
+    bad = checked = 0
+    if sorted(themes) != ["manga", "night", "purikura", "showa", "yume"]:
+        print(f"✗ desktop: theme blocks found {sorted(themes)}")
+        return 0, 1
+    pairs = [(th, *p) for th in themes for p in DESKTOP_PAIRS] + DESKTOP_EXTRA
+    for theme, what, fg, bgs, need in pairs:
+        v = themes[theme]
+        for bg in bgs:
+            if bg == "btn-c" and bg not in v:
+                continue
+            if fg not in v or bg not in v:
+                print(f"✗ desktop {theme}: --{fg if fg not in v else bg} missing")
+                bad += 1
+                continue
+            checked += 1
+            r = ratio(to_rgb(v[fg]), to_rgb(v[bg]))
+            if r < need:
+                print(f"✗ desktop {theme:<9} {what:<30} --{fg} on --{bg}: {r:.2f}:1 < {need}:1")
+                bad += 1
+    return checked, bad
+
+
 def main() -> int:
     colors = load_colors()
     colors.update(load_ios_colors())
@@ -101,10 +157,13 @@ def main() -> int:
             if r < need:
                 print(f"✗ {theme:<9} {what:<22} {fg} on {bg}: {r:.2f}:1 < {need}:1")
                 bad += 1
+    desktop_checked, desktop_bad = check_desktop()
+    bad += desktop_bad
     if bad:
         print(f"✗ contrast: {bad} pair(s) below WCAG AA")
         return 1
-    print(f"✓ contrast: {sum(len(p[3]) for p in PAIRS)} theme color pairs meet WCAG AA")
+    print(f"✓ contrast: {sum(len(p[3]) for p in PAIRS)} app + {desktop_checked} desktop send-window "
+          "color pairs meet WCAG AA")
     return 0
 
 

@@ -29,6 +29,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.14.3
+      # The send window (wry/tao, ADR 0011) links WebKitGTK 4.1 + GTK 3; Xvfb for its smoke test.
+      - name: WebKitGTK
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev xvfb
       # Output also goes to a log that tools/ci-annotate.sh turns into annotations on failure
       # (agents read annotations, not logs): failing tests, ✗ lines, Python tracebacks,
       # interop/selftest FAIL lines, Gradle errors, and the last 60 lines.
@@ -37,6 +40,21 @@ jobs:
         run: |
           python3 -u tools/dev.py all 2>&1 | tee all.log ||
             { bash tools/ci-annotate.sh "Linux dev.py all" all.log 60; exit 1; }
+      # The real send window (WebKitGTK under Xvfb): page loads, every screen x theme renders.
+      - name: Send window smoke test
+        shell: bash
+        run: |
+          cargo build -p hoppy --bin hoppyw --message-format=short 2>&1 | tee window.log ||
+            { bash tools/ci-annotate.sh "cargo build hoppyw (Linux)" window.log; exit 1; }
+          set +e
+          HOPPY_CONFIG_DIR="$RUNNER_TEMP/hoppy" timeout 300 xvfb-run -a target/debug/hoppyw --smoke-test-window 2>&1 | tee -a window.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            case "$rc" in 124) why="hung: killed after 300 s" ;; 2) why="the window could not start" ;; 3) why="hung (watchdog)" ;; *) why="exit code $rc" ;; esac
+            echo "::error title=send window smoke test (Linux)::$why — last: $(grep -E 'smoke window|shown' window.log | tail -n 1)"
+            bash tools/ci-annotate.sh "send window smoke test (Linux)" window.log; exit 1
+          fi
 
   windows:
     name: Windows · tests + hoppy.exe + hoppyw.exe
@@ -120,11 +138,33 @@ jobs:
             { bash tools/ci-annotate.sh "cargo build (macOS debug)" smoke.log; exit 1; }
           bash apps/macos/build-app.sh bundle target/debug/hoppyw target/debug/hoppy target/smoke/Hoppy.app 2>&1 | tee -a smoke.log ||
             { bash tools/ci-annotate.sh "smoke bundle (macOS)" smoke.log; exit 1; }
-          for exe in target/debug/hoppyw target/smoke/Hoppy.app/Contents/MacOS/hoppyw; do
-            echo "== $exe" | tee -a smoke.log
-            RUST_BACKTRACE=1 perl -e 'alarm 120; exec @ARGV' "$exe" --smoke-test 2>&1 | tee -a smoke.log ||
-              { bash tools/ci-annotate.sh "AppKit smoke test ($exe)" smoke.log; exit 1; }
-          done
+          # Each run reports why it failed: the exit code (142 = killed by the alarm, i.e.
+          # hung; 3 = a step's own watchdog; 101 = panic) plus the smoke's last step lines.
+          smoke() {
+            local title="$1" secs="$2"; shift 2
+            echo "== $title" | tee -a smoke.log
+            set +e
+            RUST_BACKTRACE=1 perl -e 'alarm shift; exec @ARGV' "$secs" "$@" 2>&1 | tee -a smoke.log
+            local rc=${PIPESTATUS[0]}
+            set -e
+            [ "$rc" -eq 0 ] && return 0
+            case "$rc" in
+              142) why="hung: killed after ${secs} s by the alarm" ;;
+              3) why="a step hung (see the FAILED line)" ;;
+              2) why="the send window could not start (see the FAILED line)" ;;
+              101) why="panic (see the backtrace)" ;;
+              *) why="exit code $rc" ;;
+            esac
+            echo "smoke: $title FAILED: $why" | tee -a smoke.log >&2
+            echo "::error title=$title::$why — last step: $(grep -E 'smoke( window)?: (step|shown|FAILED)' smoke.log | tail -n 1)"
+            bash tools/ci-annotate.sh "$title" smoke.log
+            return 1
+          }
+          smoke "AppKit smoke test (bare binary)" 120 target/debug/hoppyw --smoke-test || exit 1
+          smoke "AppKit smoke test (Hoppy.app)" 120 target/smoke/Hoppy.app/Contents/MacOS/hoppyw --smoke-test || exit 1
+          # The send window (tao + WKWebView, ADR 0011): opens, loads the page, shows every
+          # screen in every theme, closes. A separate process: tao must create NSApp itself.
+          smoke "send window smoke test (macOS)" 240 target/smoke/Hoppy.app/Contents/MacOS/hoppyw --smoke-test-window || exit 1
       - name: Universal Hoppy.app + dmg
         shell: bash
         run: |

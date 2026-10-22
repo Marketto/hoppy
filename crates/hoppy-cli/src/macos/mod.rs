@@ -53,6 +53,30 @@ pub const MARKER: &str = "Written by Hoppy (hoppy install); removed by hoppy uni
 /// Longest status-item title of `hoppyw send` (characters): the menu bar is shared.
 pub const STATUS_TITLE_MAX: usize = 30;
 
+/// Dark mode and "Increase contrast" for the theme suggestion (`theme::suggest`), read with
+/// `/usr/bin/defaults` (no AppKit, so any thread). Call it from a worker or before an
+/// event loop.
+pub fn system_look() -> crate::theme::SystemLook {
+    let read = |args: &[&str]| -> String {
+        std::process::Command::new("/usr/bin/defaults")
+            .arg("read")
+            .args(args)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    crate::theme::SystemLook {
+        dark: crate::theme::macos_interface_dark(&read(&["-g", "AppleInterfaceStyle"])),
+        high_contrast: crate::theme::macos_increase_contrast(&read(&[
+            "com.apple.universalaccess",
+            "increaseContrast",
+        ])),
+    }
+}
+
 /// `X.app` when `exe` is `X.app/Contents/MacOS/<name>` (both `hoppyw` and the bundled
 /// `hoppy` CLI live there); `None` for a bare binary (`cargo run`, Homebrew-style installs).
 pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
@@ -278,7 +302,7 @@ pub fn picker_layout<'a>(items: &[MenuItem<'a>]) -> PickerLayout<'a> {
                 layout.notes.push(t);
                 None
             }
-            MenuItem::Separator => None,
+            MenuItem::Separator | MenuItem::Sub(..) => None,
         };
         if let Some(action) = action {
             if i > last_separator {

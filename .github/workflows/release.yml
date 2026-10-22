@@ -244,6 +244,9 @@ jobs:
       - name: Set version
         run: sed -i 's/^version = ".*"/version = "${{ needs.meta.outputs.version }}"/' Cargo.toml
       - run: cargo install cargo-deb --locked
+      # The send window (wry/tao): WebKitGTK 4.1 + GTK 3 headers (ADR 0011).
+      - name: WebKitGTK
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev
       - name: Build
         shell: bash
         run: |
