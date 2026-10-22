@@ -546,6 +546,13 @@ pub fn run_elevated(_owner: Option<&Waker>, _exe: &Path, _params: &str) -> Resul
 
 // ---------------------------------------------------------------- sound, network, shell
 
+/// Whether `hoppyw send` may open the send window: tao must create this process's
+/// `NSApplication` itself, so not once our AppKit code has (the file picker shown first,
+/// when `hoppyw send` got no files). Main thread.
+pub fn send_window_possible() -> bool {
+    APP.with(|cell| cell.get().is_none())
+}
+
 /// The send window (`sendui::window`, a tao window) was just shown: make Hoppy the active
 /// app so the window gets the keyboard and stays in front, like the old device panel
 /// (`bring_to_front`) but without pumping events: tao's loop is running. Main thread.
@@ -1333,16 +1340,51 @@ fn smoke_when_picker_open(action: fn()) {
     });
 }
 
+/// The smoke test step running now and since when (`smoke_watchdog`).
+static SMOKE_STEP: Mutex<(&str, Option<std::time::Instant>)> = Mutex::new(("", None));
+/// A step taking longer than this is reported as hung (CI's alarm is 120 s and says nothing).
+const SMOKE_STEP_MAX: Duration = Duration::from_secs(30);
+
+/// Names the step on stdout and stderr so a CI failure says where it stopped.
+fn smoke_step(name: &'static str) {
+    println!("smoke: step {name}");
+    eprintln!("smoke: step {name}");
+    *lock(&SMOKE_STEP) = (name, Some(std::time::Instant::now()));
+}
+
+/// Exits with code 3 and the name of the step when one hangs (the main thread may be stuck
+/// in AppKit, so this runs on its own thread).
+fn smoke_watchdog() {
+    thread::spawn(|| {
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            let (name, since) = *lock(&SMOKE_STEP);
+            if since.is_some_and(|s| s.elapsed() > SMOKE_STEP_MAX) {
+                let msg = format!(
+                    "smoke: FAILED: step \"{name}\" did not finish within {} s (hung)",
+                    SMOKE_STEP_MAX.as_secs()
+                );
+                println!("{msg}");
+                eprintln!("{msg}");
+                std::process::exit(3);
+            }
+        }
+    });
+}
+
 /// `hoppyw --smoke-test` (CI on macos-latest, debug build: objc2 checks every message's
 /// types against the runtime): exercises the AppKit pieces that do not need a person.
 /// Panics on failure.
 pub fn smoke_test() -> i32 {
     let mtm = MainThreadMarker::new().expect("main thread");
+    smoke_watchdog();
+    smoke_step("start");
     SMOKE.with(|s| s.set(true));
     let app = app(mtm);
     println!("language italian: {}", ui_is_italian());
     println!("in bundle: {}", in_bundle());
 
+    smoke_step("status items and menus");
     // Status items (receiver + sender) with every kind of menu entry.
     let tray = Tray::new(gui::TRAY_WINDOW, "Hoppy · smoke test").expect("receiver icon");
     let send = Tray::new("Hoppy send", "Cerco dispositivi…").expect("send icon");
@@ -1355,15 +1397,22 @@ pub fn smoke_test() -> i32 {
             MenuItem::Label("Hoppy · receiving as smoke"),
             MenuItem::Action(1, "Send files…"),
             MenuItem::Check(4, "♪ Sound when delivered", true),
+            MenuItem::Sub("Tema", &[MenuItem::Check(20, "Purikura", true)]),
         ],
     );
-    assert_eq!(menu.numberOfItems(), 5);
+    assert_eq!(menu.numberOfItems(), 6);
+    let sub = menu
+        .itemAtIndex(5)
+        .and_then(|i| i.submenu())
+        .expect("theme submenu");
+    assert_eq!(sub.numberOfItems(), 1);
     assert!(template_icon().is_some(), "menu-bar icon PNG");
     assert!(
         NSSound::initWithData(NSSound::alloc(), &NSData::with_bytes(DONE_JINGLE)).is_some(),
         "jingle WAV"
     );
 
+    smoke_step("device picker panel");
     // Device picker panel (`hoppyw send`): shown modally, ended by a click on a device, by
     // Esc and by the close button, each simulated from the main queue once it is up.
     let items = [
@@ -1396,6 +1445,7 @@ pub fn smoke_test() -> i32 {
     assert_eq!(send.popup_menu(&items, false, None), None);
     println!("picker panel: click, Esc and close OK");
 
+    smoke_step("verification accessory");
     // Verification dialog accessory (not run modally): 4 emoji + 4 names, nothing else.
     let sas = hoppy_core::Sas::from_value(0x05_1234);
     let view = DialogView {
@@ -1417,6 +1467,7 @@ pub fn smoke_test() -> i32 {
     };
     assert!(accessory(mtm, &plain).is_none());
 
+    smoke_step("about alert");
     // About dialog (built, not run modally): 4 buttons, Close first (Return), no accessory.
     let about = gui::about_dialog(gui::strings(), "9.9.9", false);
     let alert = dialog_alert(mtm, &about);
@@ -1429,6 +1480,7 @@ pub fn smoke_test() -> i32 {
     assert!(alert.informativeText().to_string().contains(gui::REPO_URL));
     println!("about alert OK");
 
+    smoke_step("pasteboard");
     // Pasteboard → files (the Finder service path).
     let pboard = NSPasteboard::pasteboardWithUniqueName();
     pboard.clearContents();
@@ -1443,12 +1495,15 @@ pub fn smoke_test() -> i32 {
     );
 
     // Wake-ups from other threads, timers, work sent to the main thread.
+    smoke_step("waker → next_event");
     let waker = tray.waker();
     thread::spawn(move || waker.wake());
     assert_eq!(tray.next_event(), Some(TrayEvent::Wake));
+    smoke_step("timer → next_event");
     tray.set_timer(9, 50);
     assert_eq!(tray.next_event(), Some(TrayEvent::Timer(9)));
     tray.kill_timer(9);
+    smoke_step("run_on_main");
     let answer = thread::spawn(|| {
         run_on_main(|_| {
             wake_main(); // ends the pump below
@@ -1460,6 +1515,7 @@ pub fn smoke_test() -> i32 {
     while lock(&events().rx).try_recv().is_ok() {}
 
     if in_bundle() {
+        smoke_step("notification settings");
         // Only reads the settings: no permission prompt.
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let seen = Arc::new(AtomicBool::new(false));
@@ -1485,8 +1541,10 @@ pub fn smoke_test() -> i32 {
         );
         println!("login item: {:?}", super::login::enabled());
     }
+    smoke_step("cleanup");
     drop(send);
     drop(tray);
+    smoke_step("done");
     println!("smoke test OK");
     0
 }

@@ -653,6 +653,11 @@ pub mod win {
     /// Starts `tune` asynchronously (loops: Idle, Transfer), replacing whatever this process
     /// was playing. Silent if the PC has no audio device (SND_NODEFAULT: no beep either).
     /// One-shot "delivered" jingle (assets/music/desktop_done.wav), asynchronous.
+    /// Whether `hoppyw send` may open the send window (macOS: not after AppKit started).
+    pub fn send_window_possible() -> bool {
+        true
+    }
+
     /// The send window was shown (`sendui::window`): tao's `set_focus` already forces it to
     /// the foreground (Explorer started us, so we may); nothing more to do.
     pub fn activate_app() {}

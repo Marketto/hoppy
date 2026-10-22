@@ -60,6 +60,20 @@ pub fn run(args: &[String]) -> i32 {
         .iter()
         .flat_map(|&t| (0..views.len()).map(move |i| (t, i)))
         .collect();
+    // A hang (toolkit, webview) would otherwise end silently at CI's alarm: say where.
+    let limit = Duration::from_millis(hold * steps.len() as u64) + Duration::from_secs(60);
+    thread::spawn(move || {
+        thread::sleep(limit);
+        let msg = format!(
+            "smoke window: FAILED: not finished within {} s (hung before or while rendering; \
+             see the last \"shown\" line)",
+            limit.as_secs()
+        );
+        println!("{msg}");
+        eprintln!("{msg}");
+        std::process::exit(3);
+    });
+    println!("smoke window: starting ({} screen(s))", steps.len());
     let mut next = 0usize;
     let mut ready = false;
     let result = window::run(
@@ -70,6 +84,7 @@ pub fn run(args: &[String]) -> i32 {
             match input {
                 Input::Started => ctl.render(&views[0].1),
                 Input::Ready => {
+                    println!("smoke window: page ready");
                     ready = true;
                     let waker = ctl.waker();
                     thread::spawn(move || {
@@ -104,11 +119,13 @@ pub fn run(args: &[String]) -> i32 {
             0
         }
         Ok(()) => {
-            println!("smoke window: closed early after {next} screen(s)");
+            println!("smoke window: FAILED: closed early after {next} screen(s)");
+            eprintln!("smoke window: FAILED: closed early after {next} screen(s)");
             1
         }
         Err(e) => {
-            println!("smoke window: unavailable: {e}");
+            println!("smoke window: FAILED: unavailable: {e}");
+            eprintln!("smoke window: FAILED: unavailable: {e}");
             2
         }
     }

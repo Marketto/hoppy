@@ -2458,7 +2458,14 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
         platform::system_look()
     };
     let theme = theme::effective(&identity.theme, look);
-    match send_window(s, &files, total, &identity, &local, &discovery, theme) {
+    // macOS: the file picker (no files given) already started AppKit, and tao must be
+    // first; the native panel then.
+    let window = if ui::send_window_possible() {
+        send_window(s, &files, total, &identity, &local, &discovery, theme)
+    } else {
+        Err(sendui::window::Unavailable("AppKit already started".into()))
+    };
+    match window {
         Ok(()) => Ok(()),
         Err(e) => {
             diag::log(format!("send: window unavailable ({e}); native picker"));
