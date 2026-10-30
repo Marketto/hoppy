@@ -77,7 +77,13 @@ git tag v0.2.0 && git push origin v0.2.0        # or Actions → Release → Run
 `release.yml` stamps the version into Cargo (Windows `hoppy.exe` + `hoppyw.exe`, installer) and Android
 (`versionName`, `versionCode` = run number), builds every enabled platform, then creates the
 GitHub Release. Use **Run workflow** with *publish* unticked to build packages without
-publishing (they appear as workflow artifacts).
+publishing (they appear as workflow artifacts, kept 14 days).
+
+To stay within the account-wide Actions storage quota, every upload is preceded by
+`tools/ci-clean-artifacts.sh`, which deletes the same-named artifacts of earlier runs (runs
+still in progress are left alone): only the latest `pkg-*` set, the latest `github-pages` and,
+per branch, the latest CI build (`hoppy-*`, kept 7 days) remain. Download a build-only
+release's packages before starting the next Release run.
 
 ## Unlocking a platform
 
