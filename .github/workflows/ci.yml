@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# actions: write lets tools/ci-clean-artifacts.sh delete this branch's older build artifacts
+# (fork PRs get a read-only token: the cleanup then only warns).
+permissions:
+  contents: read
+  actions: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -90,10 +96,16 @@ jobs:
           Copy-Item target/release/hoppy.exe dist/
           Copy-Item target/release/hoppyw.exe dist/
           Copy-Item apps/windows/install.ps1 dist/
+      - name: Delete previous copies of hoppy-windows
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh hoppy-windows --branch
       - uses: actions/upload-artifact@v4
         with:
           name: hoppy-windows
           path: dist/
+          retention-days: 7
 
   macos:
     name: macOS · tests + universal Hoppy.app (Intel 2015+ and Apple silicon)
@@ -170,10 +182,16 @@ jobs:
         run: |
           bash apps/macos/build-app.sh release "" dist 2>&1 | tee package.log ||
             { bash tools/ci-annotate.sh "macOS package" package.log; exit 1; }
+      - name: Delete previous copies of hoppy-macos
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh hoppy-macos --branch
       - uses: actions/upload-artifact@v4
         with:
           name: hoppy-macos
           path: dist/Hoppy-macos-universal.dmg
+          retention-days: 7
 
   ios:
     name: iOS · Rust core + unsigned Hoppy.app + simulator tests
@@ -230,10 +248,16 @@ jobs:
         run: |
           bash apps/ios/build-ipa.sh 0.0.0 dist 2>&1 | tee ipa.log ||
             { python3 tools/ci_annotate_xcode.py "iOS device build" ipa.log; exit 1; }
+      - name: Delete previous copies of hoppy-ios
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh hoppy-ios --branch
       - uses: actions/upload-artifact@v4
         with:
           name: hoppy-ios
           path: dist/Hoppy-ios-unsigned.ipa
+          retention-days: 7
 
   android:
     name: Android · APK
@@ -254,7 +278,13 @@ jobs:
       - name: Build
         working-directory: apps/android
         run: gradle :core:test :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Delete previous copies of hoppy-android
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh hoppy-android --branch
       - uses: actions/upload-artifact@v4
         with:
           name: hoppy-android
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7

@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # tools/ci-clean-artifacts.sh deletes the previous runs' pkg-* artifacts
 
 concurrency:
   group: release-${{ github.ref }}
@@ -78,10 +79,16 @@ jobs:
           }
           Compress-Archive -Path target\release\hoppy.exe, target\release\hoppyw.exe, apps\windows\install.ps1, LICENSE `
             -DestinationPath dist\Hoppy-windows-x64.zip
+      - name: Delete previous copies of pkg-windows
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh pkg-windows
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-windows
           path: dist/*
+          retention-days: 14
 
   android:
     name: Android · APK (phone + tablet)
@@ -140,10 +147,16 @@ jobs:
           mkdir -p dist
           cp apps/android/app/build/outputs/apk/release/app-release.apk dist/Hoppy-android.apk
           rm -f "$RUNNER_TEMP/hoppy-release.jks"
+      - name: Delete previous copies of pkg-android
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh pkg-android
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-android
           path: dist/*
+          retention-days: 14
 
   macos:
     name: macOS · Hoppy.app universal (Intel 2015+ and Apple silicon)
@@ -227,10 +240,16 @@ jobs:
       - name: Remove the signing keychain
         if: always() && env.HOPPY_KEYCHAIN != ''
         run: security delete-keychain "$HOPPY_KEYCHAIN" || true
+      - name: Delete previous copies of pkg-macos
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh pkg-macos
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-macos
           path: dist/Hoppy-macos-universal.dmg
+          retention-days: 14
 
   linux:
     name: Ubuntu · .deb (22.04+)
@@ -258,10 +277,16 @@ jobs:
           cp target/debian/*.deb dist/Hoppy-linux-amd64.deb
           dpkg-deb --info dist/Hoppy-linux-amd64.deb
           dpkg-deb --contents dist/Hoppy-linux-amd64.deb
+      - name: Delete previous copies of pkg-linux
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh pkg-linux
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-linux
           path: dist/*
+          retention-days: 14
 
   ios:
     name: iPhone/iPad · unsigned .ipa (sideload with Sideloadly)
@@ -286,10 +311,16 @@ jobs:
         run: |
           bash apps/ios/build-ipa.sh "${{ needs.meta.outputs.version }}" dist 2>&1 | tee ipa.log ||
             { python3 tools/ci_annotate_xcode.py "iOS package" ipa.log; exit 1; }
+      - name: Delete previous copies of pkg-ios
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh pkg-ios
       - uses: actions/upload-artifact@v4
         with:
           name: pkg-ios
           path: dist/Hoppy-ios-unsigned.ipa
+          retention-days: 14
 
   publish:
     name: Publish release

@@ -20,6 +20,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write # tools/ci-clean-artifacts.sh deletes the previous runs' github-pages artifact
 
 concurrency:
   group: pages
@@ -44,6 +45,11 @@ jobs:
       - run: python3 tools/site.py build --out _site --base-url "${{ steps.pages.outputs.base_url }}" --repo "${{ github.repository }}" --require-release
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Delete previous copies of github-pages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/ci-clean-artifacts.sh github-pages
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
