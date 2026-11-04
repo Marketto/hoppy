@@ -277,7 +277,14 @@ jobs:
           gradle-version: 8.14.3
       - name: Build
         working-directory: apps/android
-        run: gradle :core:test :app:testDebugUnitTest :app:assembleDebug --stacktrace
+        shell: bash
+        # Gradle/Kotlin errors are re-emitted as annotations (agents can't read CI logs).
+        run: |
+          set +e
+          gradle :core:test :app:testDebugUnitTest :app:assembleDebug --stacktrace 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then bash ../../tools/ci-annotate.sh "gradle (Android)" build.log 80; fi
+          exit "$rc"
       - name: Delete previous copies of hoppy-android
         shell: bash
         env:

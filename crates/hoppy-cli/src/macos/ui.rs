@@ -1468,13 +1468,13 @@ pub fn smoke_test() -> i32 {
     assert!(accessory(mtm, &plain).is_none());
 
     smoke_step("about alert");
-    // About dialog (built, not run modally): 4 buttons, Close first (Return), no accessory.
+    // About dialog (built, not run modally): 5 buttons, Close first (Return), no accessory.
     let about = gui::about_dialog(gui::strings(), "9.9.9", false);
     let alert = dialog_alert(mtm, &about);
     assert_eq!(
         alert.buttons().count(),
-        4,
-        "Close, Check, GitHub, Diagnostics"
+        5,
+        "Close, Check, GitHub, Legal, Diagnostics"
     );
     assert!(alert.accessoryView().is_none());
     assert!(alert.informativeText().to_string().contains(gui::REPO_URL));
