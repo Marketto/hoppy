@@ -29,12 +29,13 @@ UX (`docs/platforms/macos-ios.md`, ADR 0008).
 
 | | |
 | --- | --- |
+| **First start** | before the panel icon (and before the first `hoppyw send`): the Terms of use + Privacy policy screen (WebKitGTK; three checkboxes, *Accept and continue* / *Quit*; links open the bundled pages with a "Back" link; asked again when `docs/legal/version.json` increases). Without WebKitGTK: a zenity dialog *Quit* / *I accept the terms, clauses and privacy policy* / *Read the full texts* (kdialog: the first two). Same rules as Windows: [Terms and privacy](windows.md#terms-and-privacy). The .deb also installs the texts in `/usr/share/doc/hoppy/legal/`. |
 | **Receive** | `hoppyw` runs at login as a panel icon (top bar, right). An offer shows a notification with **Accept / Decline** (critical urgency: stays until answered) and, for a device not verified yet, the 4-emoji code with names in its text plus a **Verify…** button; clicking **Verify…** or the body opens the verification dialog (see [Device verification](#device-verification)). No answer in 110 s, dismissed, or no way to ask = declined; never auto-accepted. Files go to `~/Downloads/Hoppy` (`Scaricati/Hoppy`); a notification "Received N file(s) from X", click = open the folder. |
 | **Send (Files/Nautilus)** | select files → right-click → **Scripts → Send with Hoppy** ("Invia con Hoppy" in Italian). |
 | **Send (Dolphin, Nemo)** | right-click → **Send with Hoppy** (top level). |
 | **Send (launcher)** | *Open with → Hoppy*, drop files on the Hoppy icon in the dock, the launcher's *Send files…* action, or tray menu → *Send files…* (file picker). |
 | **Then** | the **send window** (ADR 0011; WebKitGTK): mascot, device cards (✓ verified, 🔒 encrypted, ⚠ not encrypted), *Search again* / *Cancel*; nobody found → tips (open Hoppy on the other device, same Wi-Fi, Windows firewall) + *Search again*; for a device not verified yet the 4 emoji inline (**Later** / **They match**) while it decides; progress bar; "Delivered to X ✓" + jingle (unless muted), closes after ~3 s. Without a display or WebKitGTK failing: the previous zenity list + notifications. |
-| **Tray menu** | header "Hoppy · receiving as NAME", *Send files…*, *Open received folder*, *♪ Sound when delivered* (check), *Theme* ▸ (Purikura, Showa, Manga, Yume, Night: the send window's look), *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Diagnostics* = the log in the text editor), *Quit*; a bold *Update to X…* (installed from the .deb) or *Download Hoppy X…* (other copies) entry on top when an update exists. Left click opens it too. |
+| **Tray menu** | header "Hoppy · receiving as NAME", *Send files…*, *Open received folder*, *♪ Sound when delivered* (check), *Theme* ▸ (Purikura, Showa, Manga, Yume, Night: the send window's look), *Trusted devices…*, *About…* (dialog: "Hoppy", "Version X.Y.Z" (+ " · development" in dev builds), "by Marco Ricupero", https://github.com/Marketto/hoppy; buttons *Close* (default), *Check for updates* (not in dev builds), *GitHub page*, *Legal…* = the terms in the browser (linking to privacy and licences), *Diagnostics* = the log in the text editor), *Quit*; a bold *Update to X…* (installed from the .deb) or *Download Hoppy X…* (other copies) entry on top when an update exists. Left click opens it too. |
 
 Strings: Italian when the message locale is Italian (`LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`),
 else English (`gui.rs` string table, shared with Windows).
@@ -163,8 +164,10 @@ Automated here (`cargo test`, plus scripted D-Bus runs with a fake notification 
 tray host): see `docs/decisions/0007-linux-desktop.md`. On a real Ubuntu 22.04 and 24.04
 (GNOME, Wayland and X11), and once on Kubuntu and Mint:
 
-1. Install the .deb from App Center; icon in the app grid; first start → panel icon, header
-   with the device name; log out/in → icon back by itself.
+1. Install the .deb from App Center; icon in the app grid; first start → the terms screen
+   (Quit = no icon; links → page → Back keeps the ticks; a GitHub link opens the browser),
+   accept → panel icon, header with the device name; log out/in → icon back by itself, no
+   terms screen again.
 2. Phone → PC: Accept/Decline notification (also on the lock screen / in Do Not Disturb),
    body click → dialog (also on KDE without zenity: does `kdialog --warningyesno` focus No?), decline, 2 offers at once (second declined), files in Scaricati/Hoppy,
    click "Received" → Files opens the folder.

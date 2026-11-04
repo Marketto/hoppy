@@ -15,6 +15,7 @@ project, **not legal advice**: have them reviewed by a lawyer before a wider dis
 | `crates/hoppy-cli/src/sendui/web/legal/` | Desktop apps (Windows, macOS, Linux): pages + `legal.json` | `tools/legal.py` |
 | `apps/android/app/src/main/assets/legal/` | Android app: pages + `legal.json` | `tools/legal.py` |
 | `apps/ios/Hoppy/Legal/` | iPhone/iPad app: pages + `legal.json` | `tools/legal.py` |
+| `apps/windows/legal/terms.{it,en}.txt` | Plain-text terms (UTF-8 + BOM): Windows installer licence page, .dmg, .deb docs | `tools/legal.py` |
 
 Generated files are never edited by hand (like mascots and music, AGENTS.md invariant 6):
 
@@ -66,5 +67,11 @@ Required behaviour (owner request; the terms rely on it):
   (Italian if the system language is Italian, else English).
 - The command-line `hoppy` has no modal; it should mention the terms in `--help`.
 
-Where it is implemented: Android — `ui/LegalActivity.kt` + `ui/LegalPageActivity.kt`, gate in
+Where it is implemented: desktop (Windows, macOS, Linux) — `crates/hoppy-cli/src/legal.rs`
+(versions, `device.json` acceptance, pages), the send window's legal screen (`sendui`, also run
+alone as `hoppyw legal` before the tray starts) with a native fallback dialog, About → *Legal…*,
+`hoppy legal` + `--help`; installer licence page = `apps/windows/legal/terms.{it,en}.txt`
+(`tools/legal.py`), also in the .dmg and `/usr/share/doc/hoppy/legal/`
+(`docs/platforms/windows.md` "Terms and privacy").
+Android — `ui/LegalActivity.kt` + `ui/LegalPageActivity.kt`, gate in
 `Node.acquire` / `ReceiveService` (`docs/platforms/android.md` "PoC experience").

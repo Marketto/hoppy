@@ -71,12 +71,12 @@ use hoppy_core::{
 };
 
 use crate::firewall::{self, Verdict};
+use crate::legal::{self, Need};
 use crate::platform::ui::{self, Tray, Waker};
 use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles, TrayEvent};
 use crate::sendui::{self, DeviceCard};
 use crate::theme::{self, SystemLook, Theme};
 use crate::verify::{CodeView, DialogLive, DialogView};
-use crate::legal::{self, Need};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
     display_file_name, display_name, display_platform, display_text, human, start_discovery,
@@ -965,8 +965,8 @@ fn save_acceptance() {
 /// folder (works offline; the pages link to each other), else the portal. Blocking (file
 /// I/O, the browser start): workers or before any UI loop.
 fn open_legal_page(s: &Strings, doc: legal::Doc) {
-    let local = config::state_dir()
-        .and_then(|d| Ok(legal::write_pages(&d.join("legal"), doc, s.italian)?));
+    let local =
+        config::state_dir().and_then(|d| Ok(legal::write_pages(&d.join("legal"), doc, s.italian)?));
     let opened = match local {
         Ok(path) => ui::open_folder(&path),
         Err(e) => {
@@ -987,19 +987,7 @@ fn open_legal_page(s: &Strings, doc: legal::Doc) {
 /// privacy policy" and "Read the full texts" (opens them, then asks again). `true` =
 /// accepted (stored). Blocking; not on a thread that runs a tray loop.
 fn legal_native(s: &Strings, need: Need) -> bool {
-    let ls = legal::strings(s.italian);
-    // zenity shows buttons 0 and 1 as Cancel/OK and the rest as extras; kdialog only the
-    // first two: Quit and Accept are always there.
-    let view = DialogView {
-        title: legal::title(ls, need).to_owned(),
-        text: legal::fallback_text(ls, need, s.legal_declares),
-        buttons: vec![
-            (BTN_LEGAL_QUIT, ls.quit.clone()),
-            (BTN_LEGAL_ACCEPT, s.legal_accept_all.to_owned()),
-            (BTN_LEGAL_READ, s.legal_read.to_owned()),
-        ],
-        ..Default::default()
-    };
+    let view = legal_dialog(s, need);
     loop {
         match ui::show_dialog(&view, &DialogLive::new()) {
             Some(BTN_LEGAL_ACCEPT) => {
@@ -1009,6 +997,22 @@ fn legal_native(s: &Strings, need: Need) -> bool {
             Some(BTN_LEGAL_READ) => open_legal_page(s, legal::Doc::Terms),
             _ => return false,
         }
+    }
+}
+
+/// The native legal dialog. zenity shows buttons 0 and 1 as Cancel/OK and the rest as
+/// extras, kdialog only the first two: Quit (the default) and Accept are always there.
+pub fn legal_dialog(s: &Strings, need: Need) -> DialogView {
+    let ls = legal::strings(s.italian);
+    DialogView {
+        title: legal::title(ls, need).to_owned(),
+        text: legal::fallback_text(ls, need, s.legal_declares),
+        buttons: vec![
+            (BTN_LEGAL_QUIT, ls.quit.clone()),
+            (BTN_LEGAL_ACCEPT, s.legal_accept_all.to_owned()),
+            (BTN_LEGAL_READ, s.legal_read.to_owned()),
+        ],
+        ..Default::default()
     }
 }
 
@@ -1079,7 +1083,9 @@ fn legal_gate_tray(s: &Strings, need: Need) -> bool {
             status.success()
         }
         Err(e) => {
-            diag::log(format!("legal: could not start the window ({e}); native dialog"));
+            diag::log(format!(
+                "legal: could not start the window ({e}); native dialog"
+            ));
             legal_native(s, need)
         }
     }
@@ -2643,43 +2649,52 @@ fn send_mode(s: &'static Strings, files: Vec<PathBuf>) -> Result<()> {
         .sum();
     let identity = config::load_or_create()?;
     let local = config::local(&identity)?;
-    let discovery = Arc::new(start_discovery(&local.device, 0, &[])?);
-    diag::log(format!("send: {} file(s), {}", files.len(), human(total)));
-    // The OS look only matters when no theme was chosen (it runs gsettings/defaults).
-    let look = if Theme::from_id(&identity.theme).is_some() {
-        SystemLook::default()
-    } else {
-        platform::system_look()
-    };
-    let theme = theme::effective(&identity.theme, look);
+    // Not accepted yet (or a newer version): the legal screen comes first, and discovery
+    // starts only after it (nothing is announced before).
+    let need = legal::needed(identity.legal.as_ref(), legal::bundled());
+    diag::log(format!(
+        "send: {} file(s), {}{}",
+        files.len(),
+        human(total),
+        if need.is_some() { ", terms first" } else { "" }
+    ));
+    let theme = window_theme(&identity);
     // macOS: the file picker (no files given) already started AppKit, and tao must be
     // first; the native panel then.
     let window = if ui::send_window_possible() {
-        send_window(s, &files, total, &identity, &local, &discovery, theme)
+        send_window(s, &files, total, &identity, &local, theme, need)
     } else {
         Err(sendui::window::Unavailable("AppKit already started".into()))
     };
     match window {
-        Ok(()) => Ok(()),
+        Ok(result) => result,
         Err(e) => {
             diag::log(format!("send: window unavailable ({e}); native picker"));
+            if let Some(need) = need
+                && !legal_native(s, need)
+            {
+                diag::log("legal: not accepted, nothing sent");
+                return Ok(());
+            }
+            let discovery = Arc::new(start_discovery(&local.device, 0, &[])?);
             send_native(s, files, total, &identity, &local, &discovery)
         }
     }
 }
 
-/// The themed send window (`sendui`, ADR 0011): searching, device cards, progress, the
-/// verification panel and the results in one window. `Err` only when the window could
-/// not start (nothing was shown yet): the caller then uses the native picker.
+/// The themed send window (`sendui`, ADR 0011): the legal screen when `need`, then
+/// searching, device cards, progress, the verification panel and the results in one window.
+/// `Err` only when the window could not start (nothing was shown yet): the caller then uses
+/// the native picker. Discovery starts with the first search (after the legal screen).
 fn send_window(
     s: &'static Strings,
     files: &[PathBuf],
     total: u64,
     identity: &config::Identity,
     local: &Local,
-    discovery: &Arc<Discovery>,
     theme: Theme,
-) -> Result<(), sendui::window::Unavailable> {
+    need: Option<Need>,
+) -> Result<Result<()>, sendui::window::Unavailable> {
     use sendui::window::{self, Input};
     use sendui::{Effect, Flow, Outcome};
 
@@ -2690,19 +2705,28 @@ fn send_window(
         .unwrap_or_default();
     let header = sendui::header(s, &first, files.len(), &human(total));
     let state = Arc::new(Mutex::new(SendState::default()));
-    let mut flow = Flow::new();
+    let mut flow = match need {
+        Some(need) => Flow::with_legal(need, sendui::AfterLegal::Search),
+        None => Flow::new(),
+    };
+    let mut discovery: Option<Arc<Discovery>> = None;
+    let mut failed: Option<anyhow::Error> = None;
     // The devices of the last search (the page only knows their index).
     let mut found: Vec<Peer> = Vec::new();
     let mut chosen: Option<Peer> = None;
     let mut session_peer: Option<PeerKey> = None;
     let mut jingle = Jingle::new(identity.music);
     let init = sendui::Init::new(s, theme);
-    window::run(s.ui_window_title, theme, &init, |ctl, input| {
+    let title = if need.is_some() {
+        s.legal_window_title
+    } else {
+        s.ui_window_title
+    };
+    let shown = window::run(title, theme, &init, |ctl, input| {
         let mut effects = Vec::new();
         match input {
-            Input::Started => {
-                spawn_search(s, discovery, &local.trust, &state, ctl.waker());
-            }
+            Input::Started if !flow.legal_pending() => effects.push(Effect::Search),
+            Input::Started => {}
             Input::Ready => diag::log("send: window ready"),
             Input::Action(action) => effects = flow.action(action),
             Input::Wake => {
@@ -2750,12 +2774,29 @@ fn send_window(
         for effect in effects {
             match effect {
                 Effect::Search => {
-                    discovery.refresh();
+                    let d = match &discovery {
+                        Some(d) => {
+                            d.refresh();
+                            Arc::clone(d)
+                        }
+                        // The first search (after the legal screen, if any).
+                        None => match start_discovery(&local.device, 0, &[]) {
+                            Ok(d) => Arc::clone(discovery.insert(Arc::new(d))),
+                            Err(e) => {
+                                failed = Some(e);
+                                ctl.exit();
+                                continue;
+                            }
+                        },
+                    };
                     *lock(&state) = SendState::default();
-                    spawn_search(s, discovery, &local.trust, &state, ctl.waker());
+                    spawn_search(s, &d, &local.trust, &state, ctl.waker());
+                }
+                Effect::Accepted => {
+                    thread::spawn(save_acceptance);
                 }
                 Effect::Send(i) => {
-                    let Some(peer) = found.get(i).cloned() else {
+                    let (Some(peer), Some(discovery)) = (found.get(i).cloned(), &discovery) else {
                         continue;
                     };
                     chosen = Some(peer.clone());
@@ -2795,7 +2836,8 @@ fn send_window(
             }
         }
         ctl.render(&flow.view(s, &header));
-    })
+    });
+    shown.map(|()| failed.map_or(Ok(()), Err))
 }
 
 /// The native send UI (the fallback when the window cannot start): progress in the tray
@@ -3329,6 +3371,28 @@ mod tests {
                 "timeout",
                 true
             )
+        );
+    }
+
+    #[test]
+    fn legal_fallback_dialog_never_accepts_by_default() {
+        let view = legal_dialog(&IT, Need::First);
+        assert_eq!(view.title, "Prima di iniziare");
+        assert_eq!(view.default_id(), BTN_LEGAL_QUIT, "Enter/Esc/close = quit");
+        let ids: Vec<u32> = view.buttons.iter().map(|b| b.0).collect();
+        assert_eq!(ids, [BTN_LEGAL_QUIT, BTN_LEGAL_ACCEPT, BTN_LEGAL_READ]);
+        assert_eq!(view.buttons[1].1, "Accetto termini, clausole e informativa");
+        assert!(view.text.contains("artt. 1341 e 1342"));
+        assert!(
+            view.timeout.is_none(),
+            "no answer is not an acceptance, nor a quit"
+        );
+        let updated = legal_dialog(&EN, Need::Updated);
+        assert_eq!(updated.title, "Updated terms");
+        assert!(
+            updated
+                .text
+                .starts_with("The Terms of use or the Privacy policy have changed")
         );
     }
 

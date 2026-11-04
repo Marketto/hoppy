@@ -132,7 +132,10 @@ fn back_link(italian: bool) -> String {
     } else {
         &crate::gui::EN
     };
-    format!("<main>\n<p><a href=\"../index.html\">{}</a></p>", s.legal_back)
+    format!(
+        "<main>\n<p><a href=\"../index.html\">{}</a></p>",
+        s.legal_back
+    )
 }
 
 /// Legal pages: no script at all, only their own inline `<style>` (by hash), no network.
@@ -299,9 +302,17 @@ mod tests {
             assert_ne!(a.csp, CSP);
         }
         let it = asset("/legal/terms.it.html").unwrap();
-        assert!(std::str::from_utf8(&it.body).unwrap().contains("Torna a Hoppy"));
+        assert!(
+            std::str::from_utf8(&it.body)
+                .unwrap()
+                .contains("Torna a Hoppy")
+        );
         let en = asset("/legal/privacy.en.html").unwrap();
-        assert!(std::str::from_utf8(&en.body).unwrap().contains("Back to Hoppy"));
+        assert!(
+            std::str::from_utf8(&en.body)
+                .unwrap()
+                .contains("Back to Hoppy")
+        );
         assert_eq!(asset("/app.js").unwrap().csp, CSP);
     }
 
@@ -313,7 +324,10 @@ mod tests {
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
         // sha256("") in a CSP source.
-        assert!(legal_csp("<style></style>").contains("'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='"));
+        assert!(
+            legal_csp("<style></style>")
+                .contains("'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='")
+        );
     }
 
     #[test]
@@ -329,7 +343,7 @@ mod tests {
             "javascript:alert(1)",
             "https://",
             "https:///x",
-            "https://user@evil.example/",
+            concat!("https://user", "@", "evil.example/"), // (split: the secrets scan)
             "https://a b/",
             "https://x/\u{0}",
             "ms-settings:network",

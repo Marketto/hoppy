@@ -269,7 +269,10 @@ mod tests {
         assert!(old.firewall_hint.is_empty());
         assert!(old.desktop_integration.is_empty());
         assert!(old.theme.is_empty(), "no theme chosen: follow the system");
-        assert!(old.legal.is_none() && old.legal_notice.is_none(), "never accepted");
+        assert!(
+            old.legal.is_none() && old.legal_notice.is_none(),
+            "never accepted"
+        );
         let off: Identity =
             serde_json::from_str(r#"{"id":"x","name":"PC","music":false}"#).unwrap();
         assert!(!off.music);

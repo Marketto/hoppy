@@ -107,7 +107,10 @@ pub enum Action {
     /// "Forget device" on the key-changed screen.
     Forget,
     /// A checkbox of the legal screen changed.
-    Tick { k: Check, on: bool },
+    Tick {
+        k: Check,
+        on: bool,
+    },
     /// "Accept and continue" (only taken when every checkbox is ticked).
     Accept,
 }

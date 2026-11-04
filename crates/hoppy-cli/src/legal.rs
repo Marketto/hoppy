@@ -144,7 +144,11 @@ pub fn bundled() -> Version {
 
 pub fn strings(italian: bool) -> &'static Strings {
     let b = bundle();
-    if italian { &b.strings.it } else { &b.strings.en }
+    if italian {
+        &b.strings.it
+    } else {
+        &b.strings.en
+    }
 }
 
 /// One of the three documents.
@@ -185,7 +189,10 @@ impl Doc {
 
 /// The embedded page called `name` (`terms.it.html`, …).
 pub fn page(name: &str) -> Option<&'static str> {
-    PAGES.iter().find(|(n, _)| *n == name).map(|(_, html)| *html)
+    PAGES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, html)| *html)
 }
 
 /// Writes the six pages to `dir` (created; files overwritten) so the system browser can
@@ -259,7 +266,7 @@ mod tests {
 
     #[test]
     fn acceptance_records_the_version_and_utc_time() {
-        let a = Acceptance::at(V11, UNIX_EPOCH + Duration::from_secs(1_793_620_800));
+        let a = Acceptance::at(V11, UNIX_EPOCH + Duration::from_secs(1_793_793_600));
         assert_eq!((a.terms, a.privacy), (1, 1));
         assert_eq!(a.at, "2026-11-04 12:00:00.000Z");
         let json = serde_json::to_string(&a).unwrap();

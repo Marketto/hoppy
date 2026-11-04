@@ -194,4 +194,7 @@ assets = [
     ["../../LICENSE", "usr/share/doc/hoppy/", "644"],
     # OFL licences of the fonts embedded in hoppyw (send window).
     ["src/sendui/web/fonts/*-OFL.txt", "usr/share/doc/hoppy/fonts/", "644"],
+    # Terms of use, privacy policy, third-party licences (tools/legal.py; also embedded in hoppyw).
+    ["src/sendui/web/legal/*.html", "usr/share/doc/hoppy/legal/", "644"],
+    ["../../apps/windows/legal/terms.*.txt", "usr/share/doc/hoppy/legal/", "644"],
 ]

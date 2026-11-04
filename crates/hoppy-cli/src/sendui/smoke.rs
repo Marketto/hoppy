@@ -5,8 +5,8 @@
 //! (the case where `hoppyw send` falls back to the native picker). CI runs it on macOS and
 //! (under Xvfb) Linux; screenshots are taken by grabbing the screen after each line.
 //!
-//! `hoppyw --dump-views [--lang it|en]` prints the sample views as JSON (no window), for
-//! `tools/sendui_audit.py` (axe-core + contrast in Chromium).
+//! `hoppyw --dump-views [--lang it|en]` prints the sample views and the served legal pages
+//! as JSON (no window), for `tools/sendui_audit.py` (axe-core + contrast in Chromium).
 
 use std::io::Write;
 use std::thread;
@@ -40,7 +40,21 @@ pub fn dump(args: &[String]) -> i32 {
         .map(|(name, view)| serde_json::json!({ "name": name, "view": view }))
         .collect();
     let init = Init::new(s, Theme::Purikura);
-    let out = serde_json::json!({ "lang": init.lang, "title": init.title, "views": views });
+    // The legal pages exactly as the window serves them (with the "back" link and CSP).
+    let pages: Vec<serde_json::Value> = crate::legal::PAGES
+        .iter()
+        .filter_map(|(name, _)| {
+            let a = super::web::asset(&format!("/legal/{name}"))?;
+            Some(serde_json::json!({
+                "path": format!("/legal/{name}"),
+                "html": String::from_utf8_lossy(&a.body),
+                "csp": a.csp,
+            }))
+        })
+        .collect();
+    let out = serde_json::json!({
+        "lang": init.lang, "title": init.title, "views": views, "pages": pages,
+    });
     println!("{out}");
     0
 }
