@@ -9,6 +9,8 @@ on:
     paths:
       - "site/**"
       - "tools/site.py"
+      - "tools/legal.py"
+      - "docs/legal/**"
       - "assets/brand/**"
       - "apps/android/app/src/main/res/font/**"
       - ".github/workflows/pages.yml"

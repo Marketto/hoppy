@@ -6,7 +6,8 @@
 
 Steps: copy site/, fill __BASE_URL__/__REPO__, generate qr.svg pointing at the base URL,
 convert the bundled app fonts (already subsetted by tools/fonts.py) to WOFF2, copy the
-icon, write sidestore.json (AltStore/SideStore source of the iPhone/iPad app, from the
+icon, render the legal pages (tools/legal.py → legal/), write sidestore.json
+(AltStore/SideStore source of the iPhone/iPad app, from the
 latest GitHub release). Needs: pip install segno fonttools brotli.
 Deployed by .github/workflows/pages.yml on pushes to main that touch the site, on every
 published release and when release.yml asks for it after publishing (so the source always
@@ -138,6 +139,16 @@ def sidestore_source(base_url: str, repo: str, release: dict | None, sha256: str
     }
 
 
+@functools.cache
+def hoppy_legal():
+    """tools/legal.py as a module (loaded by path: tools/ is not a package)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("hoppy_legal", ROOT / "tools" / "legal.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def build(out: Path, base_url: str, repo: str, require_release: bool = False) -> None:
     import segno
     from fontTools.ttLib import TTFont
@@ -146,6 +157,11 @@ def build(out: Path, base_url: str, repo: str, require_release: bool = False) ->
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(SITE, out)
+    # Legal pages: rendered again from docs/legal/ so a deploy never ships stale ones
+    # (the committed copies in site/legal/ are checked by `tools/legal.py --check`).
+    for path, text in hoppy_legal().outputs().items():
+        if path.parent == hoppy_legal().SITE_OUT:
+            (out / "legal" / path.name).write_text(text, encoding="utf-8")
     for f in out.rglob("*.html"):
         f.write_text(f.read_text(encoding="utf-8").replace("__BASE_URL__", base_url).replace("__REPO__", repo),
                      encoding="utf-8")

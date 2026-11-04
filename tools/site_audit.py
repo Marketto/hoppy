@@ -5,7 +5,8 @@
 
 Views: desktop/phone × light/dark, Italian, with animations frozen (reduced motion) and a
 fake release so every button is rendered. In each view every "Come funziona" OS tab is
-selected in turn and its mockups audited as well. axe cannot compute contrast for text over the
+selected in turn and its mockups audited as well, and the six legal pages (site/legal/,
+tools/legal.py) are audited too. axe cannot compute contrast for text over the
 animated checkerboard; those "incomplete" items are re-checked here against BOTH tile
 colors, so the worst case must still pass.
 
@@ -128,6 +129,19 @@ def main() -> int:
                     runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'] } })""")
                 problems += [(v["id"], v["impact"], f"{tab} {n['target']}", n.get("failureSummary", "").split("\n")[-1].strip())
                              for v in res["violations"] for n in v["nodes"]]
+            # Legal pages (tools/legal.py): every document in both languages.
+            for doc in ("terms", "privacy", "licenses"):
+                for lang in ("it", "en"):
+                    page.goto(f"http://127.0.0.1:8799/legal/{doc}.{lang}.html")
+                    page.wait_for_timeout(100)
+                    page.add_script_tag(content=axe)
+                    res = page.evaluate("""async () => axe.run(document, {
+                        runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa', 'best-practice'] } })""")
+                    problems += [(v["id"], v["impact"], f"legal/{doc}.{lang} {n['target']}",
+                                  n.get("failureSummary", "").split("\n")[-1].strip())
+                                 for v in res["violations"] for n in v["nodes"]]
+                    problems += [("contrast-on-checkerboard", "serious", f"legal/{doc}.{lang} {w['text']}",
+                                  f"{w['ratio']}:1 < {w['need']}:1") for w in page.evaluate(WORST_CASE_JS)]
             print(f"{'✓' if not problems else '✗'} {name}: {len(problems)} problem(s)")
             for pid, impact, target, why in problems:
                 print(f"   - [{impact}] {pid} {target} {why}")

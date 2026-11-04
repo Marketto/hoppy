@@ -6,7 +6,7 @@
 Commands (each prints what it runs and exits non-zero on failure):
   doctor         which toolchains are available here
   check          fast gate: rust fmt + clippy + tests, python selftest, docs lint, contrast,
-                 iOS static check (tools/ios_check.py), secrets
+                 iOS static check (tools/ios_check.py), licences + legal pages up to date, secrets
   rust           cargo test for the workspace
   interop        Rust <-> Python (+ Kotlin core if Gradle is available) wire tests
   android-test   :core JVM unit tests via Gradle
@@ -16,6 +16,8 @@ Commands (each prints what it runs and exits non-zero on failure):
                  (needs numpy + soundfile; `python3 tools/gen_music.py --check` verifies)
   docs           lint AI docs: links in AGENTS.md/skills exist, skill frontmatter valid
   secrets        scan tracked + new files for credentials and personal e-mails
+  licenses       regenerate docs/legal/third-party-licenses.{md,json} (tools/licenses.py)
+  legal          render docs/legal/ to the portal and app pages (tools/legal.py)
   contrast       WCAG AA contrast of every app theme text/background pair (Android, iOS, desktop
                  send window)
   a11y           axe-core audit of the download portal and of the desktop send window in all
@@ -81,6 +83,8 @@ def cmd_check() -> None:
     cmd_docs()
     cmd_contrast()
     run([sys.executable, "tools/ios_check.py"])
+    run([sys.executable, "tools/licenses.py", "--check"])
+    run([sys.executable, "tools/legal.py", "--check"])
     cmd_secrets()
 
 
@@ -194,6 +198,15 @@ def cmd_secrets() -> None:
     print("✓ secrets scan: clean")
 
 
+def cmd_licenses() -> None:
+    run([sys.executable, "tools/licenses.py"])
+    cmd_legal()  # the licences pages are rendered from the JSON
+
+
+def cmd_legal() -> None:
+    run([sys.executable, "tools/legal.py"])
+
+
 def cmd_contrast() -> None:
     run([sys.executable, "tools/contrast.py"])
 
@@ -213,7 +226,7 @@ def cmd_all() -> None:
 COMMANDS = {
     "doctor": cmd_doctor, "check": cmd_check, "rust": cmd_rust, "interop": cmd_interop,
     "android-test": cmd_android_test, "android-build": cmd_android_build,
-    "mascots": cmd_mascots, "music": cmd_music, "docs": cmd_docs, "secrets": cmd_secrets, "contrast": cmd_contrast, "a11y": cmd_a11y, "all": cmd_all,
+    "mascots": cmd_mascots, "music": cmd_music, "docs": cmd_docs, "secrets": cmd_secrets, "licenses": cmd_licenses, "legal": cmd_legal, "contrast": cmd_contrast, "a11y": cmd_a11y, "all": cmd_all,
 }
 
 if __name__ == "__main__":
