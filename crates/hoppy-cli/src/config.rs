@@ -160,7 +160,20 @@ pub fn save(identity: &Identity) -> Result<()> {
     let dir = state_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     secure_dir(&dir);
-    fs::write(dir.join(DEVICE_FILE), serde_json::to_vec_pretty(identity)?)?;
+    // Atomic: write a unique temp file next to it, then rename, so a crash or an early exit
+    // never leaves a truncated device.json (which would silently mint a new id).
+    let path = dir.join(DEVICE_FILE);
+    let tmp = dir.join(format!(
+        ".{DEVICE_FILE}.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    fs::write(&tmp, serde_json::to_vec_pretty(identity)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    if let Err(e) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("replacing {}", path.display()));
+    }
     Ok(())
 }
 

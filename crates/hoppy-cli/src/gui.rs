@@ -2793,7 +2793,8 @@ fn send_window(
                     spawn_search(s, &d, &local.trust, &state, ctl.waker());
                 }
                 Effect::Accepted => {
-                    thread::spawn(save_acceptance);
+                    // Synchronous: the file is tiny and the window may close right after.
+                    save_acceptance();
                 }
                 Effect::Send(i) => {
                     let (Some(peer), Some(discovery)) = (found.get(i).cloned(), &discovery) else {
