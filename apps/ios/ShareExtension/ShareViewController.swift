@@ -5,6 +5,9 @@
 // app (ADR 0009). Protocol v1 (ADR 0010): it is its own device to others ("iPad (Condividi)"),
 // with a stable id, key and trust store in its own container, and shows the verification
 // 4-emoji code ("Coincide" / "Più tardi"), the same as in the app.
+// Terms / privacy (docs/legal/README.md): the extension cannot read the app's acceptance (no
+// App Group), so it asks once itself with the same bundled Legal/ texts, stored in its own
+// defaults; its node starts only after that.
 import SwiftUI
 import UIKit
 
@@ -50,6 +53,14 @@ final class ShareModel: ObservableObject {
     @Published var keyChanged: KeyChangedAlert?
     @Published var banner: String?
     var close: (Bool) -> Void = { _ in }
+    let legal = LegalTexts.load()
+    @Published private(set) var needsLegal: Bool
+    let legalIsUpdate: Bool
+
+    init() {
+        needsLegal = LegalConsent.needsAcceptance(LegalTexts.load()) // self.legal is not usable before init ends
+        legalIsUpdate = LegalConsent.isUpdate()
+    }
 
     private var node: HoppyNode?
     private var transfer: (id: UInt64, peerId: String, peer: String)?
@@ -63,14 +74,23 @@ final class ShareModel: ObservableObject {
 
     func load(_ providers: [NSItemProvider]) {
         Outbox.clear() // leftovers of an extension killed mid-send
-        startNode()
+        if !needsLegal { startNode() }
         Outbox.stage(providers) { [weak self] urls in
             self?.files = urls
             self?.loading = false
         }
     }
 
+    /// «Accetto e continuo» in the extension's own acceptance screen.
+    func acceptLegal() {
+        guard let legal = legal else { return }
+        LegalConsent.accept(legal.version)
+        needsLegal = false
+        startNode()
+    }
+
     private func startNode() {
+        guard node == nil, !needsLegal else { return }
         // Own container: own id, key and trust store; named "<model> (Condividi)".
         let seeds = Identity.seeds
         node = try? Identity.startNode(name: Identity.shareExtensionName, configure: { config in
@@ -177,9 +197,29 @@ final class ShareModel: ObservableObject {
 struct ShareView: View {
     @EnvironmentObject private var model: ShareModel
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let palette = Palette.current(scheme)
+        if model.needsLegal {
+            NavigationView {
+                // Extension-safe: SwiftUI's openURL instead of UIApplication.shared.
+                LegalConsentView(texts: model.legal, isUpdate: model.legalIsUpdate, compact: true, palette: palette,
+                                 openExternal: { openURL($0) }, onAccept: { model.acceptLegal() })
+                    .navigationTitle(L("share_title"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button(L("cancel")) { model.cancel() } }
+                    }
+            }
+            .navigationViewStyle(.stack)
+            .tint(palette.accent)
+        } else {
+            sendScreen(palette)
+        }
+    }
+
+    private func sendScreen(_ palette: Palette) -> some View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {

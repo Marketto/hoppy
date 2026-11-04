@@ -38,6 +38,11 @@ final class AppModel: ObservableObject {
     @Published var banner: String?
     /// A newer release to announce (UpdateCheck).
     @Published private(set) var update: String?
+    /// Terms / privacy (docs/legal/README.md): the bundled texts and whether they must be
+    /// accepted first. Until then nothing starts: no node, no discovery, no update check.
+    let legal = LegalTexts.load()
+    @Published private(set) var needsLegal: Bool
+    let legalIsUpdate: Bool
 
     private var node: HoppyNode?
     private var transfer: (id: UInt64, peerId: String, peer: String, files: [URL])?
@@ -55,7 +60,17 @@ final class AppModel: ObservableObject {
         receiving = d.object(forKey: Self.receiveKey) as? Bool ?? true
         soundOn = d.object(forKey: Self.soundKey) as? Bool ?? true
         deviceName = Identity.deviceName
+        needsLegal = LegalConsent.needsAcceptance(LegalTexts.load()) // self.legal is not usable before init ends
+        legalIsUpdate = LegalConsent.isUpdate()
         Outbox.clear()
+    }
+
+    /// «Accetto e continuo»: store the bundled version, then start what the cover held back.
+    func acceptLegal() {
+        guard let legal = legal else { return }
+        LegalConsent.accept(legal.version)
+        needsLegal = false
+        if inForeground { enterForeground() }
     }
 
     var receiveDir: URL {
@@ -75,6 +90,7 @@ final class AppModel: ObservableObject {
     func enterForeground() {
         inForeground = true
         endBackgroundTask()
+        guard !needsLegal else { return } // the acceptance cover comes first
         if node == nil {
             startNode()
         } else {
@@ -119,7 +135,7 @@ final class AppModel: ObservableObject {
     }
 
     func startNode() {
-        guard node == nil, !isTesting else { return }
+        guard node == nil, !isTesting, !needsLegal else { return }
         removeStaleParts()
         let dir = receiveDir.path, receive = receiving, seeds = Identity.seeds
         do {
