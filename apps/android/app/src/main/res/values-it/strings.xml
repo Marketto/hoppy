@@ -82,7 +82,9 @@
     <string name="about">Informazioni</string>
     <string name="about_version">Versione %1$s (build %2$d)</string>
     <string name="about_author">di Marco Ricupero</string>
-    <string name="about_licenses">Licenze open source</string>
+    <string name="legal_link_cd">%1$s, apre la pagina</string>
+    <string name="legal_tick_all">Spunta tutte e tre le caselle per continuare.</string>
+    <string name="legal_no_browser">Nessun browser disponibile per aprire il link</string>
     <!-- Protocollo v1 (docs/protocol.md §7): badge di cifratura, codice di verifica (4 emoji), avvisi. -->
     <string name="peer_secure">%1$s · 🔒</string>
     <string name="peer_secure_verified">%1$s · 🔒 ✓</string>

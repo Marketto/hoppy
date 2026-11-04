@@ -15,8 +15,6 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.animation.OvershootInterpolator
 import android.widget.EditText
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -30,6 +28,7 @@ import app.hoppy.audio.Music
 import app.hoppy.core.Peer
 import app.hoppy.databinding.ActivityMainBinding
 import app.hoppy.databinding.DialogAboutBinding
+import app.hoppy.legal.Legal
 import app.hoppy.security.Security
 import app.hoppy.service.ReceiveService
 import app.hoppy.ui.theme.HomeDecor
@@ -65,9 +64,18 @@ class MainActivity : ThemedActivity() {
     }
 
     private lateinit var decor: HomeDecor
+    /** This screen holds a [Node] reference (released in onStop). */
+    private var nodeHeld = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!Legal.accepted(this)) {
+            // First run / updated terms: the acceptance modal comes before anything else,
+            // theme picker and discovery included (docs/legal/README.md). It reopens home.
+            startActivity(LegalActivity.gateIntent(this))
+            finish()
+            return
+        }
         if (!Prefs.themeChosen(this)) {
             // First run: the theme choice comes before anything else (Android has no
             // install-time UI). The picker restarts MainActivity in the chosen theme.
@@ -187,7 +195,7 @@ class MainActivity : ThemedActivity() {
         Updater.addListener(updateListener)
         syncUpdate()
         Updater.maybeCheck(this)
-        Node.acquire(this)
+        nodeHeld = Node.acquire(this)
         Node.refresh()
         showPeers(Node.peers())
         syncSwitch()
@@ -201,7 +209,8 @@ class MainActivity : ThemedActivity() {
         Node.removeListener(peersListener)
         ReceiveService.removeStateListener(stateListener)
         Updater.removeListener(updateListener)
-        Node.release()
+        if (nodeHeld) Node.release()
+        nodeHeld = false
         super.onStop()
     }
 
@@ -283,7 +292,7 @@ class MainActivity : ThemedActivity() {
     /**
      * Menu "About": mascot, name, version (build), author, GitHub link, "Check for updates"
      * (answers inside the dialog; a newer version closes it and shows the home banner) and
-     * the bundled font licences.
+     * the small legal links Terms · Privacy · Licences (bundled pages, `LegalPageActivity`).
      */
     private fun showAbout() {
         val about = DialogAboutBinding.inflate(layoutInflater)
@@ -318,35 +327,7 @@ class MainActivity : ThemedActivity() {
                 }
             }
         }
-        about.aboutLicenses.setOnClickListener { showLicenses() }
-    }
-
-    /** OFL texts of the bundled fonts (assets/licenses/fonts, written by tools/fonts.py). */
-    private fun showLicenses() {
-        val app = applicationContext
-        thread(name = "hoppy-licenses") {
-            val text = runCatching {
-                val dir = "licenses/fonts"
-                app.assets.list(dir).orEmpty().sorted().joinToString("\n\n") { name ->
-                    "── ${name.removeSuffix(".txt")} ──\n" + app.assets.open("$dir/$name").bufferedReader().use { it.readText() }
-                }
-            }.getOrDefault("")
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                val pad = (20 * resources.displayMetrics.density).toInt()
-                val body = TextView(this).apply {
-                    setText(text)
-                    setTextIsSelectable(true)
-                    textSize = 12f
-                    setPadding(pad, pad / 2, pad, 0)
-                }
-                MaterialAlertDialogBuilder(this)
-                    .setTitle(R.string.about_licenses)
-                    .setView(ScrollView(this).apply { addView(body) })
-                    .setPositiveButton(android.R.string.ok, null)
-                    .show()
-            }
-        }
+        LegalLinks.bind(this, about.aboutTerms, about.aboutPrivacy, about.aboutLicenses)
     }
 
     private fun chooseTheme() {

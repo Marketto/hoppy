@@ -1,5 +1,6 @@
 package app.hoppy.ui
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -8,8 +9,10 @@ import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.IntentCompat
 import androidx.core.view.isVisible
+import androidx.lifecycle.Lifecycle
 import app.hoppy.Node
 import app.hoppy.Prefs
 import app.hoppy.R
@@ -27,6 +30,7 @@ import app.hoppy.core.TrustState
 import app.hoppy.core.UnencryptedException
 import app.hoppy.core.Warning
 import app.hoppy.databinding.ActivitySendBinding
+import app.hoppy.legal.Legal
 import app.hoppy.security.Security
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import app.hoppy.ui.theme.ButtonFx
@@ -70,10 +74,34 @@ class SendActivity : ThemedActivity() {
 
     private val peersListener: (List<Peer>) -> Unit = { peers -> runOnUiThread { showPeers(peers) } }
 
+    /**
+     * Terms not accepted yet (first run straight from the share sheet, or updated terms):
+     * `LegalActivity` is on top and no discovery or send happens until it answers OK. Launched
+     * for a result so this screen keeps the share's URI grants; *Quit* closes it.
+     */
+    private var gated = false
+    /** This screen holds a [Node] reference (released in onStop). */
+    private var nodeHeld = false
+
+    private val legalGate = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK && Legal.accepted(this)) {
+            gated = false
+            // onStart already ran (and skipped the node) before this result arrived.
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) startDiscovery()
+        } else {
+            finish()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         b = ActivitySendBinding.inflate(layoutInflater)
         setContentView(b.root)
+        if (!Legal.accepted(this)) {
+            gated = true
+            // After a process restart the pending result is delivered to the new launcher.
+            if (savedInstanceState?.getBoolean(STATE_GATED) != true) legalGate.launch(LegalActivity.resultIntent(this))
+        }
         b.peers.adapter = adapter
         b.close.setOnClickListener { finish() }
         b.confirm.maxLines = 2
@@ -149,16 +177,27 @@ class SendActivity : ThemedActivity() {
 
     override fun onStart() {
         super.onStart()
+        if (!gated) startDiscovery()
+    }
+
+    private fun startDiscovery() {
+        if (nodeHeld) return
         Node.addListener(peersListener)
-        Node.acquire(this)
+        nodeHeld = Node.acquire(this)
         Node.refresh()
         showPeers(Node.peers())
     }
 
     override fun onStop() {
         Node.removeListener(peersListener)
-        Node.release()
+        if (nodeHeld) Node.release()
+        nodeHeld = false
         super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_GATED, gated)
     }
 
     private fun onResolved(list: List<UriSource>) {
@@ -195,7 +234,7 @@ class SendActivity : ThemedActivity() {
 
     private fun send(peer: Peer) {
         val list = sources ?: return
-        if (sending) return
+        if (sending || gated) return
         sending = true
         preselected = null
         lookingFor = false
@@ -213,7 +252,7 @@ class SendActivity : ThemedActivity() {
         b.security.isVisible = false
         val app = applicationContext
         // Keep the discovery node (UDP 47470) alive for the callback even if this screen stops.
-        Node.acquire(app)
+        val held = Node.acquire(app)
         val node = Node.node()
         var lastUi = 0L
         val listener = object : SendListener {
@@ -254,7 +293,7 @@ class SendActivity : ThemedActivity() {
                 // Reads the key / trust store on first use: off the main thread.
                 runCatching { TransferClient.sendToPeer(peer, Security.local(app), list, node, listener) }
             } finally {
-                Node.release()
+                if (held) Node.release()
             }
             if (result.getOrNull() == SendOutcome.Delivered || isFinishing || isDestroyed) list.forEach { it.cleanup() }
             runOnUiThread { onSendResult(peer, result) }

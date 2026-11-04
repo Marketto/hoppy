@@ -37,6 +37,17 @@
                 android:resource="@xml/shortcuts" />
         </activity>
 
+        <!-- First-run / updated-terms acceptance (docs/legal/README.md): before the theme
+             picker, home and the share screen; nothing networked runs before it. -->
+        <activity
+            android:name=".ui.LegalActivity"
+            android:exported="false" />
+
+        <!-- Bundled legal pages (assets/legal/) in a locked-down WebView. -->
+        <activity
+            android:name=".ui.LegalPageActivity"
+            android:exported="false" />
+
         <!-- First-run theme choice ("installation-time"), also opened from the menu. -->
         <activity
             android:name=".ui.ThemePickerActivity"

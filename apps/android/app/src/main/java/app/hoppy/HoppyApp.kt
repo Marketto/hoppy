@@ -12,6 +12,8 @@ import app.hoppy.core.CallbackRequest
 import app.hoppy.core.DeviceInfo
 import app.hoppy.core.DiscoveryNode
 import app.hoppy.core.Peer
+import app.hoppy.legal.Legal
+import app.hoppy.legal.LegalVersion
 import app.hoppy.security.Security
 import app.hoppy.ui.RecentTarget
 import app.hoppy.ui.ShareTargets
@@ -59,7 +61,7 @@ class HoppyApp : Application() {
     }
 }
 
-/** Small preference store: identity, theme, auto-accept, music, update check. */
+/** Small preference store: identity, theme, auto-accept, music, update check, legal acceptance. */
 object Prefs {
     private fun sp(ctx: Context) = ctx.getSharedPreferences("hoppy", Context.MODE_PRIVATE)
 
@@ -153,6 +155,27 @@ object Prefs {
         sp(ctx).edit().putString("update_notified", value).apply()
     }
 
+    /**
+     * Accepted terms + privacy versions (docs/legal/README.md), null before the first
+     * acceptance. Accepted at [legalAcceptedAt] (epoch ms).
+     */
+    fun legalAccepted(ctx: Context): LegalVersion? {
+        val p = sp(ctx)
+        if (!p.contains("legal_terms") || !p.contains("legal_privacy")) return null
+        return LegalVersion(p.getInt("legal_terms", 0), p.getInt("legal_privacy", 0))
+    }
+
+    fun legalAcceptedAt(ctx: Context): Long = sp(ctx).getLong("legal_accepted_at", 0L)
+
+    /** Synchronous (commit): discovery may start right after. */
+    fun setLegalAccepted(ctx: Context, version: LegalVersion, at: Long) {
+        sp(ctx).edit()
+            .putInt("legal_terms", version.terms)
+            .putInt("legal_privacy", version.privacy)
+            .putLong("legal_accepted_at", at)
+            .commit()
+    }
+
     /** Secret carried by our own update notification (MainActivity is exported). */
     fun updateToken(ctx: Context): String {
         val p = sp(ctx)
@@ -202,15 +225,22 @@ object Node {
      */
     fun node(): DiscoveryNode? = discovery
 
+    /**
+     * Holds the node (starts it for the first user). Returns false, and holds nothing, while
+     * the terms are not accepted (`Legal`): no UDP traffic before the first-run modal. Callers
+     * [release] only after a `true`.
+     */
     @Synchronized
-    fun acquire(ctx: Context) {
-        users++
-        if (discovery != null) return
+    fun acquire(ctx: Context): Boolean {
         val app = ctx.applicationContext
+        if (!Legal.accepted(app)) return false
+        users++
+        if (discovery != null) return true
         multicastLock = app.getSystemService(WifiManager::class.java)
             ?.createMulticastLock("hoppy-discovery")
             ?.apply { setReferenceCounted(false); acquire() }
         discovery = newNode(app)
+        return true
     }
 
     @Synchronized

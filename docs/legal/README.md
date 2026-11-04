@@ -65,3 +65,6 @@ Required behaviour (owner request; the terms rely on it):
   small links `terms` · `privacy` · `licenses` opening the bundled pages in the user's language
   (Italian if the system language is Italian, else English).
 - The command-line `hoppy` has no modal; it should mention the terms in `--help`.
+
+Where it is implemented: Android — `ui/LegalActivity.kt` + `ui/LegalPageActivity.kt`, gate in
+`Node.acquire` / `ReceiveService` (`docs/platforms/android.md` "PoC experience").
