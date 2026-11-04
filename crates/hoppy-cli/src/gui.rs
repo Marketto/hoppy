@@ -76,6 +76,7 @@ use crate::platform::{self, ElevationDeclined, HttpSink, MenuItem, TooManyFiles,
 use crate::sendui::{self, DeviceCard};
 use crate::theme::{self, SystemLook, Theme};
 use crate::verify::{CodeView, DialogLive, DialogView};
+use crate::legal::{self, Need};
 use crate::{
     DialogGuard, SHOW_TEXT_MAX, bind_receiver, config, default_receive_dir, diag,
     display_file_name, display_name, display_platform, display_text, human, start_discovery,
@@ -232,6 +233,15 @@ pub struct Strings {
     pub ui_verify: &'static str,
     pub ui_code: &'static str,
     pub menu_theme: &'static str,
+    /// Legal (`legal.rs`; the modal's own copy is in docs/legal/strings.json): the native
+    /// fallback's single acceptance button, its "read" button and the line before the
+    /// declarations; the link at the top of the legal pages in the window; About.
+    pub legal_accept_all: &'static str,
+    pub legal_read: &'static str,
+    pub legal_declares: &'static str,
+    pub legal_back: &'static str,
+    pub legal_window_title: &'static str,
+    pub about_legal: &'static str,
 }
 
 pub const IT: Strings = Strings {
@@ -367,6 +377,12 @@ pub const IT: Strings = Strings {
     ui_verify: "Controlla che su {name} ci siano le stesse 4 immagini, poi premi «Coincide».",
     ui_code: "Codice di verifica",
     menu_theme: "Tema",
+    legal_accept_all: "Accetto termini, clausole e informativa",
+    legal_read: "Leggi i testi completi",
+    legal_declares: "Premendo «Accetto termini, clausole e informativa» dichiari:",
+    legal_back: "← Torna a Hoppy",
+    legal_window_title: "Hoppy — benvenuto",
+    about_legal: "Note legali…",
 };
 
 pub const EN: Strings = Strings {
@@ -502,6 +518,12 @@ pub const EN: Strings = Strings {
     ui_verify: "Check that {name} shows the same 4 pictures, then press “They match”.",
     ui_code: "Verification code",
     menu_theme: "Theme",
+    legal_accept_all: "I accept the terms, clauses and privacy policy",
+    legal_read: "Read the full texts",
+    legal_declares: "By pressing “I accept the terms, clauses and privacy policy” you declare:",
+    legal_back: "← Back to Hoppy",
+    legal_window_title: "Hoppy — welcome",
+    about_legal: "Legal…",
 };
 
 pub fn strings() -> &'static Strings {
@@ -629,6 +651,12 @@ pub const BTN_FORGET: u32 = 5;
 pub const BTN_CHECK_UPDATES: u32 = 6;
 pub const BTN_GITHUB: u32 = 7;
 pub const BTN_DIAGNOSTICS: u32 = 8;
+/// About: the legal pages (terms, with links to privacy and licences) in the browser.
+pub const BTN_LEGAL: u32 = 9;
+/// The native legal fallback (`legal_native`): Quit is the default.
+pub const BTN_LEGAL_QUIT: u32 = 10;
+pub const BTN_LEGAL_ACCEPT: u32 = 11;
+pub const BTN_LEGAL_READ: u32 = 12;
 
 /// The project page, shown and opened by the About dialog.
 pub const REPO_URL: &str = "https://github.com/Marketto/hoppy";
@@ -636,7 +664,8 @@ pub const REPO_URL: &str = "https://github.com/Marketto/hoppy";
 pub const AUTHOR: &str = "Marco Ricupero";
 
 /// The About dialog: name, version (`dev` = a development build, which never checks for
-/// updates and so has no such button), author and project link; "Close" is the default.
+/// updates and so has no such button), author, project link and the legal pages ("Terms ·
+/// Privacy · Licences", opened by "Legal…"); "Close" is the default.
 pub fn about_dialog(s: &Strings, version: &str, dev: bool) -> DialogView {
     let mut version = fill(s.about_version, &[("version", version)]);
     if dev {
@@ -648,13 +677,19 @@ pub fn about_dialog(s: &Strings, version: &str, dev: bool) -> DialogView {
     }
     buttons.extend([
         (BTN_GITHUB, s.about_github.to_owned()),
+        (BTN_LEGAL, s.about_legal.to_owned()),
         (BTN_DIAGNOSTICS, s.about_diagnostics.to_owned()),
     ]);
+    let ls = legal::strings(s.italian);
     DialogView {
         title: "Hoppy".to_owned(),
         text: format!(
-            "{version}\n{}\n\n{REPO_URL}",
-            fill(s.about_author, &[("author", AUTHOR)])
+            "{version}\n{}\n\n{REPO_URL}\n{}: {} · {} · {}",
+            fill(s.about_author, &[("author", AUTHOR)]),
+            ls.legal,
+            ls.terms,
+            ls.privacy,
+            ls.licenses
         ),
         buttons,
         ..Default::default()
@@ -854,6 +889,7 @@ pub fn run(args: Vec<OsString>) -> i32 {
     match mode {
         None => diag::init("tray"),
         Some(Some("send")) => diag::init("send"),
+        Some(Some("legal")) => diag::init("legal"),
         _ => {}
     }
     diag::log(format!(
@@ -865,6 +901,11 @@ pub fn run(args: Vec<OsString>) -> i32 {
         None => tray_mode(s),
         Some(Some("send")) => send_mode(s, args[1..].iter().map(PathBuf::from).collect()),
         Some(Some("firewall")) => return firewall_mode(&args[1..]),
+        Some(Some("legal")) => {
+            let code = legal_mode(s);
+            diag::flush(Duration::from_millis(500));
+            return code;
+        }
         Some(_) => Err(anyhow::anyhow!("{}", s.usage)),
     };
     let code = match result {
@@ -898,6 +939,150 @@ fn firewall_mode(args: &[OsString]) -> i32 {
         _ => return 3,
     };
     i32::from(result.is_err())
+}
+
+// ---------------------------------------------------------------- terms and privacy
+
+/// Stores the acceptance of the bundled versions (worker or before any UI loop).
+fn save_acceptance() {
+    let accepted = legal::Acceptance::now(legal::bundled());
+    let _io = lock(&CONFIG_IO);
+    match config::set_legal(accepted) {
+        Ok(_) => diag::log(format!(
+            "legal: accepted terms {} / privacy {}",
+            legal::bundled().terms,
+            legal::bundled().privacy
+        )),
+        // Accepted for this run; asked again next time.
+        Err(e) => diag::log(format!(
+            "legal: accepted, but saving failed: {}",
+            diag::error_chain(&e)
+        )),
+    }
+}
+
+/// Opens a legal page in the system browser: the embedded copy written to the settings
+/// folder (works offline; the pages link to each other), else the portal. Blocking (file
+/// I/O, the browser start): workers or before any UI loop.
+fn open_legal_page(s: &Strings, doc: legal::Doc) {
+    let local = config::state_dir()
+        .and_then(|d| Ok(legal::write_pages(&d.join("legal"), doc, s.italian)?));
+    let opened = match local {
+        Ok(path) => ui::open_folder(&path),
+        Err(e) => {
+            diag::log(format!(
+                "legal: writing the pages failed: {}",
+                diag::error_chain(&e)
+            ));
+            false
+        }
+    };
+    if !opened && !ui::open_url(&doc.portal_url(s.italian)) {
+        diag::log("legal: opening the page failed");
+    }
+}
+
+/// The acceptance without the webview: a native dialog with the summary and what accepting
+/// declares, "Quit" (the default: Enter, Esc, closing it), "I accept the terms, clauses and
+/// privacy policy" and "Read the full texts" (opens them, then asks again). `true` =
+/// accepted (stored). Blocking; not on a thread that runs a tray loop.
+fn legal_native(s: &Strings, need: Need) -> bool {
+    let ls = legal::strings(s.italian);
+    // zenity shows buttons 0 and 1 as Cancel/OK and the rest as extras; kdialog only the
+    // first two: Quit and Accept are always there.
+    let view = DialogView {
+        title: legal::title(ls, need).to_owned(),
+        text: legal::fallback_text(ls, need, s.legal_declares),
+        buttons: vec![
+            (BTN_LEGAL_QUIT, ls.quit.clone()),
+            (BTN_LEGAL_ACCEPT, s.legal_accept_all.to_owned()),
+            (BTN_LEGAL_READ, s.legal_read.to_owned()),
+        ],
+        ..Default::default()
+    };
+    loop {
+        match ui::show_dialog(&view, &DialogLive::new()) {
+            Some(BTN_LEGAL_ACCEPT) => {
+                save_acceptance();
+                return true;
+            }
+            Some(BTN_LEGAL_READ) => open_legal_page(s, legal::Doc::Terms),
+            _ => return false,
+        }
+    }
+}
+
+/// The theme of the windows (send window, legal screen): the tray's choice, else the
+/// system's look.
+fn window_theme(identity: &config::Identity) -> Theme {
+    // The OS look only matters when no theme was chosen (it runs gsettings/defaults).
+    let look = if Theme::from_id(&identity.theme).is_some() {
+        SystemLook::default()
+    } else {
+        platform::system_look()
+    };
+    theme::effective(&identity.theme, look)
+}
+
+/// `hoppyw legal`: the legal screen alone (the tray runs it as a child process before it
+/// starts, so its own toolkit stays untouched: macOS allows one AppKit/tao setup per
+/// process). Exit code 0 = accepted (stored), 1 = quit; nothing to ask = 0 at once.
+fn legal_mode(s: &'static Strings) -> i32 {
+    let identity = match config::load_or_create() {
+        Ok(i) => i,
+        Err(e) => {
+            diag::log(format!("legal: {}", diag::error_chain(&e)));
+            return 1;
+        }
+    };
+    let Some(need) = legal::needed(identity.legal.as_ref(), legal::bundled()) else {
+        return 0;
+    };
+    let theme = window_theme(&identity);
+    let mut flow = sendui::Flow::with_legal(need, sendui::AfterLegal::Exit);
+    let mut accepted = false;
+    let init = sendui::Init::new(s, theme);
+    let shown = sendui::window::run(s.legal_window_title, theme, &init, |ctl, input| {
+        if let sendui::window::Input::Action(action) = input {
+            for effect in flow.action(action) {
+                match effect {
+                    sendui::Effect::Accepted => accepted = true,
+                    sendui::Effect::Exit => ctl.exit(),
+                    _ => {}
+                }
+            }
+        }
+        ctl.render(&flow.view(s, ""));
+    });
+    let accepted = match shown {
+        Ok(()) => {
+            if accepted {
+                save_acceptance();
+            }
+            accepted
+        }
+        Err(e) => {
+            diag::log(format!("legal: window unavailable ({e}); native dialog"));
+            legal_native(s, need)
+        }
+    };
+    i32::from(!accepted)
+}
+
+/// Tray start: asks in a `hoppyw legal` child (the themed window, or its native fallback);
+/// if that cannot start, the native dialog here. `true` = accepted.
+fn legal_gate_tray(s: &Strings, need: Need) -> bool {
+    let child = std::env::current_exe().and_then(|exe| Command::new(exe).arg("legal").status());
+    match child {
+        Ok(status) => {
+            diag::log(format!("legal: asked, {status}"));
+            status.success()
+        }
+        Err(e) => {
+            diag::log(format!("legal: could not start the window ({e}); native dialog"));
+            legal_native(s, need)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- tray receiver
@@ -1357,6 +1542,7 @@ impl Ctx {
                     }
                 }
                 Some(BTN_DIAGNOSTICS) => ctx.open_log(mode),
+                Some(BTN_LEGAL) => open_legal_page(ctx.s, legal::Doc::Terms),
                 _ => {}
             }
         });
@@ -1512,7 +1698,15 @@ fn tray_mode(s: &'static Strings) -> Result<()> {
         return Ok(());
     };
     // Before the icon exists, so nothing is waiting on the UI thread yet.
-    let identity = config::load_or_create()?;
+    let mut identity = config::load_or_create()?;
+    // The terms first: nothing is announced or received before they are accepted.
+    if let Some(need) = legal::needed(identity.legal.as_ref(), legal::bundled()) {
+        if !legal_gate_tray(s, need) {
+            diag::log("legal: not accepted, quitting");
+            return Ok(());
+        }
+        identity = config::load_or_create()?;
+    }
     let local = config::local(&identity)?;
     let trust_warning = local.trust.take_warning();
     if let Some(w) = &trust_warning {
@@ -3144,7 +3338,8 @@ mod tests {
         assert_eq!(view.title, "Hoppy");
         assert_eq!(
             view.text,
-            "Versione 0.8.0\ndi Marco Ricupero\n\nhttps://github.com/Marketto/hoppy"
+            "Versione 0.8.0\ndi Marco Ricupero\n\nhttps://github.com/Marketto/hoppy\n\
+             Note legali: Termini d'uso · Privacy · Licenze"
         );
         assert_eq!(view.default_id(), BTN_CLOSE);
         let labels: Vec<&str> = view.buttons.iter().map(|b| b.1.as_str()).collect();
@@ -3154,6 +3349,7 @@ mod tests {
                 "Chiudi",
                 "Controlla aggiornamenti",
                 "Pagina GitHub",
+                "Note legali…",
                 "Diagnostica"
             ]
         );
@@ -3164,7 +3360,8 @@ mod tests {
                 .starts_with("Version 0.0.0-dev · development\nby Marco Ricupero")
         );
         let ids: Vec<u32> = dev.buttons.iter().map(|b| b.0).collect();
-        assert_eq!(ids, [BTN_CLOSE, BTN_GITHUB, BTN_DIAGNOSTICS]);
+        assert_eq!(ids, [BTN_CLOSE, BTN_GITHUB, BTN_LEGAL, BTN_DIAGNOSTICS]);
+        assert!(dev.text.ends_with("Legal: Terms · Privacy · Licences"));
         assert_eq!(dev.default_id(), BTN_CLOSE);
 
         // The menu has "About…" (no separate update entry) right before Quit.

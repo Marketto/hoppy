@@ -1,0 +1,170 @@
+﻿Text of Hoppy's Terms of use. At first start the app asks you to accept them
+together with the Privacy policy.
+
+TERMS OF USE AND DISCLAIMER
+===========================
+Version 1 — 4 November 2026
+
+These terms apply to the use of the Hoppy apps (Windows, macOS, Linux,
+Android, iPhone and iPad), of the hoppy command-line program and of the
+download site. Please read them carefully: on first start the app asks you to
+accept them and does not work until you do. If you do not accept them, do not
+use Hoppy and uninstall it.
+
+1. What Hoppy is
+----------------
+Hoppy is a free, open-source tool to send files between nearby devices on the
+same local network (for example the same Wi-Fi). It is written by Marco
+Ricupero ("the author") and distributed under the MIT licence
+(https://github.com/Marketto/hoppy/blob/main/LICENSE). These terms add to the
+MIT licence and do not restrict it: copying, modifying and redistributing the
+code is governed by the MIT licence.
+
+Hoppy is a personal project in development (proof of concept), not a service:
+there are no accounts, no subscriptions, no guaranteed support and no servers
+of the author taking part in transfers.
+
+2. No warranty: Hoppy is provided "AS IS"
+-----------------------------------------
+Hoppy is provided "AS IS" and "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND,
+express or implied, including but not limited to the warranties of
+merchantability, fitness for a particular purpose, non-infringement,
+availability, continuity, freedom from errors or defects, compatibility with
+your devices and security. In particular the author does not warrant that:
+
+  • files always arrive, complete, on time or undamaged;
+  • encryption, device verification or file-name checks prevent every attack,
+    interception or mistake;
+  • updates are available, compatible or free of problems.
+
+Old versions of Hoppy (protocol v0), and devices that have not been updated,
+transfer without encryption: the app shows this, but the choice to send is
+yours.
+
+3. Your responsibilities
+------------------------
+You use Hoppy at your own and sole risk and agree to take appropriate
+precautions. In particular:
+
+  1. Lawful use. You use Hoppy only for lawful purposes and in compliance with
+     applicable laws, including copyright, data protection and trade secrets.
+  2. Rights over the files. You send only files you have the right to share,
+     and you do not send content that is illegal, offensive, harmful (for
+     example viruses or malware) or that infringes the rights of others.
+  3. Recipients' consent. You send files only to people and devices that want
+     to receive them; you do not use Hoppy to harass anyone or to send
+     unsolicited files.
+  4. Checking received files. You accept only transfers you expect and you
+     check received files (for example with an antivirus) before opening them.
+     A received file can be harmful even when it comes from a device you know.
+  5. Verifying the device. Before sending or accepting important files you
+     compare the verification code (the 4 emoji) on both devices; if the app
+     warns that a device's key has changed, you do not go on until you know
+     why.
+  6. Trusted networks. You use Hoppy only on networks you trust (not on public
+     or unknown Wi-Fi), especially when the app shows that a transfer is not
+     encrypted.
+  7. Backups. You keep a backup copy of important files: Hoppy is not a backup
+     tool, and a transfer can fail or be cancelled.
+  8. Managed devices. On work, school or otherwise managed computers and
+     phones you follow the rules of the organisation and its IT department
+     and, where needed, ask for permission before installing or using Hoppy.
+  9. System settings. Changes you choose to make (for example allowing Hoppy
+     through the firewall, installing apps from outside sources, turning on
+     developer mode, receiving automatically without a confirmation) are your
+     choice and your responsibility.
+  10. Your own devices. You use Hoppy only on devices you are entitled to use,
+      and you protect access to your device: whoever uses it can send and
+      receive in your name.
+
+4. Release and indemnity of the author and of the library authors
+-----------------------------------------------------------------
+By using Hoppy you agree to release the author (Marco Ricupero), the project's
+contributors and the authors, copyright holders and contributors of the
+third-party libraries, fonts and other components included in Hoppy ("the
+library authors") from any liability for damage, loss, cost or claim of any
+kind arising from the use of, or the inability to use, Hoppy, including but
+not limited to loss of or damage to data or files, access or interception by
+third parties, viruses or other harmful content received, damage to devices or
+software, business interruption, lost profits, and indirect or consequential
+damages, even if the author had been advised of their possibility.
+
+You also agree to indemnify and hold harmless the author and the library
+authors from any claim, demand or expense (including reasonable legal fees)
+made by third parties because of your use of Hoppy, the files you send or
+receive, or your breach of these terms or of the law.
+
+Legal limits. All of the above applies to the maximum extent permitted by
+applicable law. Nothing in these terms excludes or limits liability that
+cannot be excluded or limited by law, in particular for wilful misconduct or
+gross negligence (art. 1229 of the Italian Civil Code), nor the rights that
+mandatory consumer-protection rules give you (in Italy the Consumer Code,
+Legislative Decree 206/2005). Where any of these limitations is not valid in
+your case, liability remains limited to the maximum extent permitted.
+
+5. Third-party components
+-------------------------
+Hoppy includes third-party open-source libraries, fonts and other components,
+each under its own licence (MIT, Apache 2.0, SIL Open Font License and
+others). The full list, with the licence texts and copyright notices, is on
+the Licences (https://marketto.github.io/hoppy/legal/licenses.en.html) page.
+These components are provided by their authors "as is", without warranty,
+under their respective licences; the release and indemnity of section 4 apply
+to them as well.
+
+6. Unofficial distribution, sideloading and updates
+---------------------------------------------------
+Hoppy is not distributed through the official stores (App Store, Google Play,
+Microsoft Store). The versions published on GitHub may be unsigned or only
+provisionally signed; on iPhone and iPad they are installed with third-party
+tools such as Sideloadly or SideStore, with the limits (for example expiry
+after 7 days) and the risks these involve. Installing apps from outside
+sources, bypassing system warnings or using sideloading tools is at your own
+risk, subject to the terms of Apple, Google, Microsoft and of the authors of
+those tools.
+
+Download Hoppy only from the project's official page
+(https://github.com/Marketto/hoppy/releases or the site linked from it);
+copies obtained elsewhere may have been modified. Hoppy periodically checks
+whether new versions exist (see the Privacy policy
+(https://marketto.github.io/hoppy/legal/privacy.en.html)); installing an
+update is your choice. The author may change, suspend or stop the development
+of Hoppy at any time, without notice.
+
+7. Changes to these terms
+-------------------------
+The author may update these terms. Each new version has a version number and a
+date; the app shows you the new version and, to keep using it, you have to
+accept it again. If you do not accept it, stop using Hoppy. Earlier versions
+remain available in the history of the project's repository.
+
+8. Governing law and jurisdiction
+---------------------------------
+These terms are governed by Italian law. If you are a consumer, the mandatory
+rules of the country where you habitually live still apply, and the competent
+court is the one of your place of residence or domicile, as provided by
+consumer-protection law; in all other cases the courts of the author's place
+of residence have exclusive jurisdiction.
+
+9. Other provisions
+-------------------
+  • Invalid clauses. If a clause of these terms is invalid or unenforceable,
+    the others remain in force; the invalid clause is replaced by the valid
+    one closest to its purpose.
+  • Specific approval. Under articles 1341 and 1342 of the Italian Civil Code,
+    by accepting you specifically approve sections 2 (no warranty), 3 (your
+    responsibilities), 4 (release and indemnity), 6 (distribution and
+    updates), 7 (changes) and 8 (law and jurisdiction).
+  • Language. These terms exist in Italian and English; in case of differences
+    the Italian version prevails.
+
+10. Contact
+-----------
+For questions about these terms open an issue at
+https://github.com/Marketto/hoppy/issues. Issues are public: do not include
+personal data.
+
+------------------------------------------------------------------------------
+  Online: https://marketto.github.io/hoppy/legal/terms.en.html
+  Privacy policy: https://marketto.github.io/hoppy/legal/privacy.en.html
+  Third-party licences: https://marketto.github.io/hoppy/legal/licenses.en.html

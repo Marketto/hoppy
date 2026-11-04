@@ -16,6 +16,9 @@ Outputs (generated, never hand-edited):
   <app>/legal.json                                  {"version": {...}, "strings": {...}, "pages": {...}}
   where <app> = crates/hoppy-cli/src/sendui/web/legal, apps/android/app/src/main/assets/legal,
   apps/ios/Hoppy/Legal. Each app's licences page lists only the components it ships.
+  apps/windows/legal/terms.{it,en}.txt              plain-text terms (UTF-8 with BOM): the Windows
+                                                    installer's licence page (hoppy.iss LicenseFile),
+                                                    the macOS .dmg and the Linux .deb docs
 
 Markdown subset: #/##/### headings, paragraphs, `-` and `1.` lists (with indented
 continuation lines), pipe tables, **bold**, *italic*, `code`, [text](url), <https://url>.
@@ -41,6 +44,16 @@ APPS = {  # output dir → platforms whose components its licences page lists
 DOCS = ("terms", "privacy", "licenses")
 LANGS = ("it", "en")
 REPO_URL = "https://github.com/Marketto/hoppy"
+TEXT_OUT = ROOT / "apps/windows/legal"
+PORTAL_LEGAL = "https://marketto.github.io/hoppy/legal/"
+TEXT_UI = {
+    "it": {"intro": "Testo dei Termini d'uso di Hoppy. Al primo avvio l'app chiede di accettarli insieme "
+                    "all'Informativa privacy.",
+           "privacy": "Informativa privacy", "licenses": "Licenze di terze parti", "online": "Online"},
+    "en": {"intro": "Text of Hoppy's Terms of use. At first start the app asks you to accept them together with "
+                    "the Privacy policy.",
+           "privacy": "Privacy policy", "licenses": "Third-party licences", "online": "Online"},
+}
 
 UI = {
     "it": {"other": "en", "other_name": "English", "switch_label": "Read in English",
@@ -197,6 +210,89 @@ def markdown(md: str, lang: str) -> tuple[str, str]:
             i += 1
         out.append(f"<p>{inline(' '.join(para), lang)}</p>")
     return title, "\n".join(out)
+
+
+# ---------------------------------------------------------------- Plain text
+
+def plain_inline(text: str, lang: str) -> str:
+    def sub(m: re.Match) -> str:
+        code, auto, label, url, bold, ital = m.groups()
+        if code is not None:
+            return code
+        if auto is not None:
+            return auto
+        if label is not None:
+            target = link_target(url, lang)
+            if not re.match(r"https?://", target):
+                target = PORTAL_LEGAL + target
+            return f"{plain_inline(label, lang)} ({target})"
+        return plain_inline(bold if bold is not None else ital, lang)
+    return INLINE.sub(sub, text)
+
+
+def plain_text(md: str, lang: str) -> str:
+    """The same Markdown subset as `markdown`, as wrapped plain text (installer licence page)."""
+    import textwrap
+    lines = re.sub(r"<!--.*?-->", "", md, flags=re.S).split("\n")
+    out: list[str] = []
+
+    def wrap(s: str, first: str = "", rest: str = "") -> str:
+        return textwrap.fill(s, width=78, initial_indent=first, subsequent_indent=rest, break_long_words=False,
+                             break_on_hyphens=False)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        m = re.match(r"(#{1,3}) (.*)", line)
+        if m:
+            text = plain_inline(m.group(2).strip(), lang)
+            out.append(text.upper() if len(m.group(1)) == 1 else text)
+            out.append(("=" if len(m.group(1)) == 1 else "-") * len(text))
+            i += 1
+            continue
+        if line.startswith("|"):
+            while i < len(lines) and lines[i].startswith("|"):
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                if not all(re.fullmatch(r":?-+:?", c) for c in cells):
+                    out.append(wrap(" | ".join(plain_inline(c, lang) for c in cells), "  ", "    "))
+                i += 1
+            out.append("")
+            continue
+        lm = re.match(r"(\s*)(-|\d+\.) ", line)
+        if lm:
+            items: list[tuple[str, str]] = []
+            while i < len(lines):
+                cur = lines[i]
+                im = re.match(r"(\s*)(-|\d+\.) (.*)", cur)
+                if im and len(im.group(1)) == len(lm.group(1)):
+                    items.append(("•" if im.group(2) == "-" else im.group(2), im.group(3).strip()))
+                elif cur.strip() and cur.startswith(" ") and items:
+                    items[-1] = (items[-1][0], items[-1][1] + " " + cur.strip())
+                else:
+                    break
+                i += 1
+            for mark, item in items:
+                out.append(wrap(plain_inline(item, lang), f"  {mark} ", " " * (len(mark) + 3)))
+            out.append("")
+            continue
+        para = []
+        while i < len(lines) and lines[i].strip() and not re.match(r"#{1,3} |\||\s*(-|\d+\.) ", lines[i]):
+            para.append(lines[i].strip())
+            i += 1
+        out.append(wrap(plain_inline(" ".join(para), lang)))
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def terms_text(md: str, lang: str) -> str:
+    t = TEXT_UI[lang]
+    links = "\n".join(f"  {label}: {PORTAL_LEGAL}{doc}.{lang}.html" for doc, label in
+                      (("terms", t["online"]), ("privacy", t["privacy"]), ("licenses", t["licenses"])))
+    # BOM: Inno Setup reads a .txt licence file as UTF-8 only with it.
+    import textwrap
+    return "\ufeff" + textwrap.fill(t["intro"], width=78) + "\n\n" + plain_text(md, lang) + "\n" + "-" * 78 + "\n" + links + "\n"
 
 
 # ---------------------------------------------------------------- Licences page
@@ -362,6 +458,7 @@ def load() -> tuple[dict, dict, dict, dict]:
     for doc in ("terms", "privacy"):
         for lang in LANGS:
             md = (SRC / f"{doc}.{lang}.md").read_text(encoding="utf-8")
+            docs[(doc, lang, "md")] = md
             word = "Versione" if lang == "it" else "Version"
             if not re.search(rf"\*\*{word} {version[doc]} — ", md):
                 sys.exit(f"✗ legal: docs/legal/{doc}.{lang}.md must say '**{word} {version[doc]} — <date>**' "
@@ -387,6 +484,8 @@ def outputs() -> dict[Path, str]:
               "pages": {doc: {lang: f"{doc}.{lang}.html" for lang in LANGS} for doc in DOCS}}
     for out_dir in APPS:
         files[out_dir / "legal.json"] = json.dumps(bundle, ensure_ascii=False, indent=1) + "\n"
+    for lang in LANGS:
+        files[TEXT_OUT / f"terms.{lang}.txt"] = terms_text(docs[("terms", lang, "md")], lang)
     return files
 
 

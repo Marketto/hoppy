@@ -25,8 +25,18 @@ use hoppy_core::{
     SessionInfo, TrustState, Warning, send_to_peer, send_via_callback,
 };
 
+/// `--help` epilogue: the terms the desktop app asks to accept (docs/legal/README.md).
+const AFTER_HELP: &str = "Using Hoppy means accepting its Terms of use and Privacy policy \
+(provided \"as is\", without warranty): https://marketto.github.io/hoppy/legal/terms.en.html \
+(Italiano: https://marketto.github.io/hoppy/legal/terms.it.html). `hoppy legal` prints them.";
+
 #[derive(Parser)]
-#[command(name = "hoppy", version, about = "Send files to nearby devices")]
+#[command(
+    name = "hoppy",
+    version,
+    about = "Send files to nearby devices",
+    after_help = AFTER_HELP
+)]
 struct Cli {
     /// Extra peer/discovery address (IP or IP:PORT) for networks without multicast.
     #[arg(long, global = true)]
@@ -132,6 +142,9 @@ enum Command {
         #[arg(long, default_value_t = 40)]
         lines: usize,
     },
+    /// Terms of use, privacy policy and third-party licences: versions, links, and whether
+    /// they were accepted in the desktop app.
+    Legal,
     /// Windows: can other devices reach this PC through the firewall? `--fix` adds the
     /// Hoppy rules (asks for administrator permission).
     Firewall {
@@ -162,6 +175,56 @@ fn main() {
     std::process::exit(if result.is_ok() { 0 } else { 1 });
 }
 
+/// `send`/`receive`: one line on stderr, once per terms version, while the terms were not
+/// accepted in the desktop app (the CLI never blocks: scripts keep working).
+fn legal_notice(identity: &config::Identity) {
+    let bundled = hoppy::legal::bundled();
+    if hoppy::legal::needed(identity.legal.as_ref(), bundled).is_none()
+        || identity.legal_notice == Some(bundled)
+    {
+        return;
+    }
+    eprintln!(
+        "ℹ By using Hoppy you accept its Terms of use and Privacy policy: {} (`hoppy legal`)",
+        hoppy::legal::Doc::Terms.portal_url(false)
+    );
+    let _ = config::set_legal_notice(bundled);
+}
+
+/// `hoppy legal`.
+fn cmd_legal(identity: &config::Identity) {
+    use hoppy::legal::{self, Doc};
+    let v = legal::bundled();
+    println!(
+        "Hoppy {} · terms version {} · privacy version {}",
+        env!("CARGO_PKG_VERSION"),
+        v.terms,
+        v.privacy
+    );
+    match (&identity.legal, legal::needed(identity.legal.as_ref(), v)) {
+        (Some(a), None) => println!(
+            "Accepted in the desktop app on {} (terms {}, privacy {}).",
+            a.at, a.terms, a.privacy
+        ),
+        (Some(_), Some(_)) => {
+            println!("Updated since you accepted them: the desktop app asks again.")
+        }
+        (None, _) => println!("Not accepted yet: the desktop app asks at its first start."),
+    }
+    for doc in Doc::ALL {
+        let label = match doc {
+            Doc::Terms => "Terms of use",
+            Doc::Privacy => "Privacy policy",
+            Doc::Licenses => "Third-party licences",
+        };
+        println!(
+            "  {label:<22} {}  (IT: {})",
+            doc.portal_url(false),
+            doc.portal_url(true)
+        );
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     // Before load_or_create: the elevated copy may run as another (admin) user, whose
     // profile must not get a device.json.
@@ -178,6 +241,9 @@ fn run(cli: Cli) -> Result<()> {
         _ => {}
     }
     let identity = config::load_or_create()?;
+    if matches!(cli.command, Command::Send { .. } | Command::Receive { .. }) {
+        legal_notice(&identity);
+    }
     let me = config::device_info(&identity);
     let seeds = parse_seeds(&cli.seed)?;
     if cli.no_sweep {
@@ -243,6 +309,10 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Install => platform::install(),
         Command::Uninstall => platform::uninstall(),
+        Command::Legal => {
+            cmd_legal(&identity);
+            Ok(())
+        }
         Command::Firewall { .. } | Command::Log { .. } | Command::ClassicMenu { .. } => {
             unreachable!("handled above")
         }
