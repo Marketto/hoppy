@@ -9,9 +9,10 @@
 //! [`Effect`]s say what to do next. The page never sees a path or an address: only cleaned
 //! display names (`display_*`), sizes and the strings below.
 //!
-//! Screens: searching → devices | nobody found → sending (waiting for "Accept", then
-//! progress; the 4-emoji verification panel inline) → delivered (auto-close) | declined |
-//! failed | key changed ("Forget device").
+//! Screens: [legal (terms + privacy acceptance, only when needed) →] searching → devices |
+//! nobody found → sending (waiting for "Accept", then progress; the 4-emoji verification
+//! panel inline) → delivered (auto-close) | declined | failed | key changed ("Forget
+//! device"). `hoppyw legal` (the tray's first start) shows the legal screen alone.
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod smoke;
@@ -70,6 +71,7 @@ use hoppy_core::{SessionInfo, TrustEntry, TrustState};
 use serde::{Deserialize, Serialize};
 
 use crate::gui::{Strings, code_view, fill, peer_label};
+use crate::legal::{self, Doc, Need};
 use crate::theme::Theme;
 use crate::verify::CodeView;
 use crate::{display_name, display_text};
@@ -104,6 +106,45 @@ pub enum Action {
     Later,
     /// "Forget device" on the key-changed screen.
     Forget,
+    /// A checkbox of the legal screen changed.
+    Tick {
+        k: Check,
+        on: bool,
+    },
+    /// "Accept and continue" (only taken when every checkbox is ticked).
+    Accept,
+}
+
+/// The legal screen's checkboxes (docs/legal/README.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Check {
+    /// Terms of use and disclaimer.
+    Terms,
+    /// Specific approval of the onerous clauses (arts. 1341–1342 of the Italian Civil Code).
+    Clauses,
+    /// Privacy policy read.
+    Privacy,
+}
+
+impl Check {
+    pub const ALL: [Check; 3] = [Check::Terms, Check::Clauses, Check::Privacy];
+
+    fn index(self) -> usize {
+        match self {
+            Check::Terms => 0,
+            Check::Clauses => 1,
+            Check::Privacy => 2,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Check::Terms => "terms",
+            Check::Clauses => "clauses",
+            Check::Privacy => "privacy",
+        }
+    }
 }
 
 /// Parses one IPC message from the page (see [`Action`]).
@@ -115,10 +156,10 @@ pub fn parse_action(raw: &str) -> Option<Action> {
     let serde_json::Value::Object(map) = serde_json::from_str(raw).ok()? else {
         return None;
     };
-    let fields = if map.get("t")?.as_str()? == "pick" {
-        2
-    } else {
-        1
+    let fields = match map.get("t")?.as_str()? {
+        "pick" => 2,
+        "tick" => 3,
+        _ => 1,
     };
     if map.len() != fields {
         return None;
@@ -129,6 +170,8 @@ pub fn parse_action(raw: &str) -> Option<Action> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Screen {
+    /// Terms + privacy acceptance (first start, or a new version of either).
+    Legal,
     Searching,
     Devices,
     Empty,
@@ -254,6 +297,24 @@ pub enum Effect {
     CloseAfter(Duration),
     /// Close the window and end `hoppyw send` (aborts a running transfer).
     Exit,
+    /// The terms and the privacy policy were accepted: store it (`legal::Acceptance`).
+    Accepted,
+}
+
+/// What follows the legal screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterLegal {
+    /// `hoppyw send`: the device search.
+    Search,
+    /// `hoppyw legal` (before the tray starts): close the window.
+    Exit,
+}
+
+#[derive(Debug, Clone)]
+struct LegalState {
+    need: Need,
+    ticks: [bool; 3],
+    after: AfterLegal,
 }
 
 /// The verification panel (sending to a New/Known encrypted device).
@@ -288,6 +349,8 @@ pub struct Flow {
     /// `forgetting` while it runs.
     forgot: Option<(bool, String)>,
     forgetting: bool,
+    /// The legal screen's state while it is shown.
+    legal: Option<LegalState>,
 }
 
 impl Default for Flow {
@@ -311,7 +374,26 @@ impl Flow {
             detail: String::new(),
             forgot: None,
             forgetting: false,
+            legal: None,
         }
+    }
+
+    /// The legal screen first (nothing ticked); then `after`.
+    pub fn with_legal(need: Need, after: AfterLegal) -> Self {
+        Flow {
+            screen: Screen::Legal,
+            legal: Some(LegalState {
+                need,
+                ticks: [false; 3],
+                after,
+            }),
+            ..Flow::new()
+        }
+    }
+
+    /// Whether the window is still waiting for the terms to be accepted.
+    pub fn legal_pending(&self) -> bool {
+        self.screen == Screen::Legal
     }
 
     pub fn screen(&self) -> Screen {
@@ -452,6 +534,25 @@ impl Flow {
                 self.forgetting = true;
                 vec![Effect::Forget]
             }
+            (Action::Tick { k, on }, Screen::Legal) => {
+                if let Some(legal) = &mut self.legal {
+                    legal.ticks[k.index()] = on;
+                }
+                Vec::new()
+            }
+            (Action::Accept, Screen::Legal) => {
+                let Some(legal) = self.legal.take_if(|l| l.ticks.iter().all(|&t| t)) else {
+                    return Vec::new(); // a checkbox is still empty
+                };
+                match legal.after {
+                    AfterLegal::Search => {
+                        let mut fx = vec![Effect::Accepted];
+                        fx.extend(self.search_again());
+                        fx
+                    }
+                    AfterLegal::Exit => vec![Effect::Accepted, Effect::Exit],
+                }
+            }
             _ => Vec::new(),
         }
     }
@@ -483,14 +584,58 @@ impl Flow {
             progress: None,
             note: String::new(),
             code: None,
+            legal: None,
             buttons: Vec::new(),
         };
         let button = |action, label: &str, primary| Button {
             action,
             label: label.to_owned(),
             primary,
+            disabled: false,
         };
         match self.screen {
+            Screen::Legal => {
+                let ls = legal::strings(s.italian);
+                let (need, ticks) = self
+                    .legal
+                    .as_ref()
+                    .map_or((Need::First, [false; 3]), |l| (l.need, l.ticks));
+                v.decor = match need {
+                    Need::First => "はじめまして",
+                    Need::Updated => "おしらせ",
+                };
+                v.header = String::new();
+                v.title = legal::title(ls, need).to_owned();
+                v.text = match need {
+                    Need::First => ls.body.clone(),
+                    Need::Updated => ls.updated_body.clone(),
+                };
+                v.legal = Some(LegalView {
+                    links_label: ls.legal.clone(),
+                    links: Doc::ALL
+                        .iter()
+                        .map(|&d| LinkView {
+                            label: d.label(ls).to_owned(),
+                            href: format!("legal/{}", d.file(s.italian)),
+                        })
+                        .collect(),
+                    checks: Check::ALL
+                        .iter()
+                        .map(|&c| CheckView {
+                            key: c.key(),
+                            label: match c {
+                                Check::Terms => ls.accept_terms.clone(),
+                                Check::Clauses => ls.approve_clauses.clone(),
+                                Check::Privacy => ls.read_privacy.clone(),
+                            },
+                            on: ticks[c.index()],
+                        })
+                        .collect(),
+                });
+                let mut accept = button("accept", &ls.continue_, true);
+                accept.disabled = !ticks.iter().all(|&t| t);
+                v.buttons = vec![accept, button("cancel", &ls.quit, false)];
+            }
             Screen::Searching => {
                 v.decor = "だれかいる？";
                 v.title = s.ui_searching.to_owned();
@@ -691,6 +836,32 @@ pub struct Button {
     pub action: &'static str,
     pub label: String,
     pub primary: bool,
+    /// Shown but not usable yet ("Accept and continue" until every box is ticked).
+    pub disabled: bool,
+}
+
+/// A checkbox of the legal screen; `key` goes back in [`Action::Tick`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckView {
+    pub key: &'static str,
+    pub label: String,
+    pub on: bool,
+}
+
+/// A link to an embedded legal page (`legal/terms.it.html`, served by `web.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LinkView {
+    pub label: String,
+    pub href: String,
+}
+
+/// The legal screen: links to the three pages, then the three checkboxes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LegalView {
+    /// Accessible name of the links ("Legal").
+    pub links_label: String,
+    pub links: Vec<LinkView>,
+    pub checks: Vec<CheckView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -749,6 +920,7 @@ pub struct View {
     /// Security line while sending (not encrypted / verified / name clash).
     pub note: String,
     pub code: Option<CodePanelView>,
+    pub legal: Option<LegalView>,
     pub buttons: Vec<Button>,
 }
 
@@ -821,6 +993,16 @@ pub fn sample_views(s: &Strings) -> Vec<(&'static str, View)> {
         name_matches_known: false,
     };
     let mut out = Vec::new();
+    out.push((
+        "legal",
+        Flow::with_legal(Need::First, AfterLegal::Search).view(s, &header),
+    ));
+    let mut updated = Flow::with_legal(Need::Updated, AfterLegal::Exit);
+    updated.action(Action::Tick {
+        k: Check::Terms,
+        on: true,
+    });
+    out.push(("legal_updated", updated.view(s, &header)));
     let mut f = Flow::new();
     out.push(("searching", f.view(s, &header)));
     f.found(devices.clone());
@@ -906,13 +1088,99 @@ mod tests {
             let views = sample_views(s);
             let screens: std::collections::HashSet<_> =
                 views.iter().map(|(_, v)| v.screen).collect();
-            assert_eq!(screens.len(), 8, "every Screen variant");
+            assert_eq!(screens.len(), 9, "every Screen variant");
             for (name, v) in &views {
                 assert!(!v.title.is_empty(), "{name}");
                 assert!(!v.buttons.is_empty(), "{name}: a way out");
             }
             let verify = &views.iter().find(|(n, _)| *n == "verify").unwrap().1;
             assert_eq!(verify.code.as_ref().unwrap().emoji.len(), 4);
+        }
+    }
+
+    #[test]
+    fn legal_screen_needs_every_box_then_searches() {
+        let mut f = Flow::with_legal(Need::First, AfterLegal::Search);
+        assert!(f.legal_pending());
+        let v = f.view(&IT, "Invia «a.jpg» (1 KB) a");
+        assert_eq!(v.screen, Screen::Legal);
+        assert_eq!(v.title, legal::strings(true).title);
+        assert!(v.header.is_empty(), "no file line before accepting");
+        let lv = v.legal.unwrap();
+        let hrefs: Vec<&str> = lv.links.iter().map(|l| l.href.as_str()).collect();
+        assert_eq!(
+            hrefs,
+            [
+                "legal/terms.it.html",
+                "legal/privacy.it.html",
+                "legal/licenses.it.html"
+            ]
+        );
+        for l in &lv.links {
+            assert!(
+                crate::sendui::web::asset(&format!("/{}", l.href)).is_some(),
+                "{}",
+                l.href
+            );
+        }
+        assert_eq!(lv.checks.len(), 3);
+        assert!(lv.checks.iter().all(|c| !c.on));
+        assert_eq!(
+            (v.buttons[0].action, v.buttons[0].disabled),
+            ("accept", true)
+        );
+        assert_eq!(v.buttons[1].action, "cancel");
+        // Nothing else works yet: no search, no pick, no retry.
+        assert!(f.action(Action::Accept).is_empty(), "nothing ticked");
+        assert!(f.action(Action::Pick { i: 0 }).is_empty());
+        assert!(f.action(Action::Retry).is_empty());
+        assert!(f.found(vec![card("Pixel", Badge::Plain)]).is_empty());
+        for k in [Check::Terms, Check::Privacy] {
+            f.action(Action::Tick { k, on: true });
+        }
+        assert!(f.action(Action::Accept).is_empty(), "clauses not approved");
+        assert!(f.view(&EN, "").buttons[0].disabled);
+        f.action(Action::Tick {
+            k: Check::Clauses,
+            on: true,
+        });
+        f.action(Action::Tick {
+            k: Check::Terms,
+            on: false,
+        });
+        assert!(f.action(Action::Accept).is_empty(), "unticked again");
+        f.action(Action::Tick {
+            k: Check::Terms,
+            on: true,
+        });
+        let v = f.view(&EN, "");
+        assert!(v.legal.unwrap().checks.iter().all(|c| c.on));
+        assert!(!v.buttons[0].disabled);
+        assert_eq!(
+            f.action(Action::Accept),
+            [Effect::Accepted, Effect::OnTop(true), Effect::Search]
+        );
+        assert_eq!(f.screen(), Screen::Searching);
+        assert!(!f.legal_pending());
+        assert!(f.action(Action::Accept).is_empty(), "once");
+        assert!(f.view(&EN, "").legal.is_none());
+    }
+
+    #[test]
+    fn legal_screen_alone_exits_and_quit_always_works() {
+        let mut f = Flow::with_legal(Need::Updated, AfterLegal::Exit);
+        let v = f.view(&EN, "");
+        assert_eq!(v.title, legal::strings(false).updated_title);
+        assert_eq!(v.text, legal::strings(false).updated_body);
+        assert_eq!(v.decor, "おしらせ");
+        assert_eq!(v.legal.unwrap().links[0].href, "legal/terms.en.html");
+        for k in Check::ALL {
+            f.action(Action::Tick { k, on: true });
+        }
+        assert_eq!(f.action(Action::Accept), [Effect::Accepted, Effect::Exit]);
+        for a in [Action::Cancel, Action::Escape, Action::Close] {
+            let mut g = Flow::with_legal(Need::First, AfterLegal::Search);
+            assert_eq!(g.action(a), [Effect::Exit], "quit without accepting");
         }
     }
 
@@ -924,6 +1192,14 @@ mod tests {
             Some(Action::Pick { i: 3 })
         );
         assert_eq!(parse_action(r#"{"t":"escape"}"#), Some(Action::Escape));
+        assert_eq!(parse_action(r#"{"t":"accept"}"#), Some(Action::Accept));
+        assert_eq!(
+            parse_action(r#"{"t":"tick","k":"clauses","on":true}"#),
+            Some(Action::Tick {
+                k: Check::Clauses,
+                on: true
+            })
+        );
         for bad in [
             "",
             "null",
@@ -935,6 +1211,11 @@ mod tests {
             r#"{"t":"open","url":"https://example.org"}"#,
             r#"{"t":"READY"}"#,
             r#"[{"t":"ready"}]"#,
+            r#"{"t":"accept","all":true}"#,
+            r#"{"t":"tick","k":"terms"}"#,
+            r#"{"t":"tick","k":"terms","on":1}"#,
+            r#"{"t":"tick","k":"other","on":true}"#,
+            r#"{"t":"tick","k":"terms","on":true,"x":0}"#,
         ] {
             assert_eq!(parse_action(bad), None, "{bad}");
         }

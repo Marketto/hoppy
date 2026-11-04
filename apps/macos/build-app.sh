@@ -5,7 +5,7 @@
 #   bash apps/macos/build-app.sh release [VERSION] [OUT_DIR]
 #       builds both architectures (MACOSX_DEPLOYMENT_TARGET=12.0), lipo, Hoppy.app, checks
 #       (architectures, minimum macOS, signature, Info.plist), then
-#       OUT_DIR/Hoppy-macos-universal.dmg (Hoppy.app + Applications link + first-launch help).
+#       OUT_DIR/Hoppy-macos-universal.dmg (Hoppy.app + Applications link + first-launch help + terms of use, IT/EN).
 #       VERSION defaults to the workspace version in Cargo.toml; OUT_DIR to dist.
 #   bash apps/macos/build-app.sh bundle HOPPYW HOPPY APP_DIR [VERSION]
 #       only assembles and signs APP_DIR (e.g. target/smoke/Hoppy.app) from given binaries.
@@ -62,6 +62,8 @@ bundle() {
   cp assets/brand/macos/Hoppy.icns "$app/Contents/Resources/Hoppy.icns"
   cp -R apps/macos/en.lproj apps/macos/it.lproj "$app/Contents/Resources/"
   cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+  # Terms of use as plain text (tools/legal.py); the app shows the full pages itself.
+  cp apps/windows/legal/terms.it.txt apps/windows/legal/terms.en.txt "$app/Contents/Resources/"
   plutil -lint "$app/Contents/Info.plist" "$app"/Contents/Resources/*.lproj/*.strings
   # Nested code first, then the bundle (seals Info.plist and resources).
   sign "$app/Contents/MacOS/hoppy"
@@ -118,6 +120,8 @@ release() {
   "$app/Contents/MacOS/hoppy" --version
   ln -s /Applications "$work/dmg/Applications"
   cp "apps/macos/Primo avvio - First launch.txt" "$work/dmg/"
+  cp apps/windows/legal/terms.it.txt "$work/dmg/Termini d'uso.txt"
+  cp apps/windows/legal/terms.en.txt "$work/dmg/Terms of use.txt"
   local dmg="$out/Hoppy-macos-universal.dmg"
   rm -f "$dmg"
   # hdiutil is known to fail now and then on CI runners ("Resource busy"): retry.

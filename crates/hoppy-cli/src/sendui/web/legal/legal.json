@@ -1,0 +1,52 @@
+{
+ "version": {
+  "terms": 1,
+  "privacy": 1
+ },
+ "strings": {
+  "it": {
+   "title": "Prima di iniziare",
+   "body": "Hoppy è gratuito e open source ed è fornito «così com'è», senza garanzie. Lo usi sotto la tua responsabilità: invia solo file che hai il diritto di condividere, controlla i file che ricevi, confronta il codice di verifica e usalo solo su reti di cui ti fidi. Accettando sollevi l'autore e gli autori delle librerie usate da qualsiasi responsabilità, nei limiti consentiti dalla legge.",
+   "updated_title": "Termini aggiornati",
+   "updated_body": "I Termini d'uso o l'Informativa privacy sono cambiati. Leggili e accettali di nuovo per continuare a usare Hoppy.",
+   "accept_terms": "Ho letto e accetto i Termini d'uso e la limitazione di responsabilità",
+   "approve_clauses": "Approvo specificamente i punti 2, 3, 4, 6, 7 e 8 dei Termini (artt. 1341 e 1342 c.c.)",
+   "read_privacy": "Ho letto l'Informativa privacy",
+   "continue": "Accetto e continuo",
+   "quit": "Esci",
+   "legal": "Note legali",
+   "terms": "Termini d'uso",
+   "privacy": "Privacy",
+   "licenses": "Licenze"
+  },
+  "en": {
+   "title": "Before you start",
+   "body": "Hoppy is free and open source and is provided \"as is\", without warranty. You use it at your own risk: send only files you have the right to share, check the files you receive, compare the verification code and use it only on networks you trust. By accepting you release the author and the authors of the libraries it uses from any liability, to the extent permitted by law.",
+   "updated_title": "Updated terms",
+   "updated_body": "The Terms of use or the Privacy policy have changed. Read them and accept them again to keep using Hoppy.",
+   "accept_terms": "I have read and accept the Terms of use and the disclaimer",
+   "approve_clauses": "I specifically approve sections 2, 3, 4, 6, 7 and 8 of the Terms (arts. 1341 and 1342 of the Italian Civil Code)",
+   "read_privacy": "I have read the Privacy policy",
+   "continue": "Accept and continue",
+   "quit": "Quit",
+   "legal": "Legal",
+   "terms": "Terms",
+   "privacy": "Privacy",
+   "licenses": "Licences"
+  }
+ },
+ "pages": {
+  "terms": {
+   "it": "terms.it.html",
+   "en": "terms.en.html"
+  },
+  "privacy": {
+   "it": "privacy.it.html",
+   "en": "privacy.en.html"
+  },
+  "licenses": {
+   "it": "licenses.it.html",
+   "en": "licenses.en.html"
+  }
+ }
+}

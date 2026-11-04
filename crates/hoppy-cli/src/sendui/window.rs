@@ -12,7 +12,8 @@
 //! breaks. The window stays hidden until the page says it is ready (no blank flash).
 //!
 //! Security (ADR 0011): the page and its fonts come from the binary (`hoppy:` protocol);
-//! navigation elsewhere, new windows, devtools, zoom hotkeys, clipboard access and
+//! navigation elsewhere (except the embedded legal pages; their `https://` links open in
+//! the system browser instead), new windows, devtools, zoom hotkeys, clipboard access and
 //! autoplay are off; IPC messages are only taken from our own page and are parsed by
 //! [`super::parse_action`] (anything unexpected is logged by kind and dropped).
 
@@ -194,21 +195,24 @@ pub fn run(
         match event {
             Event::UserEvent(UserEvent::Wake) => handler(&mut ctl, Input::Wake),
             Event::UserEvent(UserEvent::Ipc(raw)) => match parse_action(&raw) {
-                Some(Action::Ready) if !ctl.flags.ready => {
-                    ctl.flags.ready = true;
+                Some(Action::Ready) => {
+                    // Also after coming back from a legal page (the page loads again):
+                    // the current theme and view, nothing else.
                     let mut script = ctl.flags.init_script.clone();
                     script.push_str(ctl.flags.view_script.as_deref().unwrap_or_default());
                     if let Err(e) = ctl.webview.evaluate_script(&script) {
                         diag::log(format!("send window: init failed: {e}"));
                     }
-                    handler(&mut ctl, Input::Ready);
-                    show(&window);
-                    diag::log(format!(
-                        "send window: shown after {} ms",
-                        started.elapsed().as_millis()
-                    ));
+                    if !ctl.flags.ready {
+                        ctl.flags.ready = true;
+                        handler(&mut ctl, Input::Ready);
+                        show(&window);
+                        diag::log(format!(
+                            "send window: shown after {} ms",
+                            started.elapsed().as_millis()
+                        ));
+                    }
                 }
-                Some(Action::Ready) => {}
                 Some(action) if ctl.flags.ready => handler(&mut ctl, Input::Action(action)),
                 Some(_) => {}
                 None => diag::log(format!(
@@ -382,11 +386,22 @@ fn build_webview(
         .with_autoplay(false)
         .with_back_forward_navigation_gestures(false)
         .with_navigation_handler(|url| {
-            let own = web::is_own_url(&url);
-            if !own {
-                diag::log("send window: blocked a navigation away from the page");
+            if web::is_own_url(&url) {
+                return true;
             }
-            own
+            match web::external_link(&url) {
+                // A link of the legal pages: the system browser, never this window.
+                Some(link) => {
+                    let link = link.to_owned();
+                    std::thread::spawn(move || {
+                        if !crate::platform::ui::open_url(&link) {
+                            diag::log("send window: opening a link in the browser failed");
+                        }
+                    });
+                }
+                None => diag::log("send window: blocked a navigation away from the page"),
+            }
+            false
         })
         .with_new_window_req_handler(|_url, _features| NewWindowResponse::Deny)
         .with_ipc_handler(move |request: Request<String>| {
@@ -425,7 +440,7 @@ fn serve(request: &Request<Vec<u8>>) -> Response<std::borrow::Cow<'static, [u8]>
     };
     Response::builder()
         .header(header::CONTENT_TYPE, asset.mime)
-        .header(header::CONTENT_SECURITY_POLICY, web::CSP)
+        .header(header::CONTENT_SECURITY_POLICY, asset.csp)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "no-store")
         .body(asset.body)

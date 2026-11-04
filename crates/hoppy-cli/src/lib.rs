@@ -13,6 +13,7 @@ pub mod config;
 pub mod diag;
 pub mod firewall;
 pub mod gui;
+pub mod legal;
 // Two attributes on purpose: tools that flip `cfg(not(windows))` to type-check the Windows
 // code on Linux drop these modules entirely.
 #[cfg(not(windows))]

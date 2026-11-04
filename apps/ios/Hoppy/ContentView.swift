@@ -72,7 +72,7 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
-        .sheet(isPresented: Binding(get: { !model.pendingFiles.isEmpty }, set: { if !$0 { model.cancelPending() } })) {
+        .sheet(isPresented: Binding(get: { !model.pendingFiles.isEmpty && !model.needsLegal }, set: { if !$0 { model.cancelPending() } })) {
             DeviceSheet(files: model.pendingFiles).environmentObject(model)
         }
         .sheet(isPresented: Binding(get: { !preview.isEmpty }, set: { if !$0 { preview = [] } })) {
@@ -100,6 +100,12 @@ struct ContentView: View {
             Button(L("ok"), role: .cancel) { model.receiveError = nil }
         } message: {
             Text(model.receiveError ?? "")
+        }
+        // Terms / privacy first (docs/legal/README.md): no swipe-away, no quit button; the
+        // node starts only after «Accetto e continuo» (AppModel.acceptLegal).
+        .fullScreenCover(isPresented: Binding(get: { model.needsLegal }, set: { _ in })) {
+            LegalConsentView(texts: model.legal, isUpdate: model.legalIsUpdate, palette: palette,
+                             openExternal: openInSafari, onAccept: { model.acceptLegal() })
         }
     }
 
@@ -494,6 +500,12 @@ struct TextPromptSheet: View {
 
 // MARK: - About: name, version (build), author, GitHub link, "Controlla aggiornamenti"
 
+/// `https://` links of the bundled legal pages open in Safari (app only: extension-unsafe).
+func openInSafari(_ url: URL) {
+    guard url.scheme?.lowercased() == "https" else { return }
+    UIApplication.shared.open(url)
+}
+
 struct AboutSheet: View {
     static let repo = URL(string: "https://github.com/Marketto/hoppy")!
 
@@ -530,6 +542,9 @@ struct AboutSheet: View {
                     }
                     .foregroundColor(palette.accent)
                     .frame(minHeight: 44)
+                    if let legal = model.legal {
+                        LegalLinks(texts: legal, palette: palette, openExternal: openInSafari)
+                    }
                     Button(L("check_updates"), action: check)
                         .buttonStyle(HoppyButtonStyle(palette: palette))
                         .disabled(checking)

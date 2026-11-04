@@ -16,6 +16,7 @@ import androidx.core.content.ContextCompat
 import app.hoppy.HoppyApp
 import app.hoppy.Node
 import app.hoppy.Prefs
+import app.hoppy.legal.Legal
 import app.hoppy.R
 import app.hoppy.core.CallbackReceiver
 import app.hoppy.core.Offer
@@ -61,6 +62,8 @@ class ReceiveService : Service() {
      */
     private val sockets: MutableSet<Socket> = ConcurrentHashMap.newKeySet()
     @Volatile private var destroyed = false
+    /** Started before the terms were accepted: nothing was set up, nothing to tear down. */
+    private var refused = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -69,7 +72,13 @@ class ReceiveService : Service() {
         ServiceCompat.startForeground(
             this, NOTIF_RECEIVER, receiverNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
-        Node.acquire(this)
+        // Terms not accepted (first-run modal, docs/legal/README.md): never listen. The
+        // foreground call above is still required after startForegroundService.
+        if (!Node.acquire(this)) {
+            refused = true
+            stopSelf()
+            return
+        }
         // Senders that cannot reach our TCP port ask us to connect back (spec §6); the
         // node only honours this while receivePort != 0. Same sink and decision path.
         Node.callbackHandler = { request ->
@@ -101,6 +110,10 @@ class ReceiveService : Service() {
     }
 
     override fun onDestroy() {
+        if (refused) {
+            super.onDestroy()
+            return
+        }
         running = false
         destroyed = true
         runCatching { server?.close() }
@@ -423,7 +436,11 @@ class ReceiveService : Service() {
         fun removeStateListener(l: () -> Unit) { stateListeners -= l }
         private fun notifyState() = stateListeners.forEach { it() }
 
-        fun start(ctx: Context) = ContextCompat.startForegroundService(ctx, Intent(ctx, ReceiveService::class.java))
+        /** No-op until the terms are accepted (`Legal`); the service checks again itself. */
+        fun start(ctx: Context) {
+            if (!Legal.accepted(ctx)) return
+            ContextCompat.startForegroundService(ctx, Intent(ctx, ReceiveService::class.java))
+        }
         fun stop(ctx: Context) { ctx.stopService(Intent(ctx, ReceiveService::class.java)) }
     }
 }

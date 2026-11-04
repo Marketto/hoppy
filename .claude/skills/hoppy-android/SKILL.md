@@ -43,12 +43,17 @@ Two modules in `apps/android/`:
     Home "Send files" forwards picked URIs as `ACTION_SEND(_MULTIPLE)` + ClipData + grant.
   - `update/Updater.kt` — update check (home start/return, ≤ 1/3 h, skipped on `-dev`; *About*
     dialog (`MainActivity.showAbout`, `layout/dialog_about.xml`: mascot, version + build,
-    author, GitHub link, font licences) → *Check for updates* = `Updater.checkNow`, always
+    author, GitHub link, *Terms · Privacy · Licences* links) → *Check for updates* = `Updater.checkNow`, always
     answers) against
     GitHub `releases/latest`, "Updates" channel, home banner, download + SHA-256 check vs
     `SHA256SUMS.txt`, `PackageInstaller` session; `update/InstallReceiver.kt` handles the
     session status (user confirmation). Pure semver/JSON/checksum parsing in
     `update/UpdateLogic.kt` (+ test). Details: `docs/platforms/android.md` "Updates".
+  - Legal (docs/legal/README.md): `ui/LegalActivity.kt` — terms acceptance before the theme
+    picker, home and the share screen (three checkboxes, texts from `apps/android/app/src/main/assets/legal/legal.json`,
+    asked again when its version is higher than `Prefs.legalAccepted`); `ui/LegalPageActivity.kt`
+    — bundled pages in a locked-down WebView (+ `LegalLinks` for About/modal);
+    `legal/Legal.kt` (assets + prefs), `legal/LegalLogic.kt` (pure, + test).
   - `ui/ThemePickerActivity.kt` — first-run theme choice; `ui/theme/` — the five themes and
     all animated views (see `hoppy-themes`).
   - v1 security (docs/platforms/android.md "Encryption and device verification"):
@@ -83,6 +88,11 @@ Two modules in `apps/android/`:
   with "Forget device"); pin keys only on a person's Accept; show every plaintext session as
   "non cifrato"; verification is the 4 emoji only (no digits, no QR, no camera permission:
   do not reintroduce them). Never put session data in intents to exported components.
+
+- Nothing networked before the terms are accepted: `Node.acquire` returns `false` (callers
+  release only after `true`), `ReceiveService.start` is a no-op, new entry points (boot,
+  tiles, shortcuts) must check `Legal.accepted` too. Legal pages: assets only, JavaScript off,
+  no file/content access, `https://` → browser. Edit legal texts in `docs/legal/` only.
 
 ## Build & verify
 

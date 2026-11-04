@@ -17,6 +17,8 @@ use anyhow::{Context, Result};
 use hoppy_core::{DeviceInfo, DeviceKey, Local, Trust};
 use serde::{Deserialize, Serialize};
 
+use crate::legal;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub id: String,
@@ -39,6 +41,13 @@ pub struct Identity {
     /// "Theme" submenu. Empty = never chosen: follow the system (`theme::effective`).
     #[serde(default)]
     pub theme: String,
+    /// Terms of use + privacy policy accepted in `hoppyw` (`legal::Acceptance`); `None` =
+    /// never. Asked again when the bundled version is higher (`legal::needed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legal: Option<legal::Acceptance>,
+    /// The `hoppy` CLI printed its one-line terms notice for this version (it never asks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legal_notice: Option<legal::Version>,
 }
 
 fn default_music() -> bool {
@@ -140,6 +149,8 @@ pub fn load_or_create() -> Result<Identity> {
         firewall_hint: String::new(),
         desktop_integration: String::new(),
         theme: String::new(),
+        legal: None,
+        legal_notice: None,
     };
     save(&identity)?;
     Ok(identity)
@@ -149,7 +160,20 @@ pub fn save(identity: &Identity) -> Result<()> {
     let dir = state_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     secure_dir(&dir);
-    fs::write(dir.join(DEVICE_FILE), serde_json::to_vec_pretty(identity)?)?;
+    // Atomic: write a unique temp file next to it, then rename, so a crash or an early exit
+    // never leaves a truncated device.json (which would silently mint a new id).
+    let path = dir.join(DEVICE_FILE);
+    let tmp = dir.join(format!(
+        ".{DEVICE_FILE}.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    fs::write(&tmp, serde_json::to_vec_pretty(identity)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    if let Err(e) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("replacing {}", path.display()));
+    }
     Ok(())
 }
 
@@ -183,6 +207,22 @@ pub fn set_desktop_integration(state: &str) -> Result<Identity> {
 pub fn set_theme(id: &str) -> Result<Identity> {
     let mut identity = load_or_create()?;
     identity.theme = id.to_owned();
+    save(&identity)?;
+    Ok(identity)
+}
+
+/// Records the accepted terms/privacy versions (re-reads the file first, like `set_music`).
+pub fn set_legal(accepted: legal::Acceptance) -> Result<Identity> {
+    let mut identity = load_or_create()?;
+    identity.legal = Some(accepted);
+    save(&identity)?;
+    Ok(identity)
+}
+
+/// Records that the CLI showed its terms notice for `version` (re-reads the file first).
+pub fn set_legal_notice(version: legal::Version) -> Result<Identity> {
+    let mut identity = load_or_create()?;
+    identity.legal_notice = Some(version);
     save(&identity)?;
     Ok(identity)
 }
@@ -242,8 +282,35 @@ mod tests {
         assert!(old.firewall_hint.is_empty());
         assert!(old.desktop_integration.is_empty());
         assert!(old.theme.is_empty(), "no theme chosen: follow the system");
+        assert!(
+            old.legal.is_none() && old.legal_notice.is_none(),
+            "never accepted"
+        );
         let off: Identity =
             serde_json::from_str(r#"{"id":"x","name":"PC","music":false}"#).unwrap();
         assert!(!off.music);
+    }
+
+    #[test]
+    fn legal_acceptance_round_trips_through_device_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DEVICE_FILE);
+        let mut id: Identity = serde_json::from_str(r#"{"id":"x","name":"PC"}"#).unwrap();
+        // Not written while never accepted (older versions see the same file).
+        assert!(!serde_json::to_string(&id).unwrap().contains("legal"));
+        let accepted = legal::Acceptance::now(legal::bundled());
+        id.legal = Some(accepted.clone());
+        fs::write(&path, serde_json::to_vec_pretty(&id).unwrap()).unwrap();
+        let back: Identity = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back.legal, Some(accepted));
+        assert_eq!(
+            legal::needed(back.legal.as_ref(), legal::bundled()),
+            None,
+            "accepted once = not asked again"
+        );
+        // Unknown future fields next to it are ignored.
+        let newer = r#"{"id":"x","name":"PC","legal":{"terms":9,"privacy":9,"at":"t","extra":1}}"#;
+        let n: Identity = serde_json::from_str(newer).unwrap();
+        assert_eq!(n.legal.unwrap().terms, 9);
     }
 }

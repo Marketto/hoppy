@@ -14,9 +14,15 @@ check`); the real build and simulator tests run in CI (job `ios` in .github/work
   Documents); verification is the 4-emoji code compared by eye only, so no camera, no
   NSCameraUsageDescription, no QR or digit code anywhere; the update check asks for the
   release asset the release workflow publishes.
+- Terms / privacy (docs/legal/README.md): Hoppy/Legal (legal.json with every modal key in
+  it/en, version = docs/legal/version.json, the six pages) is a folder resource of the app and
+  of the Share extension; the Swift code reads only keys that exist; both gate their node on
+  the acceptance; the page viewer has JavaScript off; no quit button; Shared/ stays
+  extension-safe (no UIApplication.shared).
 """
 from __future__ import annotations
 
+import json
 import plistlib
 import re
 import sys
@@ -182,6 +188,65 @@ def main() -> int:
     if not update.exists() or 'asset = "Hoppy-ios-unsigned.ipa"' not in update.read_text(encoding="utf-8") \
             or "Hoppy-ios-unsigned.ipa" not in release:
         bad.append("apps/ios/Hoppy/UpdateCheck.swift: must look for the release asset Hoppy-ios-unsigned.ipa")
+
+    # 4c. Terms / privacy acceptance (docs/legal/README.md): the generated Legal/ folder is a
+    # resource of the app AND the Share extension (each asks itself: no App Group), the modal
+    # keys the Swift code reads exist in it/en, the node starts only after acceptance, the page
+    # viewer runs no JavaScript, and there is no quit button (Apple HIG).
+    legal_dir = IOS / "Hoppy" / "Legal"
+    legal_keys = ("title", "body", "updated_title", "updated_body", "accept_terms", "approve_clauses",
+                  "read_privacy", "continue", "legal", "terms", "privacy", "licenses")
+    legal: dict = {}
+    try:
+        legal = json.loads((legal_dir / "legal.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        bad.append(f"apps/ios/Hoppy/Legal/legal.json: {e} (python3 tools/dev.py legal)")
+    if legal:
+        try:
+            wanted = json.loads((ROOT / "docs" / "legal" / "version.json").read_text(encoding="utf-8"))
+            if legal.get("version") != wanted:
+                bad.append(f"apps/ios/Hoppy/Legal/legal.json: version {legal.get('version')} != docs/legal/version.json {wanted} (python3 tools/dev.py legal)")
+        except (OSError, ValueError) as e:
+            bad.append(f"docs/legal/version.json: {e}")
+        for lang in LANGS:
+            for key in legal_keys:
+                if not legal.get("strings", {}).get(lang, {}).get(key):
+                    bad.append(f"apps/ios/Hoppy/Legal/legal.json: strings.{lang}.{key} missing")
+        for page in ("terms", "privacy", "licenses"):
+            for lang in LANGS:
+                name = legal.get("pages", {}).get(page, {}).get(lang)
+                if not name or not (legal_dir / name).is_file():
+                    bad.append(f"apps/ios/Hoppy/Legal: page {page}.{lang} ({name}) missing")
+    blocks = dict(re.findall(r"^  (\w+):\n((?:    .*\n|\s*\n)*)", spec.split("\ntargets:\n", 1)[-1].split("\nschemes:", 1)[0], re.M))
+    for target in ("Hoppy", "HoppyShare"):
+        if not re.search(r"- path: Hoppy/Legal\n\s+type: folder\n\s+buildPhase: resources", blocks.get(target, "")):
+            bad.append(f"apps/ios/project.yml: target {target} must bundle Hoppy/Legal (type: folder, buildPhase: resources)")
+    if not re.search(r"- path: Hoppy\n\s+excludes: \[\"Legal\"\]", blocks.get("Hoppy", "")):
+        bad.append('apps/ios/project.yml: target Hoppy must exclude "Legal" from its Hoppy source group (it is a folder reference)')
+    used_keys: set[str] = set()
+    for f in swift:
+        text = f.read_text(encoding="utf-8")
+        # texts.text("key") and texts.text(cond ? "a" : "b"): every quoted key in the call.
+        for args in re.findall(r'\btext\(([^()]*"[^()]*)\)', text):
+            used_keys |= set(re.findall(r'"(\w+)"', args))
+        if '.text("quit")' in text:
+            bad.append(f"{f.relative_to(ROOT)}: no quit button on iOS (Apple HIG): the app stays on the acceptance screen")
+    for key in sorted(used_keys - set(legal.get("strings", {}).get("en", {}))):
+        bad.append(f"apps/ios: legal string {key!r} is not in Legal/legal.json")
+    for path, needles in (
+        (IOS / "Hoppy" / "AppModel.swift", ("LegalConsent.needsAcceptance", "guard node == nil, !isTesting, !needsLegal")),
+        (IOS / "Hoppy" / "ContentView.swift", ("fullScreenCover", "LegalConsentView", "LegalLinks")),
+        (IOS / "ShareExtension" / "ShareViewController.swift", ("LegalConsent.needsAcceptance", "LegalConsentView",
+                                                                "guard node == nil, !needsLegal")),
+        (IOS / "Shared" / "LegalViews.swift", ("allowsContentJavaScript = false", "loadFileURL", ".nonPersistent()")),
+    ):
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        for needle in needles:
+            if needle not in text:
+                bad.append(f"{path.relative_to(ROOT)}: {needle!r} missing (terms acceptance, docs/legal/README.md)")
+    for f in (IOS / "Shared").glob("*.swift"):
+        if "UIApplication.shared" in f.read_text(encoding="utf-8"):
+            bad.append(f"{f.relative_to(ROOT)}: UIApplication.shared is not extension-safe (Shared/ is in HoppyShare)")
 
     # 5. Generated assets (tools/gen_icons.py --ios)
     icon = IOS / "Hoppy" / "Assets.xcassets" / "AppIcon.appiconset" / "AppIcon-1024.png"

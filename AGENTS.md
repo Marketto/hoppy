@@ -25,6 +25,7 @@ Match the request to a row, load the skill, follow it. One request may hit sever
 | Cross-implementation bugs ("works Rust→Rust, not with Android") | `.claude/skills/hoppy-interop-test/SKILL.md` | `tools/hoppy_ref.py`, `tools/interop.sh` | `python3 tools/dev.py interop` |
 | New transport (BLE, Wi-Fi Direct/Aware, relay) or new platform | `.claude/skills/hoppy-new-transport/SKILL.md` | `docs/architecture.md`, `docs/roadmap.md` | depends; write an ADR |
 | Releases, installers, download portal, enabling a platform | `.claude/skills/hoppy-release/SKILL.md` | `.github/workflows/release.yml`, `.github/workflows/pages.yml`, `site/`, `docs/release.md` | `python3 tools/site.py serve` + Release run with *publish* off |
+| Terms of use, privacy policy, third-party licences, acceptance modal texts | `docs/legal/README.md` | `docs/legal/`, `tools/licenses.py`, `tools/legal.py` | `python3 tools/dev.py licenses` / `legal` + `check` (+ `a11y`) |
 | An architectural decision, or docs for agents | `.claude/skills/hoppy-docs-adr/SKILL.md` | `docs/decisions/`, this file | `python3 tools/dev.py docs` |
 | Anything else / unsure | read `docs/architecture.md`, then pick a row | | `python3 tools/dev.py check` |
 
@@ -52,7 +53,9 @@ tools/gen_mascots.py   Mascot source of truth → SVG + Android vectors + animat
 tools/gen_music.py     Theme music source of truth → Android OGG + desktop WAV
 tools/ios_check.py     Static checks of apps/ios on Linux (strings, plists, project, header)
 tools/fonts.py         Bundles subsetted OFL Japanese fonts into the Android app
-docs/                  protocol, architecture, roadmap, decisions (ADRs), design, platforms
+tools/licenses.py      Third-party licences (cargo metadata, Gradle catalog, fonts) → docs/legal/third-party-licenses.*
+tools/legal.py         docs/legal/ Markdown → portal pages (site/legal/) + app pages and legal.json
+docs/                  protocol, architecture, roadmap, decisions (ADRs), design, platforms, legal (terms, privacy, licences)
 assets/brand/          Generated mascot SVGs + preview, app icons (linux/, macos/, iOS asset catalogs: tools/gen_icons.py)
 assets/music/          Generated desktop music (WAV) + manifest
 ```
@@ -68,15 +71,19 @@ assets/music/          Generated desktop music (WAV) + manifest
 3. **Never auto-accept by default.** Receiving asks the user unless they explicitly opt in.
 4. **Android `:core` stays pure JVM** (no `android.*` imports) so it is testable off-device.
 5. **No network work on the Android main thread**; `DiscoveryNode` already hops threads.
-6. **Mascots, music and fonts are generated**: edit `tools/gen_mascots.py` /
-   `tools/gen_music.py` / run `tools/fonts.py`, never edit the XML/SVG/OGG/WAV/TTF outputs.
+6. **Mascots, music, fonts and legal pages are generated**: edit `tools/gen_mascots.py` /
+   `tools/gen_music.py` / run `tools/fonts.py`, never edit the XML/SVG/OGG/WAV/TTF outputs;
+   legal texts are edited only in `docs/legal/` (`tools/legal.py` renders the HTML for the
+   portal and the apps, `tools/licenses.py` the third-party licences).
 7. **Encrypt by default** (ADR 0010). v1↔v1 is always encrypted; plaintext only with v0 peers and
    always flagged in the UI; never send to or auto-accept from a KeyChanged device; never weaken the
    SAS commit/reveal; no internet relay until plaintext is switched off.
 8. **Original art only.** Mascots must not resemble existing characters or brands; music
    must not quote or imitate existing tunes (game, anime, pop).
 9. **Public repo: never commit sensitive data** — credentials, tokens, keystores, `.env`,
-   personal e-mails, IPs or paths of real machines, names of anyone other than the author.
+   personal e-mails, IPs or paths of real machines, names of anyone other than the author
+   (exception: copyright/attribution lines that third-party licences require, in
+   `docs/legal/third-party-licenses.*` and its generated copies, e-mails stripped).
    The author is credited as **Marco Ricupero** (LICENSE, Cargo `authors`, installer
    publisher, .deb maintainer, portal footer); commit as
    `Marco Ricupero <Marketto@users.noreply.github.com>`, never with a personal e-mail. `python3 tools/dev.py secrets` (part of

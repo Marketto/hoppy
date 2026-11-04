@@ -85,7 +85,12 @@
     <string name="about_version">Version %1$s (build %2$d)</string>
     <string name="about_author">by Marco Ricupero</string>
     <string name="about_repo_url" translatable="false">https://github.com/Marketto/hoppy</string>
-    <string name="about_licenses">Open-source licences</string>
+    <!-- Legal acceptance (ui/LegalActivity.kt) and pages (ui/LegalPageActivity.kt). The modal's
+         own texts come from assets/legal/legal.json (tools/legal.py), not from here. -->
+    <string name="legal_separator" translatable="false">·</string>
+    <string name="legal_link_cd">%1$s, opens the page</string>
+    <string name="legal_tick_all">Tick all three boxes to continue.</string>
+    <string name="legal_no_browser">No browser is available to open this link</string>
     <!-- Protocol v1 (docs/protocol.md §7): encryption badges, verification code (4 emoji), trust warnings. -->
     <string name="peer_secure">%1$s · 🔒</string>
     <string name="peer_secure_verified">%1$s · 🔒 ✓</string>

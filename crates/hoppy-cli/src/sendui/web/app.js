@@ -134,6 +134,38 @@
     return box;
   }
 
+  // The legal screen: links to the embedded pages (they open in this window, with a link
+  // back), then the checkboxes; Rust keeps their state (it survives that round trip) and
+  // enables "Accept and continue" when all are ticked.
+  function legalBlock(l) {
+    const wrap = el('div', 'legal');
+    const links = el('nav', 'legal-links');
+    links.setAttribute('aria-label', l.links_label);
+    l.links.forEach((x, i) => {
+      if (i) links.append(document.createTextNode(' · '));
+      const a = el('a', null, x.label);
+      // Only our own relative pages (web.rs serves them; anything else is 404).
+      if (/^legal\/[a-z]+\.(it|en)\.html$/.test(x.href)) a.href = x.href;
+      a.dataset.key = 'link:' + i;
+      links.append(a);
+    });
+    const checks = el('fieldset', 'checks');
+    const legend = el('legend', 'sr-only', l.links_label);
+    checks.append(legend);
+    l.checks.forEach((c) => {
+      const label = el('label', 'check');
+      const box = el('input');
+      box.type = 'checkbox';
+      box.checked = !!c.on;
+      box.dataset.key = 'chk:' + c.key;
+      box.addEventListener('change', () => send({ t: 'tick', k: c.key, on: box.checked }));
+      label.append(box, el('span', null, c.label));
+      checks.append(label);
+    });
+    wrap.append(links, checks);
+    return wrap;
+  }
+
   function render(v) {
     if (!v || typeof v !== 'object') return;
     const focusedKey = keyOf(document.activeElement);
@@ -161,6 +193,7 @@
     if (v.progress) parts.push(progress(v));
     if (v.note) parts.push(el('p', 'note', v.note));
     if (v.code) parts.push(codePanel(v.code));
+    if (v.legal) parts.push(legalBlock(v.legal));
     body.replaceChildren(...parts);
     // Long text (key changed, firewall hint) scrolls: then keyboard users can focus and
     // scroll it too (WCAG 2.1.1).
@@ -174,6 +207,7 @@
     const buttons = v.buttons.map((b) => {
       const x = el('button', b.primary ? 'btn primary' : 'btn', b.label);
       x.type = 'button';
+      x.disabled = !!b.disabled;
       x.dataset.key = 'btn:' + b.action;
       x.addEventListener('click', () => send({ t: b.action }));
       return x;
@@ -188,11 +222,13 @@
 
     let target = null;
     if (!screenChanged && focusedKey) target = document.querySelector('[data-key="' + focusedKey + '"]');
+    // Legal screen: the first empty checkbox, then "Accept and continue" once enabled.
     if (!target && (screenChanged || !document.activeElement || document.activeElement === document.body)) {
       target = document.querySelector('button.device') ||
         document.querySelector('.code button.primary') ||
-        document.querySelector('.footer .btn.primary') ||
-        document.querySelector('.footer .btn');
+        document.querySelector('.check input:not(:checked)') ||
+        document.querySelector('.footer .btn.primary:not(:disabled)') ||
+        document.querySelector('.footer .btn:not(:disabled)');
     }
     if (target && !target.disabled) target.focus({ preventScroll: true });
     if (screenChanged) {

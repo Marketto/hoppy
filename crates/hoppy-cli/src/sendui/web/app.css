@@ -400,6 +400,55 @@ html, body {
 [data-theme="manga"] .badge, [data-theme="showa"] .badge { border-radius: 3px; border: 1.5px solid var(--line); }
 .go { color: var(--accent); font-size: 16px; }
 
+/* ------------------------------------------------------------------ legal screen */
+
+/* Smaller mascot: the summary, the links and three checkboxes need the room. */
+[data-screen="legal"] .stage { height: 96px; }
+[data-screen="legal"] .mascot { width: 84px; height: 84px; }
+[data-screen="legal"] .header { display: none; }
+[data-screen="legal"] .text { font-size: 14px; color: var(--text); }
+
+.legal-links {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.legal-links a {
+  color: var(--accent);
+  font-weight: 900;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+[data-theme="purikura"] .legal-links a, [data-theme="yume"] .legal-links a, [data-theme="night"] .legal-links a { font-weight: var(--body-weight); }
+
+.checks { margin: 0; padding: 0; border: 0; min-width: 0; }
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--card);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+[data-theme="showa"] .check, [data-theme="manga"] .check { border: 2px solid var(--line); }
+.check input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.check span { overflow-wrap: anywhere; }
+
 /* ------------------------------------------------------------------ buttons */
 
 .footer {
@@ -468,7 +517,8 @@ html, body {
 
 /* Focus: always visible, 3 px, offset (WCAG 2.4.7 / 2.4.11). */
 button:focus, .body:focus { outline: none; }
-button:focus-visible, .device:focus-visible, .body:focus-visible {
+button:focus-visible, .device:focus-visible, .body:focus-visible,
+.check input:focus-visible, .legal-links a:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
