@@ -411,6 +411,7 @@ class SendActivity : ThemedActivity() {
         private const val EXTRA_TOKEN = "app.hoppy.TOKEN"
         private const val PRESELECT_TIMEOUT_MS = 6_000L
         private const val CONFIRM_NAME_MAX = 24
+        private const val STATE_GATED = "app.hoppy.STATE_GATED"
 
         /**
          * Marks intents built by [intent] in this process: other apps cannot know it, so
